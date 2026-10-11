@@ -7,16 +7,23 @@
   "main": "desktop/main.cjs",
   "author": "QQ_Service contributors",
   "license": "MIT",
-  "engines": { "node": ">=24.0.0" },
+  "engines": {
+    "node": ">=24.0.0"
+  },
   "scripts": {
     "start": "node src/server.mjs",
     "test": "node --test",
     "check": "node --check src/server.mjs && node --check public/app.js && node --check desktop/main.cjs && node --check desktop/preload.cjs && node --check scripts/prepare-windows.mjs && node --check scripts/verify-packaged.cjs",
     "desktop": "electron .",
     "prepare:windows": "node scripts/prepare-windows.mjs",
-    "build:exe": "npm run prepare:windows && electron-builder --win portable --x64",
-    "build:installer": "npm run prepare:windows && electron-builder --win nsis --x64"
+    "build:exe": "npm run prepare:windows && electron-builder --win portable --x64 --publish never",
+    "build:installer": "npm run prepare:windows && electron-builder --win nsis --x64 --publish never"
   },
-  "dependencies": { "ws": "8.22.0" },
-  "devDependencies": { "electron": "44.7.0", "electron-builder": "26.15.3" }
+  "dependencies": {
+    "ws": "8.22.0"
+  },
+  "devDependencies": {
+    "electron": "44.7.0",
+    "electron-builder": "26.15.3"
+  }
 }

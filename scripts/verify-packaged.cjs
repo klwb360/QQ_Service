@@ -41,7 +41,7 @@ async function verifyWindowsPackage(appOutDir, expectedVersion) {
   assert.equal(windowsMachine(await fs.readFile(path.join(resources, 'runtime', 'node.exe'))), 0x8664, 'Packaged Node executable is not Windows x64');
   assert.equal(windowsMachine(await fs.readFile(path.join(appOutDir, 'QQ_Service.exe'))), 0x8664, 'Packaged desktop executable is not Windows x64');
   const asar = await import('@electron/asar');
-  const files = asar.listPackage(path.join(resources, 'app.asar'));
+  const files = asar.listPackage(path.join(resources, 'app.asar')).map(file => file.replaceAll('\\', '/'));
   for (const file of ['/desktop/main.cjs', '/desktop/preload.cjs', '/desktop/security.cjs']) {
     assert(files.includes(file), `Required desktop shell file is missing: ${file}`);
   }
