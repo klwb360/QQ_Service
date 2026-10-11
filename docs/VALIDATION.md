@@ -1,5 +1,7 @@
 # 验证记录
 
+[返回首页](../README.md) · [使用指南](USAGE.md) · [开发指南](DEVELOPMENT.md)
+
 ## 0.2.1 · QQ_Service 发布校验
 
 项目名称、窗口标题、界面、导出文件名和 Windows 构建产品名已改为 `QQ_Service`。旧数据目录和桌面单实例身份保留，继续兼容 0.2.0。
@@ -7,6 +9,16 @@
 重命名后重新执行 `npm test`：20 项通过，0 项失败；可选 GUI 脚本在普通测试发现中显式跳过。`npm run check` 通过。下方 7 项真实桌面交互记录来自 0.2.0，0.2.1 未声称新增 Windows 实机测试。
 
 GitHub Actions 在 Windows runner 上执行语法检查、自动测试与 EXE 构建，标签须匹配 package 版本，构建检查缺失资源会失败；正式标签构建成功后上传 EXE 及 SHA256 到 Release。第三方 Actions 固定到上游已核实的提交 SHA。
+
+2026-10-11，正式标签 [`v0.2.1` 的 Windows 构建与发布](https://github.com/klwb360/QQ_Service/actions/runs/38160669306) 全部成功，[Release](https://github.com/klwb360/QQ_Service/releases/tag/v0.2.1) 已包含 EXE 和 SHA256 校验文件。重新下载公开 EXE 后核验通过：
+
+```text
+文件：QQ_Service-0.2.1-Windows-x64.exe
+大小：123346581 字节
+SHA256：cf64162833c1e0f348568b04c3ae19e247179d813eed657c8fba9cb633c1c86d
+```
+
+Windows 打包时 ASAR 路径分隔符的差异已修复，打包校验统一路径后检查桌面入口。该 Release 的 Windows 自动构建与后台测试已完成；Windows 桌面实机操作和真实账号联调仍未完成。
 
 ## 0.2.0 · 桌面功能验证
 
@@ -24,7 +36,7 @@ GitHub Actions 在 Windows runner 上执行语法检查、自动测试与 EXE �
 
 ## Windows 交付边界
 
-本次交付 Windows x64 便携 EXE，自带官方 Node.js 24.19.0 与 npm，不要求用户另装 Node。构建检查 Windows PE、桌面 ASAR、实际附带的后台与 npm/ws 依赖；这些检查不等于在 Windows 上执行。
+v0.2.0 在 Linux 环境构建 Windows x64 便携 EXE，自带官方 Node.js 24.19.0 与 npm。v0.2.1 的正式 EXE 改由 GitHub Actions Windows runner 构建，并执行自动测试和包内资源检查。构建检查 Windows PE、桌面 ASAR、实际附带的后台与 npm/ws 依赖；这些检查不等于用户在 Windows 桌面上完成应用操作与账号验收。
 
 打包工具默认省略资源源目录根部的 `node_modules`，已用显式资源映射修复，并加入 `afterPack` 校验钩子：缺少 npm 或后台生产依赖时构建失败。本次产物也单独执行该校验通过。
 
