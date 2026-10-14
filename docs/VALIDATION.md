@@ -2,6 +2,12 @@
 
 [返回首页](../README.md) · [使用指南](USAGE.md) · [开发指南](DEVELOPMENT.md)
 
+## Windows 原生 NapCat 接入检查
+
+2026-10-14 核对 [官方 Shell 安装文档](https://napneko.github.io/guide/boot/Shell)，下载 `v4.18.38 / NapCat.Shell.Windows.OneKey.zip` 并验证其 GitHub 声明的 SHA256；确认包内的 `NapCatInstaller.exe` 和启动组件。原生安装与连接步骤见 [指南](NATIVE_NAPCAT_WINDOWS.md)。
+
+现有后台使用临时数据目录和本地模拟 OneBot 完成配置应用、Bearer Token 鉴权及登录账号校验，不安装或启动 Docker 版 NapCat，也未调用真实模型。没有修改运行代码或更换 v0.2.1 EXE；Windows 原生安装器执行和真实 QQ 登录仍待实机验证。
+
 ## 0.2.1 · QQ_Service 发布校验
 
 项目名称、窗口标题、界面、导出文件名和 Windows 构建产品名已改为 `QQ_Service`。旧数据目录和桌面单实例身份保留，继续兼容 0.2.0。

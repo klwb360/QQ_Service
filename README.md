@@ -6,7 +6,7 @@
 [![Release](https://img.shields.io/github/v/release/klwb360/QQ_Service)](https://github.com/klwb360/QQ_Service/releases/latest)
 [![License: MIT](https://img.shields.io/badge/License-MIT-blue.svg)](LICENSE)
 
-[下载 Windows EXE](https://github.com/klwb360/QQ_Service/releases/latest) · [使用指南](docs/USAGE.md) · [功能实现与架构](docs/ARCHITECTURE.md) · [开发指南](docs/DEVELOPMENT.md) · [验证记录](docs/VALIDATION.md)
+[下载 Windows EXE](https://github.com/klwb360/QQ_Service/releases/latest) · [使用指南](docs/USAGE.md) · [无需 Docker 接入 QQ](docs/NATIVE_NAPCAT_WINDOWS.md) · [功能实现与架构](docs/ARCHITECTURE.md) · [开发指南](docs/DEVELOPMENT.md) · [验证记录](docs/VALIDATION.md)
 
 QQ_Service 是本地 QQ 助手：在选定社交群里聊天，收集选定工作群的通知并解释给本人，整理当前 QQ 账号的「我的收藏」。通过仪表盘安装模块、登录账号、调整参数和应用配置，无需逐个编辑配置文件。
 
@@ -25,7 +25,7 @@ QQ_Service 是本地 QQ 助手：在选定社交群里聊天，收集选定工�
 | [最新发布与更新说明](https://github.com/klwb360/QQ_Service/releases/latest) | 查看后续版本和发布记录 |
 
 1. **打开应用**：下载 EXE，放入普通文件夹后双击。无需另装 Node.js。
-2. **安装模块**：QQ 接入需先安装并启动 [Docker Desktop](https://docs.docker.com/desktop/setup/install/windows-install/)，使用 Linux 容器。在仪表盘点击「一键安装所选模块」；需要个人 GPT 订阅时勾选 Codex CLI。
+2. **安装模块**：不使用 Docker 时，按 [Windows 原生 NapCat 指南](docs/NATIVE_NAPCAT_WINDOWS.md) 用官方安装器部署，再填写 OneBot 接口。使用应用内 NapCat 安装按钮时，需先安装并启动 [Docker Desktop](https://docs.docker.com/desktop/setup/install/windows-install/)。个人 GPT 订阅可单独勾选 Codex CLI 安装。
 3. **连接账号与模型**：打开 QQ 登录页面，扫码登录小号；填写本人与机器人 QQ 号、DeepSeek API Key。GPT 订阅通过官方 Codex 设备码授权登录。
 4. **选定群与功能**：把群设为「社交群」或「工作群」，调整触发方式、汇总模型、时间和消息保留天数。
 5. **保存并应用**：应用配置后查看连接状态。关闭窗口会收进托盘并继续运行；「完全退出」停止消息后台。
@@ -75,6 +75,7 @@ flowchart LR
 | 文档 | 内容 |
 | --- | --- |
 | [使用指南](docs/USAGE.md) | 安装登录、群权限、私聊命令、收藏、数据与常见问题 |
+| [Windows 原生 NapCat](docs/NATIVE_NAPCAT_WINDOWS.md) | 无需 Docker 的官方安装器、OneBot 设置与现有 EXE 接入步骤 |
 | [功能实现与架构](docs/ARCHITECTURE.md) | 各功能代码入口、处理流程、配置语义与扩展方式 |
 | [开发指南](docs/DEVELOPMENT.md) | 源码启动、Windows 打包、版本发布与环境变量 |
 | [验证记录](docs/VALIDATION.md) | 自动测试、桌面交互检查与真实账号验收范围 |

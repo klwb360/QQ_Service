@@ -10,13 +10,16 @@ EXE 自带 Node.js 和 npm，无需另装 Node、运行脚本或打开浏览器�
 
 关闭窗口会把应用收进托盘，继续采集消息和执行定时任务。右键托盘图标或「应用」菜单选择 **完全退出** 才会停止后台。若无法创建托盘，关闭窗口会完全退出。重复双击 EXE 会唤起已有窗口。
 
-已启动的 NapCat Docker 容器在应用退出后会继续运行；需要停止时先在面板操作。电脑休眠、关机或应用完全退出时不采集新消息，也不补跑错过的定时汇总。
+已启动的 NapCat Docker 容器在应用退出后会继续运行；需要停止时先在面板操作。原生方式的 NapCat 由本人单独启动和停止，QQ_Service 不管理它的进程。电脑休眠、关机或应用完全退出时不采集新消息，也不补跑错过的定时汇总。
 
 ## 2. 安装所需模块
 
-接入 QQ 需要先安装并启动 [Docker Desktop](https://docs.docker.com/desktop/setup/install/windows-install/)，使用 Linux 容器后端。首次启用 WSL 2 可能需要管理员操作和重启；仪表盘检查环境状态，不能代替 BIOS 设置。
+接入 QQ 有两种部署方式：
 
-在「总览」点击 **一键安装所选模块**，到「模块管理」查看进度与错误。
+- **无需 Docker**：用官方 Windows 一键安装器部署原生 NapCat，再填写本机 OneBot 地址与 Token。现有 v0.2.1 EXE 即可连接，具体步骤见 [Windows 原生 NapCat 指南](NATIVE_NAPCAT_WINDOWS.md)。原生进程由本人启动，应用内 Docker 模块按钮不管理它。
+- **应用内 Docker 安装**：先安装并启动 [Docker Desktop](https://docs.docker.com/desktop/setup/install/windows-install/)，使用 Linux 容器后端。首次启用 WSL 2 可能需要管理员操作和重启；仪表盘检查环境状态，不能代替 BIOS 设置。
+
+使用应用管理的 Docker 方式时，在「总览」点击 **一键安装所选模块**，到「模块管理」查看进度与错误。原生方式安装 Codex 时请取消 NapCat 勾选；Codex 不需要 Docker。
 
 | 模块 | 用途 | 当前安装方式 |
 | --- | --- | --- |
@@ -30,7 +33,7 @@ NapCat 首次拉取后记录镜像 SHA-256 摘要，以后按摘要启动。Code
 
 ## 3. 登录 QQ 与模型
 
-在「账号与模型」点击 **打开 QQ 登录页面**，按提示进入 NapCat WebUI，再用手机扫码登录机器人小号。填写 **本人 QQ 号** 和 **机器人 QQ 号**，两个账号应不同。小号需要加入希望处理的群。
+Docker 方式安装完成后，在「账号与模型」点击 **打开 QQ 登录页面**，按提示进入 NapCat WebUI，再用手机扫码登录机器人小号。原生方式先在官方启动器登录，并按 [原生指南](NATIVE_NAPCAT_WINDOWS.md) 配好正向 WebSocket。填写 **本人 QQ 号** 和 **机器人 QQ 号**，两个账号应不同。小号需要加入希望处理的群。
 
 DeepSeek 使用 API：填写 API Key，选择模型并启用，可在面板测试连通。密钥只交给后台调用 DeepSeek 官方接口。
 
@@ -100,6 +103,7 @@ DeepSeek/OneBot 凭据用 AES-GCM 保存，密钥位于同一数据目录，用�
 
 | 情况 | 原因与处理 |
 | --- | --- |
+| 安装 NapCat 提示找不到 docker | 应用内安装按钮使用 Docker；先安装 Docker Desktop，或按 [原生指南](NATIVE_NAPCAT_WINDOWS.md) 使用无需 Docker 的方式 |
 | 模块已安装，但 QQ 未连接 | 还需启动 Docker/NapCat、扫码登录和应用 QQ 配置；查看四种独立状态 |
 | 工作群汇总提示没有缓存 | 只处理机器人连接后实际收到的选定群消息，不回填全部历史 |
 | 收藏返回不支持的结构 | 上游版本或接口返回不兼容；页面报告错误，不生成替代数据 |

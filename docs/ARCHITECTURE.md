@@ -4,6 +4,8 @@
 
 QQ_Service 采用一个 Electron 桌面壳、一个本地 Node.js 后台和两个按需安装的外部模块。QQ 连接交给 NapCat，个人 GPT 订阅交给官方 Codex CLI；聊天、权限、汇总、收藏和配置管理由项目自己的代码实现。
 
+OneBot 消息运行时不依赖 Docker，可以直接连接原生 NapCat。当前安装器管理的是 Docker 部署；Windows 原生方式由官方安装器单独部署并提供同一本机接口，见 [原生接入指南](NATIVE_NAPCAT_WINDOWS.md)。
+
 ## 各功能的代码入口
 
 | 功能 | 主要代码 | 实现方式 |
@@ -30,6 +32,7 @@ flowchart LR
   Server --> Config[草稿与已应用配置 / 本地凭据]
   Server --> Runtime[消息策略与任务运行时]
   NapCat --> Runtime
+  Native[NapCat Windows 原生] -->|OneBot v11| Runtime
   Runtime --> Store[SQLite 历史与原文依据]
   Runtime --> DS[DeepSeek API]
   Runtime --> CLI
