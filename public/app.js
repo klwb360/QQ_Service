@@ -477,6 +477,7 @@
   }
   function renderPageContext() {
     const isAccountPage = currentPage === 'connections' || currentPage === 'settings';
+    $('.page-heading').classList.toggle('hidden', isAccountPage);
     $('.account-context').classList.toggle('hidden', isAccountPage);
     $('.config-bar').classList.toggle('hidden', isAccountPage);
     $('#no-accounts').classList.toggle('hidden', accounts.length !== 0 || isAccountPage);

@@ -37,12 +37,12 @@ QQ_Service 是支持多个 QQ 账号同时在线的本地助手。「账号控�
 
 ## 下载与快速开始
 
-文档版本：**v0.4.0**，适用于 **Windows 10/11 x64**。下载文件以对应 Release 的实际发布资产为准。
+文档版本：**v0.4.1**，适用于 **Windows 10/11 x64**。下载文件以对应 Release 的实际发布资产为准。
 
 | 下载 | 说明 |
 | --- | --- |
-| [QQ_Service-0.4.0-Windows-x64.exe](https://github.com/klwb360/QQ_Service/releases/download/v0.4.0/QQ_Service-0.4.0-Windows-x64.exe) | 便携应用，自带 Node.js 和 npm，双击启动 |
-| [SHA256 校验文件](https://github.com/klwb360/QQ_Service/releases/download/v0.4.0/QQ_Service-0.4.0-Windows-x64.exe.sha256) | 用于核对下载文件 |
+| [QQ_Service-0.4.1-Windows-x64.exe](https://github.com/klwb360/QQ_Service/releases/download/v0.4.1/QQ_Service-0.4.1-Windows-x64.exe) | 便携应用，自带 Node.js 和 npm，双击启动 |
+| [SHA256 校验文件](https://github.com/klwb360/QQ_Service/releases/download/v0.4.1/QQ_Service-0.4.1-Windows-x64.exe.sha256) | 用于核对下载文件 |
 | [最新发布与更新说明](https://github.com/klwb360/QQ_Service/releases/latest) | 查看已发布版本和更新记录 |
 
 1. **创建账号配置**：首次进入「账号控制」只显示创建入口。输入希望接入的 QQ 号，可同时选择 API Key 和 ChatGPT 订阅。每个账号有自己的展开面板、参数与数据，可以同时运行。
