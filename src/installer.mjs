@@ -8,7 +8,6 @@ import path from 'node:path';
 const NAPCAT_IMAGE = 'mlikiowa/napcat-docker:v4.18.37';
 const NAPCAT_VERSION = '4.18.37';
 const CODEX_VERSION = '0.149.1';
-const CONTAINER_NAME = 'qqbridge-napcat';
 const MANAGED_LABEL = 'io.qqbridge.managed';
 const PROJECT_LABEL = 'io.qqbridge.project';
 const LOG_LIMIT = 128 * 1024;
@@ -17,7 +16,7 @@ const MODULES = [
   { id: 'napcat', name: 'QQ / NapCat', kind: 'docker', description: '官方 NapCat 镜像；安装后仍需在本机 WebUI 扫码登录 QQ。' },
   { id: 'codex', name: 'GPT 订阅 / Codex', kind: 'npm', description: '官方 Codex CLI；使用独立登录目录，仅供本人请求及已授权的后台汇总。' },
   { id: 'deepseek', name: 'DeepSeek', kind: 'builtin', description: '内置 API 接入；填写 API Key 后在功能配置中启用。' },
-  { id: 'summary', name: '通知汇总', kind: 'builtin', description: '内置工作群消息收集与汇总；工作群只读。' },
+  { id: 'summary', name: '通知汇总', kind: 'builtin', description: '内置选定群消息收集与汇总；向 QQ 发送需在该账号的消息权限中单独授权。' },
   { id: 'favorites', name: 'QQ 我的收藏', kind: 'builtin', description: '内置当前登录账号的收藏列表读取；完整正文和附件取决于 QQ 接口。' },
 ];
 
@@ -26,6 +25,30 @@ function problem(message, statusCode = 502, details) {
   error.statusCode = statusCode;
   if (details) error.details = details;
   return error;
+}
+
+// Locate Docker Desktop without modifying PATH. The injected filesystem check
+// keeps Windows path discovery testable on other development platforms.
+export function resolveDockerExecutable({ platform = process.platform, env = process.env, exists = existsSync } = {}) {
+  if (platform !== 'win32') return 'docker';
+  const value = (name) => Object.entries(env).find(([key]) => key.toUpperCase() === name)?.[1] || '';
+  const candidates = [];
+  for (const directory of (value('PATH') || '').split(';').filter(Boolean)) {
+    candidates.push(path.win32.join(directory.replace(/^"|"$/g, ''), 'docker.exe'));
+  }
+  const programFiles = value('PROGRAMFILES');
+  const programW6432 = value('PROGRAMW6432');
+  for (const directory of new Set([programFiles, programW6432, 'C:\\Program Files'].filter(Boolean))) {
+    candidates.push(path.win32.join(directory, 'Docker', 'Docker', 'resources', 'bin', 'docker.exe'));
+  }
+  const localAppData = value('LOCALAPPDATA');
+  if (localAppData) {
+    for (const directory of [
+      ['Programs', 'DockerDesktop'], ['Programs', 'Docker', 'Docker'],
+      ['Programs', 'Docker'], ['Docker', 'Docker'],
+    ]) candidates.push(path.win32.join(localAppData, ...directory, 'resources', 'bin', 'docker.exe'));
+  }
+  return [...new Set(candidates)].find((candidate) => exists(candidate)) || 'docker';
 }
 
 async function readJson(file, fallback) {
@@ -83,10 +106,10 @@ function terminateOwnedProcess(info) {
 }
 
 // Fixed, trusted argv only. Output is bounded here; the server additionally redacts it.
-function runProcess(command, args, { cwd, env, onLog, timeout = 60_000, allowFailure = false, children } = {}) {
+function runProcess(command, args, { cwd, env, onLog, timeout = 60_000, allowFailure = false, children, docker = false } = {}) {
   let argv = args;
   let childEnv = env || process.env;
-  if (command === 'docker') {
+  if (docker) {
     const localHost = process.platform === 'win32' ? 'npipe:////./pipe/docker_engine' : 'unix:///var/run/docker.sock';
     argv = ['--host', localHost, ...args];
     childEnv = Object.fromEntries(Object.entries(childEnv).filter(([key]) => !/^DOCKER_(HOST|CONTEXT|TLS|TLS_VERIFY|CERT_PATH)$/i.test(key)));
@@ -145,7 +168,11 @@ function runProcess(command, args, { cwd, env, onLog, timeout = 60_000, allowFai
       if (finished) return;
       finished = true;
       clearTimeout(timer);
-      const message = error.code === 'ENOENT' ? `找不到可执行程序 ${path.basename(command)}` : error.message;
+      const message = error.code === 'ENOENT'
+        ? docker
+          ? '未找到 Docker Desktop。Docker 仅用于应用内安装和管理 NapCat；若已安装 Windows 原生 NapCat，可直接配置 OneBot 连接，无需安装 Docker。'
+          : `找不到可执行程序 ${path.basename(command)}`
+        : error.message;
       reject(problem(message));
     });
     child.once('close', (code, signal) => {
@@ -172,7 +199,7 @@ async function ensurePortFree(port) {
   });
 }
 
-export function createInstaller({ dataDir, getConfig, getSecret, setSecret, log = () => {} }) {
+export function createInstaller({ dataDir, profileId, legacy = false, getConfig, getSecret, setSecret, log = () => {} }) {
   const root = path.resolve(dataDir);
   const recordFile = path.join(root, 'module-state.json');
   const napcatDir = path.join(root, 'modules', 'napcat');
@@ -182,6 +209,9 @@ export function createInstaller({ dataDir, getConfig, getSecret, setSecret, log 
   const codexWorkspace = path.join(root, 'codex-workspace');
   const codexCli = path.join(codexDir, 'node_modules', '@openai', 'codex', 'bin', 'codex.js');
   const projectId = createHash('sha256').update(root).digest('hex').slice(0, 24);
+  // Root-derived names cannot be supplied by requests. Preserve the existing
+  // installation name for migrated profiles and older single-account callers.
+  const containerName = legacy || profileId === undefined ? 'qqbridge-napcat' : `qqbridge-napcat-${projectId}`;
   let recordPromise;
   let saveQueue = Promise.resolve();
   const operations = new Set();
@@ -191,7 +221,8 @@ export function createInstaller({ dataDir, getConfig, getSecret, setSecret, log 
 
   function run(command, args, options = {}) {
     if (disposed) return Promise.reject(problem('安装器已经关闭。', 409));
-    return runProcess(command, args, { ...options, children });
+    const docker = command === 'docker';
+    return runProcess(docker ? resolveDockerExecutable() : command, args, { ...options, children, docker });
   }
 
   async function dispose() {
@@ -285,14 +316,14 @@ export function createInstaller({ dataDir, getConfig, getSecret, setSecret, log 
         const result = await run('wsl.exe', ['--version'], { timeout: 15_000, allowFailure: true });
         checks.wsl = { available: result.code === 0, message: result.output.slice(0, 1200) };
       } catch (error) { checks.wsl = { available: false, message: error.message }; }
-      checks.setupGuide = '请安装并启动 Docker Desktop，使用 Linux 容器。首次启用 WSL 2 可能需要管理员操作及重启；BIOS 硬件虚拟化需在电脑设置中开启。';
+      checks.setupGuide = '仅使用应用内安装和管理 NapCat 时需要 Docker Desktop（Linux 容器）；Windows 原生 NapCat 可直接通过 OneBot 连接，无需 Docker。首次启用 WSL 2 可能需要管理员操作及重启；BIOS 硬件虚拟化需在电脑设置中开启。';
     }
     checks.dockerInstallUrl = 'https://docs.docker.com/desktop/setup/install/windows-install/';
     return checks;
   }
 
   async function inspectContainer() {
-    const result = await run('docker', ['container', 'inspect', CONTAINER_NAME], { timeout: 15_000, allowFailure: true });
+    const result = await run('docker', ['container', 'inspect', containerName], { timeout: 15_000, allowFailure: true });
     if (result.code !== 0) {
       if (/No such (object|container)/i.test(result.output)) return null;
       throw problem('无法检查 NapCat 容器。', 502, result.output.slice(-1500));
@@ -300,7 +331,7 @@ export function createInstaller({ dataDir, getConfig, getSecret, setSecret, log 
     const container = JSON.parse(result.output)[0];
     const labels = container.Config?.Labels || {};
     if (labels[MANAGED_LABEL] !== 'true' || labels[PROJECT_LABEL] !== projectId) {
-      throw problem(`已存在名为 ${CONTAINER_NAME} 的非本项目容器，已停止操作。请先自行更名。`, 409);
+      throw problem(`已存在名为 ${containerName} 的非本项目容器，已停止操作。请先自行更名。`, 409);
     }
     return container;
   }
@@ -450,7 +481,7 @@ export function createInstaller({ dataDir, getConfig, getSecret, setSecret, log 
       };
       if (container && (container.Config.Image !== module.imageDigest || !desiredBindings(container, 3001, ports.wsPort) || !desiredBindings(container, 6099, ports.webPort))) {
         emit(onLog, '正在重新创建本项目的 NapCat 容器，持久数据会保留。');
-        await run('docker', ['container', 'rm', '-f', CONTAINER_NAME], { timeout: 60_000, onLog });
+        await run('docker', ['container', 'rm', '-f', containerName], { timeout: 60_000, onLog });
         container = null;
       }
       if (!container?.State?.Running) {
@@ -458,14 +489,14 @@ export function createInstaller({ dataDir, getConfig, getSecret, setSecret, log 
         await ensurePortFree(ports.webPort);
       }
       if (container) {
-        await run('docker', ['container', container.State?.Running ? 'restart' : 'start', CONTAINER_NAME], { timeout: 90_000, onLog });
+        await run('docker', ['container', container.State?.Running ? 'restart' : 'start', containerName], { timeout: 90_000, onLog });
       } else {
         const mount = (directory, destination) => {
           const source = path.join(napcatDir, directory);
           if (source.includes(',')) throw problem('数据目录不能包含逗号，请将项目移动到其他路径。', 400);
           return `type=bind,source=${source},target=${destination}`;
         };
-        await run('docker', ['run', '-d', '--name', CONTAINER_NAME, '--label', `${MANAGED_LABEL}=true`, '--label', `${PROJECT_LABEL}=${projectId}`, '--restart', 'unless-stopped',
+        await run('docker', ['run', '-d', '--name', containerName, '--label', `${MANAGED_LABEL}=true`, '--label', `${PROJECT_LABEL}=${projectId}`, '--restart', 'unless-stopped',
           '-p', `127.0.0.1:${ports.wsPort}:3001`, '-p', `127.0.0.1:${ports.webPort}:6099`,
           '--mount', mount('qq', '/app/.config/QQ'), '--mount', mount('config', '/app/napcat/config'), '--mount', mount('plugins', '/app/napcat/plugins'), module.imageDigest], { timeout: 90_000, onLog });
       }
@@ -481,7 +512,7 @@ export function createInstaller({ dataDir, getConfig, getSecret, setSecret, log 
       await requireDocker();
       const container = await inspectContainer();
       if (!container) return { running: false, message: '本项目 NapCat 容器尚未创建。' };
-      if (container.State?.Running) await run('docker', ['container', 'stop', CONTAINER_NAME], { timeout: 90_000, onLog });
+      if (container.State?.Running) await run('docker', ['container', 'stop', containerName], { timeout: 90_000, onLog });
       emit(onLog, '本项目 NapCat 容器已停止，登录和配置数据保留。');
       return { running: false };
     });
@@ -540,7 +571,7 @@ export function createInstaller({ dataDir, getConfig, getSecret, setSecret, log 
       const installed = builtin || Boolean(saved?.installed && (item.id !== 'codex' || existsSync(codexCli)));
       const enabled = item.id === 'deepseek' ? config.models?.deepseek?.enabled : item.id === 'codex' ? config.models?.codex?.enabled : item.id === 'napcat' ? config.qq?.enabled : config[item.id]?.enabled;
       const moduleState = operations.has(item.id) ? 'busy' : item.id === 'napcat' && containerError ? 'error' : item.id === 'napcat' && container?.State?.Running ? 'running' : installed ? (builtin ? 'available' : 'installed') : 'not_installed';
-      return { ...item, installed, enabled: Boolean(enabled), state: moduleState, version: saved?.version || (builtin ? 'builtin' : ''), ...(item.id === 'napcat' ? { imageDigest: saved?.imageDigest || '', containerName: CONTAINER_NAME, ...(containerError ? { message: containerError } : {}) } : {}) };
+      return { ...item, installed, enabled: Boolean(enabled), state: moduleState, version: saved?.version || (builtin ? 'builtin' : ''), ...(item.id === 'napcat' ? { imageDigest: saved?.imageDigest || '', containerName: containerName, ...(containerError ? { message: containerError } : {}) } : {}) };
     });
   }
 

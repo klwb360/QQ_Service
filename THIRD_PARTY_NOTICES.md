@@ -16,9 +16,9 @@ Electron 构建工具仅作为开发依赖，依其许可证使用。发布源�
 
 ## 用户按需另行安装或访问
 
-- **NapCatQQ / NapCat Docker**：未捆绑于本项目源码或 EXE。安装器引用固定官方 Docker 镜像，许可证见 [NapCatQQ LICENSE](https://github.com/NapNeko/NapCatQQ/blob/main/LICENSE)。其商业用途与分发限制需要单独遵守。
+- **NapCatQQ / NapCat Docker**：未捆绑于本项目源码或 EXE。应用安装器引用固定官方 Docker 镜像；原生 Windows 路径由用户从上游单独下载和安装。许可证见 [NapCatQQ LICENSE](https://github.com/NapNeko/NapCatQQ/blob/main/LICENSE)，商业用途与分发限制需单独遵守。
 - **OpenAI Codex CLI**：未捆绑于 EXE，通过官方 `@openai/codex@0.149.1` npm 包按需安装。源码和许可证见 [OpenAI Codex](https://github.com/openai/codex)。本人 ChatGPT 订阅授权及推理受相应服务条款与账户额度约束。
-- **Docker Desktop**：需要用户单独安装和启用，遵循 [Docker Desktop 条款](https://www.docker.com/legal/docker-subscription-service-agreement/)。
+- **Docker Desktop**：应用内 Docker 部署路径需要用户单独安装和启用；原生 NapCat 直连不依赖它。遵循 [Docker Desktop 条款](https://www.docker.com/legal/docker-subscription-service-agreement/)。
 - **DeepSeek API**：网络服务，需要用户提供自己的 API Key，遵循 [DeepSeek 平台](https://platform.deepseek.com/) 的服务条款与费用规则。
 
 QQ_Service 未修改或重新许可这些上游项目。发布或商业使用前应检查上游最新许可与服务条件。

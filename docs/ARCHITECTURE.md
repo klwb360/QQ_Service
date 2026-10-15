@@ -1,111 +1,135 @@
 # 功能实现与架构
 
-[返回首页](../README.md) · [使用指南](USAGE.md) · [开发指南](DEVELOPMENT.md)
+[返回首页](../README.md) · [使用指南](USAGE.md) · [开发指南](DEVELOPMENT.md) · [接口契约](CONTRACT.md)
 
-QQ_Service 采用一个 Electron 桌面壳、一个本地 Node.js 后台和两个按需安装的外部模块。QQ 连接交给 NapCat，个人 GPT 订阅交给官方 Codex CLI；聊天、权限、汇总、收藏和配置管理由项目自己的代码实现。
+v0.3.0 使用一个 Electron 桌面壳和一个本地 Node.js 管理后台，同时运行多个相互隔离的 QQ 配置。每个账号拥有独立的配置、模型凭据、SQLite、QQ 连接、任务队列、NapCat 实例资料及 Codex 登录目录。
 
-OneBot 消息运行时不依赖 Docker，可以直接连接原生 NapCat。当前安装器管理的是 Docker 部署；Windows 原生方式由官方安装器单独部署并提供同一本机接口，见 [原生接入指南](NATIVE_NAPCAT_WINDOWS.md)。
+NapCat 是 QQ 连接组件，负责实际登录和消息接口；DeepSeek/Codex 负责分析文字；应用自己的后台决定执行什么任务、允许向哪里发送。输入 QQ 号不是登录动作，模型也不直接获得任意 QQ 操作能力。
 
 ## 各功能的代码入口
 
 | 功能 | 主要代码 | 实现方式 |
 | --- | --- | --- |
-| 界面与参数表单 | [public/index.html](../public/index.html)、[public/app.js](../public/app.js) | 原生 HTML/CSS/JS 调用本地 API，显示状态、编辑草稿和执行固定操作 |
-| EXE、托盘与后台 | [desktop/main.cjs](../desktop/main.cjs)、[desktop/preload.cjs](../desktop/preload.cjs) | Electron 单实例窗口、托盘、原生导出；启动附带 Node 子进程，通过 IPC 管理退出 |
-| 配置管理 | [src/config.mjs](../src/config.mjs)、[src/server.mjs](../src/server.mjs) | 校验参数与依赖，区分草稿和已应用配置，保存上一份配置并在应用失败时恢复 |
-| 一键安装 | [src/installer.mjs](../src/installer.mjs) | 固定模块目录与命令参数；Docker 安装 NapCat，npm 安装 Codex，分别检查安装和运行状态 |
-| QQ 消息与群聊 | [src/runtime.mjs](../src/runtime.mjs) | OneBot v11 WebSocket、登录身份校验、触发规则、队列、冷却、断线重连和统一发送权限 |
-| DeepSeek / GPT | [src/providers.mjs](../src/providers.mjs) | DeepSeek 官方 HTTP API；官方 Codex CLI 子进程，解析完成结果与错误 |
-| 通知 / 收藏整理 | [src/runtime.mjs](../src/runtime.mjs) | `runSummary`、`scheduleTick`、`syncFavorites`、`runFavoritesSummary` 组织来源、调用模型、保存依据和发送结果 |
-| 本地存储 | [src/store.mjs](../src/store.mjs) | JSON 配置、AES-GCM 凭据及 SQLite 消息、收藏、汇总与任务记录 |
+| 多账号界面 | [public/index.html](../public/index.html)、[public/app.js](../public/app.js) | 账号列表与选择器；任务参数和群/私聊权限两个子菜单；按账号保留编辑状态 |
+| EXE 与托盘 | [desktop/main.cjs](../desktop/main.cjs)、[desktop/preload.cjs](../desktop/preload.cjs) | 单实例窗口、原生导出、Node 子进程和全部后台生命周期 |
+| 账号目录 | [src/accounts.mjs](../src/accounts.mjs) | 稳定账号 ID、资料目录和可用/规划平台注册信息 |
+| 账号及 API | [src/server.mjs](../src/server.mjs)、[src/account-service.mjs](../src/account-service.mjs) | 本地请求隔离、账号 ID 路由、各账号异步任务与显式权限释放事务 |
+| 配置与迁移 | [src/config.mjs](../src/config.mjs) | schema 2 默认只读、场景依赖校验及 v1 权限精确迁移 |
+| 模块安装 | [src/installer.mjs](../src/installer.mjs) | 每账号固定模块动作、独立 Docker 容器/登录卷/端口、独立 Codex 安装与认证 |
+| QQ 与任务 | [src/runtime.mjs](../src/runtime.mjs) | OneBot 连接与身份校验、群列表、队列、聊天、汇总、收藏、统一发送门 |
+| 模型调用 | [src/providers.mjs](../src/providers.mjs) | DeepSeek 官方 HTTP API；受限官方 Codex CLI 子进程 |
+| 本地存储 | [src/store.mjs](../src/store.mjs) | 每账号 JSON 草稿/应用配置、AES-GCM 凭据与 SQLite 消息/依据/任务 |
 
-## 总体流程
+## 账号与消息流程
 
 ```mermaid
 flowchart LR
-  Desktop[Electron 窗口 / 托盘] -->|启动 / IPC 退出| Server[自带 Node 管理后台]
-  UI[沙箱仪表盘窗口] -->|127.0.0.1 HTTP| Server
-  Desktop -->|固定原生导出接口| UI
-  Server --> Installer[固定模块安装器]
-  Installer --> NapCat[NapCat Docker]
-  Installer --> CLI[官方 Codex CLI]
-  Server --> Config[草稿与已应用配置 / 本地凭据]
-  Server --> Runtime[消息策略与任务运行时]
-  NapCat --> Runtime
-  Native[NapCat Windows 原生] -->|OneBot v11| Runtime
-  Runtime --> Store[SQLite 历史与原文依据]
-  Runtime --> DS[DeepSeek API]
-  Runtime --> CLI
-  Runtime --> Gate[统一出站权限检查]
-  Gate --> NapCat
+  Desktop[Electron 窗口 / 托盘] -->|启动及 IPC 退出| Server[本地 Node 管理后台]
+  UI[仪表盘] -->|账号 ID + 本机会话校验| Server
+  Server --> Catalog[accounts.json / 平台清单]
+  Server --> A[账号 A 运行时]
+  Server --> B[账号 B 运行时]
+  A <--> NA[账号 A NapCat / OneBot]
+  B <--> NB[账号 B NapCat / OneBot]
+  A <--> SA[(账号 A SQLite / 凭据)]
+  B <--> SB[(账号 B SQLite / 凭据)]
+  A --> Models[DeepSeek / 各自 Codex 登录]
+  B --> Models
+  A --> Gate[各自场景 + 目标 + 释放权限门]
+  B --> Gate
+  Gate -->|仅明确授权| NA
+  Gate -->|仅明确授权| NB
 ```
 
-`src/server.mjs` 管理 HTTP 接口、请求保护、异步安装任务、配置应用及恢复。`src/config.mjs` 校验统一配置。`src/store.mjs` 保管凭据、消息和依据。`src/installer.mjs` 管理外部模块、固定版本与本机 Docker。`src/runtime.mjs` 负责 OneBot、用途策略、队列、定时汇总和发送；`src/providers.mjs` 封装模型调用。
+每个操作的 URL 带稳定账号 ID。切换界面只改变正在编辑和查看的账号，不改变已经开始的模型请求、设备授权、安装任务或结果目标。账号实例各自持有 OneBot socket、队列、冷却计时器和配置 epoch；一个账号撤权或重连不应影响其他账号。
 
-`desktop/main.cjs` 管理单实例、窗口、托盘、原生菜单与后台生命周期；后台用独立 Node 24 运行，避免依赖 Electron 内置 Node 的 SQLite 支持。`desktop/preload.cjs` 只暴露桌面标识、版本和脱敏配置导出；渲染层关闭 Node integration，启用 context isolation 与 sandbox。页面导航和资源仅允许本次后台地址，官方授权外链交给默认浏览器。后台收到 IPC 退出或父连接断开时清理运行时和安装子进程；超时仅强制清理本应用的后台进程树。
+后台在 OneBot 握手调用 `get_login_info`，要求实际登录身份与该账号 `botQQ` 一致。群列表由 `get_group_list` 读取，返回只供选择，不自动生成读取或发送许可。两个账号配置不能共享正在使用的接口。
 
-`scripts/prepare-windows.mjs` 校验官方 Windows Node ZIP，再将生产后台、固定依赖与运行环境放到构建暂存目录。`electron-builder.yml` 将桌面壳打进 ASAR、Node/backend 作为独立 resources，生成便携 EXE。用户资料始终在 LocalAppData，而非便携展开目录。
+## 配置、场景与权限
 
-首版选择内置轻量运行时，统一控制消息发送与模型路由。AstrBot 没有作为必装依赖。后续可以使用它的 [公开 HTTP API](https://github.com/AstrBotDevs/AstrBot/blob/v4.28.2/docs/zh/dev/openapi.md) 加入配置档与插件管理适配器；接入时仍需确保所有发送经过统一网关，不能只依赖提示词或关闭 LLM 的配置。
+schema 2 保留 `botQQ`、`ownerQQ` 内部字段；界面分别解释为实际接入 QQ，以及可选的私聊操作者/整理接收对象，不再要求一开始区分主号、小号。
 
-## 聊天与模型路由
+新账号默认：
 
-NapCat 登录机器人 QQ 后提供 OneBot v11 WebSocket。`runtime.mjs` 连接本机接口，核对实际登录账号，接收消息并转为统一输入。只有选定群的消息进入缓存；未选群不触发模型。
+```json
+{
+  "permissions": { "released": false, "privateReplies": false },
+  "chat": { "enabled": false, "provider": "deepseek" },
+  "groups": [],
+  "summary": { "enabled": false, "sendToOwner": false },
+  "favorites": { "enabled": false, "provider": "deepseek" }
+}
+```
 
-社交群按真实 @、命令前缀或插话概率决定是否回复，再检查冷却时间。上下文按账号、群和用途过滤，调用 `providers.mjs` 中的 DeepSeek 通道。模型结果发送前重新检查当前权限，因此工作群和未选群不会成为出站目标。
+上面仅展示关键字段，完整配置见 [接口契约](CONTRACT.md)。新增群默认 `read: true, send: false`。`mode: work/social` 描述用途，不授予发送能力；工作群默认只读，用户明确设置 `send: true` 并释放权限后，也可按聊天规则触发 DeepSeek。
 
-本人私聊普通文字或 `/ds` 走 DeepSeek，`/gpt` 走 Codex。Codex 通过官方 `login --device-auth` 完成 ChatGPT 登录，使用独立 `CODEX_HOME` 与工作目录，通过 `exec` 处理文字；不读取 ChatGPT 网页会话，也不使用网页 token 代理。子进程环境不继承付费 API 凭据，额度失败不做 API 回退。
+账号功能参数负责启用聊天、通知和收藏、选择模型和运行参数；另一子菜单负责选定群、读取、发送与可选私聊目标。配置模型或登录 Codex 不更改 `permissions.released`。该字段既控制自动场景授权，也参与所有发送检查；未释放时仅按读取范围记录，不运行自动聊天或定时模型任务，面板明确发起的本地整理和连接测试仍可执行。
 
-Codex 推理使用只读沙箱、忽略用户配置与规则，并关闭多项工具功能；若事件流出现工具执行事件，拒绝任务结果。当前用途是文字处理，这些限制不等于独立操作系统隔离。
+任何 QQ 出站都经过统一 `destinationGate`，包含成功结果、错误提示和汇总分片：
 
-## 工作通知与收藏
+1. 任务仍属于当前账号和配置 epoch，连接身份一致。
+2. 账号已显式释放，相关场景仍启用。
+3. 群目标同时具有读取和发送许可；群自动回复使用已启用的 DeepSeek。
+4. 私聊目标是配置中的本人操作者，且独立允许私聊发送。
+5. 汇总来源仍为该账号当前允许读取的工作群。
 
-工作群消息只写入本地 SQLite，不逐条调用模型。手动汇总或每日定时任务读取当前账号的该群缓存，限制消息数量和文字长度，把消息 ID、发送者、时间和原文传给所选模型。输出解释通知、术语、行动项与原文期限；程序核对引用 ID，并保存输入依据与实际送达状态。结果只允许发送到本人私聊，也可选择仅保存在本地。
+提示词或 Codex 只读沙箱不替代这层权限。授权由后台固定规则执行，前端不提交任意 OneBot 操作、shell 命令或文件路径。
 
-每日任务使用运行电脑的本地时间，通过任务记录按群和日期去重；需要本人明确授权。应用退出、休眠或错过执行时间时不补跑。
+## 模型路由与账号任务
 
-收藏通过 NapCat 的 `get_collection_list` 读取当前账号的列表摘要，缓存收藏 ID、账号、时间和摘要。整理时检查缓存账号与当前账号一致，再调用汇总模型并核对收藏引用 ID。收藏整理可以独立于工作群汇总开关使用，但不运行定时收藏任务。当前没有收藏全文、附件、完整分页或跨账号收藏读取。
+群消息先判定是否允许读取，仅选定可读消息入库。允许发送、聊天启用且账号已释放后，再按真实 @、命令前缀或插话概率触发 DeepSeek，并检查冷却时间。上下文仅包含当前账号、当前群及用途下的资料，工作通知、收藏与其他群不作为普通群聊上下文。
 
-## 模块安装与本地数据
+本人私聊普通文字使用 `chat.provider`，可选择 DeepSeek 或 Codex，且只要求所选模型可用；`/ds`、`/gpt` 可切换已启用的模型。`/summary 群号`、`/favorites` 使用各自模型。这些命令仍需启用相关场景和私聊权限。默认聊天选 Codex 时不运行自动群聊；个人订阅只处理本人明确发起或授权的任务。
 
-安装器只有固定动作，前端提交模块 ID，不提交 shell 命令。外部进程使用固定参数和 `shell: false`。NapCat 镜像及 Codex 包固定版本，NapCat 拉取后记录镜像摘要；状态和错误由实际环境检查及任务输出获得。DeepSeek、通知汇总和收藏是内置功能，不是额外下载的插件。
+Codex 通过官方 `login --device-auth` 登录，每个账号独立 `CODEX_HOME` 和工作目录，`exec` 处理文字。子进程不继承付费 API 凭据；网页历史、记忆和自定义 GPTs 不会带入，失败不静默切换模型或计费通道。推理使用只读沙箱和受限工具配置，拒绝带工具执行事件或未完成的结果；这些限制不等于完整操作系统隔离。
 
-配置存放在 `config.json`；凭据存放在 `vault.json`，使用同目录 `vault.key` 加密；消息、汇总、收藏和任务存放在 `history.sqlite`。Codex 登录资料由 CLI 自行保存在独立目录。Windows 数据目录保留 `%LOCALAPPDATA%\QQBridgeDashboard`，更换 EXE 不改变资料位置。
+### 通知与收藏
 
-## 必须保持的约束
+通知汇总读取当前账号选定、可读工作群的缓存，限制条数和文字预算。模型接收消息 ID、发送者、时间和原文，输出通俗解释、行动项、原文期限和引用。程序核对引用 ID，保存证据与送达状态。默认仅本地保存；可在账号与私聊许可均已释放时发送指定本人，不把汇总发回源群。
 
-1. 社交群只能调用 DeepSeek；GPT 订阅只有本人私聊、本人明确发起或授权的汇总可以使用。
-2. 工作群和未选定群不能成为出站目标。即使任务发生错误，也不能把错误提示发到工作群。
-3. 工作、收藏与社交聊天上下文分开；新平台也必须按账号、会话和用途过滤资料。
-4. 运行中的旧模型任务在配置变更时取消；发送前按最新配置再次校验目标。
-5. 前端不能提交任意 shell 命令、任意下载源、任意文件路径或直接拿到 OneBot/API 凭据。
-6. 安装、服务运行、账号登录、模型连通是四种不同状态，分别显示。
+定时按运行电脑本地时间执行，按账号、群和日期去重，需明确后台授权及释放账号。定时器入口、排队和实际运行时检查释放状态；未释放时不自动调用模型。已释放且 `read:true/send:false` 的群可执行本地整理，不因自动整理获得发送许可。应用退出或休眠时不补跑。
 
-## 后续增加模块
+收藏通过 `get_collection_list` 读取实际登录账号的列表摘要，保存 CID、账号、时间和原摘要。整理时核对缓存账号，使用独立的 `favorites.provider`，不复用通知的模型和发送设置。面板整理默认本地保存；本人私聊请求仍走私聊权限门。暂不提供定时收藏、全文、附件、完整分页或跨账号收藏访问。
 
-安装器当前的模块目录定义包括 `id/name/kind/description`，外部模块另有固定版本、官方地址、持久目录和状态检查。增加一个模块需要实现对应固定动作与检查方法，不能把输入命令交给 shell。
+## 数据与模块隔离
 
-建议第二版把目录提取为模块 manifest，再实现安装任务的持久化、取消和显式更新/卸载。第一版不会静默更新上游镜像或执行任意第三方插件。
-
-## 后续增加应用
-
-第一版只支持一个 QQ 小号。未来新增 Telegram、飞书等适配器时，先将 OneBot 接收/操作从 `runtime.mjs` 提取为平台接口：
+默认根目录继续使用 `%LOCALAPPDATA%\QQBridgeDashboard`：
 
 ```text
-Adapter.connect() / disconnect() / identity()
-Adapter.onMessage -> {platform,accountId,sessionId,messageId,userId,time,text}
-Adapter.send(destination,text)   // 只由权限网关调用
-Adapter.readSources(options)    // 能力明确标注，不假定各平台都有收藏/历史
+accounts.json                  账号目录与稳定 ID
+accounts/<ID>/config.json      新账号草稿、应用与上一版本
+accounts/<ID>/vault.json       新账号加密凭据
+accounts/<ID>/vault.key        该账号加密密钥
+accounts/<ID>/history.sqlite   消息、收藏、汇总与任务
+accounts/<ID>/modules/         NapCat / Codex 与模块安装记录相关资料
+accounts/<ID>/codex-home/      官方 CLI 自行管理的独立认证目录
+accounts/<ID>/codex-workspace/ 独立文字任务工作目录
 ```
 
-工作流继续引用统一的消息、来源与模型接口。数据库已有账号、群、消息、用户和时间元数据；多平台接入前需增加 platform/sessionId 并迁移唯一键。现阶段不宣称可以无需改代码安装任意平台。
+每账号自己的 `module-state.json` 记录安装结果。Docker 容器名由项目目录稳定标识生成，并核对项目标签；登录卷、OneBot Token、WebUI Token 和端口各自独立，不接管同名的非本项目容器。NapCat 官方镜像固定版本，首次安装记录 RepoDigest 后按摘要启动；进程使用固定 argv 与 `shell: false`。
 
-## 配置应用语义
+原生 NapCat 不依赖 Docker，运行时直接连接其本机 OneBot；应用安装按钮仍只管理 Docker。原生多账号实例和 QQ 登录资料由用户按上游说明准备、启动及备份，见 [原生指南](NATIVE_NAPCAT_WINDOWS.md)。
 
-保存只写草稿和待应用凭据；应用进行依赖校验，再切换运行配置。配置或 OneBot Token、端口、机器人账号发生变化时重载相应部分。后台记录上一份普通配置；应用抛错时恢复配置与凭据并尝试恢复运行时。
+AES-GCM 避免配置与导出出现明文凭据，密钥同目录，因此不隔离拥有同一操作系统目录访问权的用户。Codex 认证文件由官方 CLI 管理，仪表盘不读取。日志与任务带明确账号标识，并对所有账号的凭据脱敏。
 
-账号是否登录以及第三方网络是否可用异步显示，连接失败不伪造成功，也不因临时网络失败丢弃用户已应用的参数。模块安装失败保留可诊断信息，已下载的独立模块保留，用户可重试。第一版不是跨文件系统、Docker 和远端账号的分布式事务；已发生的外部发送无法回滚。
+## 迁移与配置生命周期
 
-## 验证边界
+旧版单账号成为兼容 profile，继续使用原根目录、NapCat 卷和容器、Codex 登录目录，不移动会话资料。`migrateConfig` 对明确的 schema 1 文档迁移草稿、应用与上一版本，保留 revision；原文件备份为 `config.v1.backup.json`，重复启动不再次迁移。
 
-自动测试覆盖最重要的权限和配置语义，使用本地模拟 OneBot 与模型。v0.2.1 已通过 Windows runner 的自动测试、打包与 Release 发布。Windows 桌面启动及托盘操作、Docker Desktop 文件挂载、真实 QQ 扫码、Codex 设备码认证和模型收发仍需在用户的 Windows 电脑完成最终验收，见 [验证记录](VALIDATION.md)。
+旧社交群已有的发送能力、本人私聊能力按原配置映射；旧工作群 `send: false`，不扩大旧授权。新建 profile 一律从只读默认值开始。
+
+保存只写该账号草稿和待应用凭据。普通应用或回滚更新配置并回到只读；只有 `/permissions/release` 校验当前保存 revision 后，才能设置 `released: true`。撤销即时禁止发送并取消旧任务。API 输入不能通过普通保存伪造释放状态。
+
+配置应用失败恢复原配置和凭据并尝试恢复该账号运行时。第三方登录和网络状态异步显示，连接失败不伪造成功。已发生的外部发送无法回滚。
+
+## 桌面与构建
+
+Electron 渲染层关闭 Node integration，启用 context isolation 与 sandbox，只访问本次后台的同源资源。预加载仅暴露桌面标识、版本和固定导出操作；导出携带 profile ID，主进程使用对应账号的固定 API。官方授权链接和本机 NapCat 页面交给默认浏览器。
+
+后台由附带的 Node 24 子进程运行。完全退出或父 IPC 断开时关闭所有账号运行时和安装子进程，超时只清理本应用拥有的后台进程树。桌面壳放在 ASAR，Node/npm 与后台放在独立 resources；构建不包含用户资料。
+
+## 平台扩展与验证范围
+
+当前平台注册 QQ 为已实现，微信与 Telegram 为规划项；不能仅选择平台名称就使用。将来需增加真实连接、身份、消息、来源读取和受控发送适配器，并继续使用账号、会话、用途与权限门约束。AstrBot 也未作为本版必装依赖。
+
+自动测试使用模拟 OneBot 和模型。v0.2.1 已有 Windows CI 发布记录，本版结果以 [验证记录](VALIDATION.md) 为准；真实 QQ 扫码、真实模型账号以及 Windows 桌面、Docker Desktop/原生多账号操作仍需实际验收，不用协议模拟冒充账号联调。

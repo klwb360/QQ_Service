@@ -7,6 +7,7 @@ const require = createRequire(import.meta.url);
 const {
   backendUrlForPort, parseBackendReady, isDashboardResource,
   isDashboardNavigation, isAllowedExternalUrl, defaultDataDir,
+  isAccountProfileId, configExportPath,
 } = require('../desktop/security.cjs');
 
 test('桌面只信任后台公布的本机端口，拒绝无效启动记录', () => {
@@ -65,4 +66,21 @@ test('桌面资料放在用户目录，显式目录覆盖保留重启后的配�
   assert.equal(defaultDataDir('win32', {}, '/users/me'), path.join('/users/me', 'AppData', 'Local', 'QQBridgeDashboard'));
   assert.equal(defaultDataDir('linux', {}, '/users/me'), path.join('/users/me', '.local', 'share', 'qq-bridge-dashboard'));
   assert.equal(defaultDataDir('win32', { QQ_DASHBOARD_DATA_DIR: './test-profile' }, '/users/me'), path.resolve('./test-profile'));
+});
+
+test('原生导出仅接受稳定账号 ID，并使用固定账号端点', () => {
+  const id = '285fb128-7b6e-4d26-8858-c7e43f76407c';
+  for (const value of [id, 'legacy']) {
+    assert.equal(isAccountProfileId(value), true);
+    assert.equal(configExportPath(value), `/api/accounts/${value}/config/export`);
+  }
+  assert.equal(configExportPath(), '/api/config/export');
+  for (const value of [
+    '', null, {}, [], 3, '../config/export', 'legacy/../../config/export',
+    `${id}?url=http://evil.test`, `${id}#../config/export`, 'http://evil.test/',
+    `/api/accounts/${id}/config/export`, '%2e%2e', ` ${id}`, `${id}\n`,
+  ]) {
+    assert.equal(isAccountProfileId(value), false);
+    assert.throws(() => configExportPath(value), /账号标识无效/);
+  }
 });

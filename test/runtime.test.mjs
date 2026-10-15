@@ -39,10 +39,12 @@ test('模拟 QQ 端到端验证工作群只读、个人订阅边界、私密上�
   config.ownerQQ = '111111'; config.botQQ = '999999'; config.qq.enabled = true;
   config.qq.wsUrl = `ws://127.0.0.1:${wsServer.address().port}`;
   config.models.deepseek.enabled = true; config.models.codex.enabled = true;
+  config.permissions = { released: true, privateReplies: true }; config.chat.enabled = true;
   config.summary.enabled = true; config.summary.provider = 'codex'; config.favorites.enabled = true;
+  config.summary.sendToOwner = true; config.favorites.provider = 'codex';
   config.groups = [
-    { id: '222222', name: '朋友', mode: 'social', trigger: 'prefix', prefix: '/ai', cooldownSeconds: 5, probability: 0 },
-    { id: '333333', name: '工作', mode: 'work', trigger: 'prefix', prefix: '/ai', cooldownSeconds: 5, probability: 0 }
+    { id: '222222', name: '朋友', mode: 'social', read: true, send: true, trigger: 'prefix', prefix: '/ai', cooldownSeconds: 5, probability: 0 },
+    { id: '333333', name: '工作', mode: 'work', read: true, send: false, trigger: 'prefix', prefix: '/ai', cooldownSeconds: 5, probability: 0 }
   ];
   store.saveDraft(config); store.commitDraft();
   const runtime = createRuntime({ getConfig: () => config, getSecret: () => 'mock-token', store,
@@ -92,7 +94,7 @@ test('模拟 QQ 端到端验证工作群只读、个人订阅边界、私密上�
     await assert.rejects(runtime.runFavoritesSummary(), /账号|账户/);
     store.saveFavorites(existingFavorites); config.summary.enabled = true;
     assert.equal(outbound.every(p => !p.params.group_id || p.params.group_id === '222222'), true);
-    await assert.rejects(runtime.runSummary('222222'), /选定的工作群/);
+    await assert.rejects(runtime.runSummary('222222'), /选定.*工作群/);
     await assert.rejects(runtime.runSummary('333333', { source: 'schedule' }), /明确授权/);
   } finally {
     await runtime.stop(); for (const client of wsServer.clients) client.terminate();
@@ -100,7 +102,7 @@ test('模拟 QQ 端到端验证工作群只读、个人订阅边界、私密上�
   }
 });
 
-test('规则应用时取消旧推理，社交群切换成工作群后旧回复不能发出', async () => {
+test('规则应用时取消旧推理，撤销群发送权限后旧回复不能发出', async () => {
   const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'qqbridge-policy-'));
   const store = createStore(dir); const wsServer = new WebSocketServer({ host: '127.0.0.1', port: 0 });
   await new Promise(resolve => wsServer.once('listening', resolve));
@@ -116,7 +118,8 @@ test('规则应用时取消旧推理，社交群切换成工作群后旧回复�
   let config = structuredClone(DEFAULT_CONFIG);
   config.ownerQQ = '111111'; config.botQQ = '999999'; config.qq.enabled = true;
   config.qq.wsUrl = `ws://127.0.0.1:${wsServer.address().port}`; config.models.deepseek.enabled = true;
-  config.groups = [{ id: '222222', mode: 'social', trigger: 'prefix', prefix: '/ai', cooldownSeconds: 5, probability: 0 }];
+  config.permissions = { released: true, privateReplies: false }; config.chat.enabled = true;
+  config.groups = [{ id: '222222', mode: 'social', read: true, send: true, trigger: 'prefix', prefix: '/ai', cooldownSeconds: 5, probability: 0 }];
   const runtime = createRuntime({ getConfig: () => config, getSecret: () => 'token', store, installer: {}, providers: {
     deepseek: () => { inferred = true; return new Promise(resolve => { resolveModel = resolve; }); }
   } });
@@ -124,7 +127,7 @@ test('规则应用时取消旧推理，社交群切换成工作群后旧回复�
     await runtime.connect();
     peer.send(JSON.stringify({ post_type: 'message', message_type: 'group', self_id: 999999, user_id: 555555, group_id: 222222, message_id: 'old', message: [{ type: 'text', data: { text: '/ai 旧任务' } }] }));
     await waitFor(() => inferred);
-    config = structuredClone(config); config.groups[0].mode = 'work';
+    config = structuredClone(config); config.groups[0].mode = 'work'; config.groups[0].send = false;
     await runtime.reload(); resolveModel({ provider: 'deepseek', text: '旧任务返回' });
     await waitFor(() => !runtime.status().queue.running);
     assert.equal(outbound.length, 0);

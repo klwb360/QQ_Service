@@ -9,5 +9,5 @@ const version = argument?.slice('--qqbridge-version='.length) || '';
 contextBridge.exposeInMainWorld('qqBridgeDesktop', Object.freeze({
   isDesktop: true,
   version,
-  exportConfig: () => ipcRenderer.invoke('qqbridge:export-config'),
+  exportConfig: accountId => ipcRenderer.invoke('qqbridge:export-config', accountId),
 }));

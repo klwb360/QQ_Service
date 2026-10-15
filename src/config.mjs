@@ -1,30 +1,56 @@
 import { createHash } from 'node:crypto';
 
 export const DEFAULT_CONFIG = {
-  schemaVersion: 1, ownerQQ: '', botQQ: '',
+  schemaVersion: 2, ownerQQ: '', botQQ: '',
+  permissions: { released: false, privateReplies: false },
   qq: { enabled: false, wsUrl: 'ws://127.0.0.1:3001', webUiUrl: 'http://127.0.0.1:6099' },
   models: {
     deepseek: { enabled: false, baseUrl: 'https://api.deepseek.com', model: 'deepseek-chat', maxTokens: 1024, temperature: 0.7 },
     codex: { enabled: false, model: '', timeoutSeconds: 180 }
   },
-  chat: { persona: '你是一个友好、简洁的群聊助手。', contextMessages: 12 },
+  chat: { enabled: false, provider: 'deepseek', persona: '你是一个友好、简洁的群聊助手。', contextMessages: 12 },
   groups: [],
-  summary: { enabled: false, provider: 'deepseek', scheduleEnabled: false, time: '18:00', backgroundAuthorized: false, sendToOwner: true, retentionDays: 7, maxMessages: 200 },
-  favorites: { enabled: false, count: 50 }
+  summary: { enabled: false, provider: 'deepseek', scheduleEnabled: false, time: '18:00', backgroundAuthorized: false, sendToOwner: false, retentionDays: 7, maxMessages: 200 },
+  favorites: { enabled: false, provider: 'deepseek', count: 50 }
 };
 
 export class ConfigError extends Error {
   constructor(details) { super('配置校验未通过'); this.details = details; this.statusCode = 400; }
 }
 
+// Only documents that explicitly identify themselves as v1 inherit the old
+// permissions. A new/malformed document must never gain legacy send rights.
+export function migrateConfig(input) {
+  if (!input || typeof input !== 'object' || Array.isArray(input)) throw new ConfigError(['配置必须是 JSON 对象']);
+  if (input.schemaVersion === 2) return structuredClone(input);
+  if (input.schemaVersion !== 1) throw new ConfigError(['配置版本必须为 1 或 2']);
+  const config = structuredClone(input);
+  const connected = config.qq?.enabled === true;
+  const hasRecipient = typeof config.ownerQQ === 'string' && Boolean(config.ownerQQ.trim()) && config.ownerQQ !== config.botQQ;
+  return {
+    ...config,
+    schemaVersion: 2,
+    permissions: { released: connected, privateReplies: connected && hasRecipient },
+    chat: {
+      ...config.chat,
+      enabled: config.models?.deepseek?.enabled === true || config.models?.codex?.enabled === true,
+      provider: config.models?.deepseek?.enabled === true || config.models?.codex?.enabled !== true ? 'deepseek' : 'codex',
+    },
+    groups: Array.isArray(config.groups) ? config.groups.map(group => group && typeof group === 'object' && !Array.isArray(group)
+      ? { ...group, read: true, send: group.mode === 'social' } : group) : config.groups,
+    summary: { ...config.summary, sendToOwner: config.summary?.sendToOwner ?? true },
+    favorites: { ...config.favorites, provider: config.summary?.provider ?? 'deepseek' },
+  };
+}
+
 export function validateConfig(input, { applying = false, hasSecret = () => false } = {}) {
   const errors = [];
   const object = (v) => v !== null && typeof v === 'object' && !Array.isArray(v);
   if (!object(input)) throw new ConfigError(['配置必须是 JSON 对象']);
+  input = migrateConfig(input);
   const result = structuredClone(DEFAULT_CONFIG);
   const knownKeys = new Set(Object.keys(result));
   for (const key of Object.keys(input)) if (!knownKeys.has(key)) errors.push(`不支持的配置字段：${key}`);
-  if (input.schemaVersion !== 1) errors.push('配置版本必须为 1');
   const string = (value, fallback, label, max = 2000) => {
     if (value === undefined) return fallback;
     if (typeof value !== 'string' || value.length > max) { errors.push(`${label}必须是最多 ${max} 字符的文本`); return fallback; }
@@ -51,7 +77,10 @@ export function validateConfig(input, { applying = false, hasSecret = () => fals
     if (v && !/^[1-9]\d{3,19}$/.test(v)) errors.push(`${label}须为 4–20 位数字，使用文本形式`);
     return v;
   };
-  result.ownerQQ = id(input.ownerQQ, '本人 QQ 号'); result.botQQ = id(input.botQQ, '机器人 QQ 号');
+  result.ownerQQ = id(input.ownerQQ, '私聊指令与汇总接收 QQ 号'); result.botQQ = id(input.botQQ, '控制的 QQ 号');
+  const permissions = section('permissions');
+  result.permissions.released = bool(permissions.released, false, '账号权限释放');
+  result.permissions.privateReplies = bool(permissions.privateReplies, false, '私聊回复权限');
   const qq = section('qq');
   result.qq.enabled = bool(qq.enabled, false, 'QQ 接入');
   for (const [key, protocols] of [['wsUrl', ['ws:']], ['webUiUrl', ['http:']]]) {
@@ -82,6 +111,9 @@ export function validateConfig(input, { applying = false, hasSecret = () => fals
   if (result.models.codex.model && !/^[\w.:-]{1,120}$/.test(result.models.codex.model)) errors.push('Codex 模型名称无效');
   result.models.codex.timeoutSeconds = number(cx.timeoutSeconds, 180, 'GPT 超时', 30, 600);
   const chat = section('chat');
+  result.chat.enabled = bool(chat.enabled, false, '聊天与回复');
+  result.chat.provider = string(chat.provider, 'deepseek', '默认聊天模型', 20);
+  if (!['deepseek', 'codex'].includes(result.chat.provider)) errors.push('聊天通道须为 deepseek 或 codex');
   result.chat.persona = string(chat.persona, result.chat.persona, '群聊风格', 4000);
   result.chat.contextMessages = number(chat.contextMessages, 12, '群聊上下文条数', 0, 50);
   if (!Array.isArray(input.groups)) errors.push('群列表必须是数组');
@@ -95,7 +127,10 @@ export function validateConfig(input, { applying = false, hasSecret = () => fals
       seen.add(groupId);
       if (!['social', 'work'].includes(g.mode)) errors.push(`${label}用途必须为 social 或 work`);
       if (g.trigger !== undefined && !['mention', 'prefix', 'casual'].includes(g.trigger)) errors.push(`${label}触发方式无效`);
-      return { id: groupId, name: string(g.name, '', `${label}名称`, 80), mode: g.mode === 'work' ? 'work' : 'social', trigger: g.trigger || 'mention', prefix: string(g.prefix, '/ai', `${label}命令前缀`, 30), probability: number(g.probability, 0.03, `${label}插话概率`, 0, 0.25, false), cooldownSeconds: number(g.cooldownSeconds, 30, `${label}冷却秒数`, 5, 3600) };
+      const read = bool(g.read, true, `${label}读取权限`);
+      const send = bool(g.send, false, `${label}发送权限`);
+      if (send && !read) errors.push(`${label}发送消息需要先允许读取`);
+      return { id: groupId, name: string(g.name, '', `${label}名称`, 80), mode: g.mode === 'work' ? 'work' : 'social', read, send, trigger: g.trigger || 'mention', prefix: string(g.prefix, '/ai', `${label}命令前缀`, 30), probability: number(g.probability, 0.03, `${label}插话概率`, 0, 0.25, false), cooldownSeconds: number(g.cooldownSeconds, 30, `${label}冷却秒数`, 5, 3600) };
     });
     if (result.groups.length !== input.groups.length) errors.push('每个群配置必须是对象');
   }
@@ -109,16 +144,22 @@ export function validateConfig(input, { applying = false, hasSecret = () => fals
   result.summary.maxMessages = number(summary.maxMessages, 200, '汇总最大消息数', 1, 500);
   const favorites = section('favorites');
   result.favorites.enabled = bool(favorites.enabled, false, '收藏');
+  result.favorites.provider = string(favorites.provider, 'deepseek', '收藏整理模型通道', 20);
+  if (!['deepseek', 'codex'].includes(result.favorites.provider)) errors.push('收藏整理通道须为 deepseek 或 codex');
   result.favorites.count = number(favorites.count, 50, '收藏列表条数', 1, 100);
   if (applying) {
-    if (result.ownerQQ && result.botQQ && result.ownerQQ === result.botQQ) errors.push('本人 QQ 号与机器人小号应使用不同账号');
-    if ((result.qq.enabled || result.summary.enabled || result.models.codex.enabled) && !result.ownerQQ) errors.push('启用接入前请填写本人 QQ 号');
+    if (result.qq.enabled && !result.botQQ) errors.push('启用 QQ 连接前请填写控制的 QQ 号');
     if (result.qq.enabled && !hasSecret('napcatToken')) errors.push('请先安装 NapCat 或填写其 OneBot Token');
     if (result.models.deepseek.enabled && !hasSecret('deepseekApiKey')) errors.push('启用 DeepSeek 前请填写 API Key');
-    if (result.summary.enabled && !result.models[result.summary.provider].enabled) errors.push('汇总选用的模型通道尚未启用');
+    if (result.summary.enabled && !result.models[result.summary.provider]?.enabled) errors.push('汇总选用的模型通道尚未启用');
     if (result.summary.scheduleEnabled && (!result.summary.enabled || !result.summary.backgroundAuthorized)) errors.push('定时汇总需要启用汇总并明确授权后台执行');
-    if (result.qq.enabled && result.groups.some(g => g.mode === 'social') && !result.models.deepseek.enabled) errors.push('社交群聊天需要启用 DeepSeek');
+    if (result.chat.enabled && !result.models[result.chat.provider]?.enabled) errors.push('聊天与回复选用的模型通道尚未启用');
     if (result.favorites.enabled && !result.qq.enabled) errors.push('读取收藏需要启用 QQ 接入');
+    if (result.permissions.privateReplies || (result.summary.enabled && result.summary.sendToOwner)) {
+      if (!result.ownerQQ) errors.push('启用私聊回复或发送汇总前，请填写私聊指令与汇总接收 QQ 号');
+      if (result.ownerQQ && result.ownerQQ === result.botQQ) errors.push('私聊接收 QQ 号必须与控制的 QQ 号不同；同一账号可在仪表盘查看本地结果');
+    }
+    if (result.summary.enabled && result.summary.sendToOwner && !result.permissions.privateReplies) errors.push('发送私人汇总需要在群与消息权限中允许私聊回复');
   }
   if (errors.length) throw new ConfigError(errors);
   return result;

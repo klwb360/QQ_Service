@@ -2,7 +2,7 @@ import fs from 'node:fs';
 import path from 'node:path';
 import { DatabaseSync } from 'node:sqlite';
 import { randomBytes, createCipheriv, createDecipheriv } from 'node:crypto';
-import { DEFAULT_CONFIG, configHash } from './config.mjs';
+import { DEFAULT_CONFIG, configHash, migrateConfig } from './config.mjs';
 
 export function atomicJson(file, value) {
   const temp = `${file}.${process.pid}.tmp`;
@@ -27,6 +27,24 @@ export function createStore(dataDir) {
   }
   const initial = { draft: structuredClone(DEFAULT_CONFIG), applied: structuredClone(DEFAULT_CONFIG), revision: 0, appliedRevision: 0, previous: null };
   let state = fs.existsSync(configFile) ? JSON.parse(fs.readFileSync(configFile, 'utf8')) : initial;
+  const migrated = { ...state };
+  let needsMigration = false;
+  for (const name of ['draft', 'applied', 'previous']) {
+    if (name === 'previous' && state[name] == null) continue;
+    migrated[name] = migrateConfig(state[name]);
+    needsMigration ||= state[name].schemaVersion !== migrated[name].schemaVersion;
+  }
+  if (needsMigration) {
+    // The legacy profile keeps this directory, including existing CLI login,
+    // vault and NapCat bind mounts. Only its configuration schema changes.
+    const backupFile = path.join(dataDir, 'config.v1.backup.json');
+    if (!fs.existsSync(backupFile)) {
+      fs.copyFileSync(configFile, backupFile, fs.constants.COPYFILE_EXCL);
+      fs.chmodSync(backupFile, 0o600);
+    }
+    atomicJson(configFile, migrated);
+  }
+  state = migrated;
   const db = new DatabaseSync(path.join(dataDir, 'history.sqlite'));
   db.exec(`PRAGMA journal_mode=WAL;
     CREATE TABLE IF NOT EXISTS messages (account_id TEXT NOT NULL, group_id TEXT NOT NULL, message_id TEXT NOT NULL, user_id TEXT NOT NULL, time INTEGER NOT NULL, text TEXT NOT NULL, mode TEXT NOT NULL, PRIMARY KEY(account_id,group_id,message_id));

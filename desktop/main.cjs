@@ -10,6 +10,7 @@ const http = require('node:http');
 const {
   backendUrlForPort, parseBackendReady, isDashboardResource,
   isDashboardNavigation, isAllowedExternalUrl, defaultDataDir,
+  configExportPath, isAccountProfileId,
 } = require('./security.cjs');
 
 const APP_NAME = 'QQ_Service';
@@ -197,7 +198,7 @@ function setupMenu() {
     { label: '应用', submenu: [
       { label: `打开${APP_NAME}`, click: showWindow },
       { label: '打开本地资料目录', click: openDataDir },
-      { label: '导出脱敏配置…', click: () => { void exportConfig().catch(() => dialog.showErrorBox('配置导出失败', '无法导出当前已保存的配置，请确认后台正在运行并重试。')); } },
+      { label: '导出脱敏配置…', click: () => { void exportSelectedAccountConfig().catch(error => dialog.showErrorBox('配置导出失败', error.code === 'ACCOUNT_SELECTION_REQUIRED' ? error.message : '无法导出当前已保存的配置，请确认后台正在运行并重试。')); } },
       { type: 'separator' },
       { label: '完全退出（停止采集和定时任务）', accelerator: 'CommandOrControl+Q', click: () => app.quit() },
     ] },
@@ -374,22 +375,50 @@ async function stopBackend() {
   await waitForExit(current, 2000);
 }
 
+async function exportSelectedAccountConfig() {
+  const currentWindow = window;
+  const contents = currentWindow?.webContents;
+  const requireSelection = () => {
+    const error = new Error('请先在仪表盘创建并选择账号，再导出该账号的脱敏配置。');
+    error.code = 'ACCOUNT_SELECTION_REQUIRED';
+    return error;
+  };
+  if (!currentWindow || currentWindow.isDestroyed() || !contents || contents.isDestroyed()
+    || !isDashboardNavigation(contents.getURL(), backendOrigin)) throw requireSelection();
+  // Read exactly one fixed DOM value from our own dashboard. Account IDs are
+  // validated before they reach the same scoped export used by the renderer.
+  const accountId = await contents.executeJavaScript("document.querySelector('#account-selector')?.value ?? ''");
+  if (window !== currentWindow || currentWindow.isDestroyed() || contents.isDestroyed()
+    || !isDashboardNavigation(contents.getURL(), backendOrigin)
+    || !isAccountProfileId(accountId)) throw requireSelection();
+  return exportConfig(accountId);
+}
+
 function setupExportHandler() {
-  ipcMain.handle('qqbridge:export-config', async event => {
+  ipcMain.handle('qqbridge:export-config', async (event, accountId) => {
     if (!window || event.sender !== window.webContents
       || event.senderFrame !== window.webContents.mainFrame
       || !isDashboardNavigation(event.senderFrame.url, backendOrigin)) {
       throw new Error('仅允许本机仪表盘导出配置。');
     }
-    try { return await exportConfig(); }
-    catch { throw new Error('无法导出已保存的脱敏配置，请确认后台运行后重试。'); }
+    // A renderer supplies only a stable profile ID, never a URL or file path.
+    configExportPath(accountId);
+    try { return await exportConfig(accountId); }
+    catch (error) { throw new Error(error.code === 'ACCOUNT_SELECTION_REQUIRED' ? error.message : '无法导出已保存的脱敏配置，请确认后台运行后重试。'); }
   });
 }
 
-function readExportConfig() {
+function readExportConfig(accountId) {
+  const endpoint = configExportPath(accountId);
   return new Promise((resolve, reject) => {
     if (!backendOrigin) { reject(new Error('backend-not-ready')); return; }
-    const request = http.get(`${backendOrigin}/api/config/export`, { timeout: 5000 }, response => {
+    const request = http.get(`${backendOrigin}${endpoint}`, { timeout: 5000 }, response => {
+      if (response.statusCode === 409 && accountId === undefined) {
+        response.resume();
+        const error = new Error('请先在仪表盘选择账号，再使用该账号的“导出脱敏配置”。');
+        error.code = 'ACCOUNT_SELECTION_REQUIRED';
+        reject(error); return;
+      }
       if (response.statusCode !== 200 || !String(response.headers['content-type']).startsWith('application/json')) {
         response.resume(); reject(new Error('invalid-export-response')); return;
       }
@@ -410,14 +439,14 @@ function readExportConfig() {
   });
 }
 
-async function exportConfig() {
+async function exportConfig(accountId) {
   if (exporting) return { ok: true, canceled: true };
   exporting = true;
   try {
-    const content = await readExportConfig();
+    const content = await readExportConfig(accountId);
     const options = {
       title: '导出脱敏配置',
-      defaultPath: path.join(app.getPath('documents'), `QQ_Service-config-${new Date().toISOString().slice(0, 10)}.json`),
+      defaultPath: path.join(app.getPath('documents'), `QQ_Service-config${accountId ? `-${accountId.slice(0, 8)}` : ''}-${new Date().toISOString().slice(0, 10)}.json`),
       filters: [{ name: 'JSON 配置', extensions: ['json'] }],
       properties: ['createDirectory', 'showOverwriteConfirmation'],
     };

@@ -30,6 +30,17 @@ function isDashboardNavigation(value, origin) {
   return (url.pathname === '/' || url.pathname === '/index.html') && !url.search;
 }
 
+function isAccountProfileId(value) {
+  return typeof value === 'string' && (value === 'legacy'
+    || /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(value));
+}
+
+function configExportPath(profileId) {
+  if (profileId === undefined) return '/api/config/export';
+  if (!isAccountProfileId(profileId)) throw new Error('账号标识无效，请重新选择账号。');
+  return `/api/accounts/${profileId}/config/export`;
+}
+
 function isAllowedExternalUrl(value, origin) {
   try {
     const url = new URL(value);
@@ -63,4 +74,5 @@ function defaultDataDir(platform, env, homeDir) {
 module.exports = {
   validPort, backendUrlForPort, parseBackendReady,
   isDashboardResource, isDashboardNavigation, isAllowedExternalUrl, defaultDataDir,
+  isAccountProfileId, configExportPath,
 };

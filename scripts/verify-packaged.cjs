@@ -45,7 +45,7 @@ async function verifyWindowsPackage(appOutDir, expectedVersion) {
   for (const file of ['/desktop/main.cjs', '/desktop/preload.cjs', '/desktop/security.cjs']) {
     assert(files.includes(file), `Required desktop shell file is missing: ${file}`);
   }
-  const privateFile = /(?:^|\/)(?:auth\.json|config\.json|secrets\.json|\.env(?:\.[^/]*)?|[^/]+\.sqlite(?:-wal|-shm)?|codex-home|data)(?:\/|$)/i;
+  const privateFile = /(?:^|\/)(?:auth\.json|config(?:\.v\d+\.backup)?\.json|secrets\.json|vault\.(?:json|key)|accounts\.json|module-state\.json|\.env(?:\.[^/]*)?|[^/]+\.sqlite(?:-wal|-shm)?|codex-home|accounts|data)(?:\/|$)/i;
   assert(!files.some(file => privateFile.test(file)), 'Desktop archive contains unexpected account data');
   async function scan(directory) {
     for (const entry of await fs.readdir(directory, { withFileTypes: true })) {

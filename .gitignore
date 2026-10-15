@@ -5,6 +5,11 @@ release/
 .runtime/
 .test-data/
 data/
+/accounts/
+accounts.json
+config.json
+config.v1.backup.json
+module-state.json
 codex-home/
 codex-workspace/
 .env

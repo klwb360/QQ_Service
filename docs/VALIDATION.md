@@ -2,6 +2,23 @@
 
 [返回首页](../README.md) · [使用指南](USAGE.md) · [开发指南](DEVELOPMENT.md)
 
+## 0.3.0 · 多账号控制与显式授权
+
+验证日期：2026-10-15。界面、协议模拟及桌面检查使用临时数据和合成 QQ 号，没有登录真实 QQ、DeepSeek 或 ChatGPT 账号，没有调用付费模型。
+
+- Linux `npm test`：55 项通过，0 项失败；1 项可选 GUI 检查在普通测试发现中跳过，另行执行。
+- `npm run check` 通过，包含新增账号目录、独立账号服务和桌面代码的语法检查。
+- 两路实际 WebSocket 模拟 OneBot 同时连接，验证同群同消息 ID、收藏、历史、模型密钥和 Codex 目录不混用。撤销一个账号的权限不影响另一个账号。
+- 新建账号、填写模型凭据及模型登录不授予权限；普通应用及回滚恢复只读。最终授权核验实际 QQ 身份、保存版本和选定范围；配置变化或推理中撤权不能继续发信。
+- 实际定时器检查：未释放时零自动模型调用；释放只读群后可定时整理并只保存本地，零 QQ 发送且每日去重。
+- 并发事务回归：回滚前保留新旧 QQ/端口资源，其他不冲突账号仍可并行配置；退出期间不会重启后台，延迟到达的请求正文不能创建新账号。
+- Chromium 配合实际后台完成账号创建、两个场景子菜单、读取已加入群、授权/撤销、跨账号输入和凭据隔离、轮询保留输入，以及延迟保存响应后切账号和继续编辑的检查，无未捕获 JavaScript 错误。
+- 9 项真实 Electron 44.7.0 桌面检查通过：双账号独立配置与默认只读、各自原生导出、空账号菜单不自动建档、原生菜单按当前账号导出、单实例、托盘、完全退出释放后台和端口、重启保留双账号配置及凭据。
+- 页面外层滚动条已隐藏，Chromium 实际滚轮和 PageDown 可继续滚动；窄窗口中的表格横滚与日志独立纵滚均正常，仓库截图已同步。
+- Linux 交叉构建生成 Windows x64 EXE，包内 Node.js 24.19.0、npm、ws、后台与桌面 ASAR 校验通过。最终发布由 [Windows application](https://github.com/klwb360/QQ_Service/actions/workflows/windows.yml) 的版本标签流程执行自动测试、构建、SHA256 和 Release 上传；以 [v0.3.0 Release](https://github.com/klwb360/QQ_Service/releases/tag/v0.3.0) 的实际资产为准。
+
+真实 Windows 桌面操作、多个实际 QQ 账号、Docker Desktop/原生 NapCat 登录、Codex 官方设备授权及真实模型调用仍待实机验收。微信与 Telegram 仅保留平台扩展入口，尚未实现。
+
 ## Windows 原生 NapCat 接入检查
 
 2026-10-14 核对 [官方 Shell 安装文档](https://napneko.github.io/guide/boot/Shell)，下载 `v4.18.38 / NapCat.Shell.Windows.OneKey.zip` 并验证其 GitHub 声明的 SHA256；确认包内的 `NapCatInstaller.exe` 和启动组件。原生安装与连接步骤见 [指南](NATIVE_NAPCAT_WINDOWS.md)。
