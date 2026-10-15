@@ -10,8 +10,9 @@ const http = require('node:http');
 const {
   backendUrlForPort, parseBackendReady, isDashboardResource,
   isDashboardNavigation, isAllowedExternalUrl, defaultDataDir,
-  configExportPath, isAccountProfileId,
+  configExportPath, isAccountProfileId, isDashboardIpcSender,
 } = require('./security.cjs');
+const { createDesktopSettingsStore } = require('./settings.cjs');
 
 const APP_NAME = 'QQ_Service';
 const STARTUP_TIMEOUT = 30_000;
@@ -28,6 +29,7 @@ let starting = false;
 let failureDialog = false;
 let closeNoticeShown = false;
 let exporting = false;
+let desktopSettings = null;
 
 // Preserve the old desktop profile and single-instance lock when upgrading
 // from 0.2.0, so the renamed EXE cannot run a second backend on the same data.
@@ -57,11 +59,14 @@ if (!app.requestSingleInstanceLock()) {
     });
   });
   app.whenReady().then(async () => {
+    desktopSettings = createDesktopSettingsStore(app.getPath('userData'));
+    await desktopSettings.load();
     dashboardSession = session.fromPartition('qqbridge-dashboard');
     hardenSession(dashboardSession);
     setupMenu();
     setupTray();
     setupExportHandler();
+    setupWindowHandlers();
     await launch();
   }).catch(() => {
     dialog.showErrorBox(`${APP_NAME}无法启动`, '桌面运行环境初始化失败。请重新安装应用后再试。');
@@ -125,6 +130,7 @@ function createWindow() {
     title: APP_NAME,
     width: 1360, height: 880, minWidth: 940, minHeight: 660,
     show: false, backgroundColor: '#f5f7fb',
+    frame: false,
     icon: path.join(__dirname, 'assets', 'icon.png'),
     webPreferences: {
       preload: path.join(__dirname, 'preload.cjs'),
@@ -136,6 +142,9 @@ function createWindow() {
       additionalArguments: [`--qqbridge-version=${app.getVersion()}`],
     },
   });
+  // Keep native menu actions available to the application, without showing the
+  // old title/menu bars or revealing a menu bar when Alt is pressed.
+  window.setMenu(null);
   const contents = window.webContents;
   contents.setWindowOpenHandler(({ url }) => { openExternal(url); return { action: 'deny' }; });
   contents.on('will-navigate', (event, url) => {
@@ -152,8 +161,17 @@ function createWindow() {
     if (!quitting) void showFailure('仪表盘窗口意外停止。后台可能仍在运行，可重新打开界面或退出应用。', false);
   });
   window.once('ready-to-show', showWindow);
+  for (const event of ['maximize', 'unmaximize', 'minimize', 'restore']) {
+    window.on(event, publishWindowState);
+  }
+  contents.on('did-finish-load', publishWindowState);
   window.on('close', event => {
-    if (quitting || !tray) return;
+    if (quitting) return;
+    if (!tray || desktopSettings.get().closeBehavior === 'quit') {
+      event.preventDefault();
+      app.quit();
+      return;
+    }
     event.preventDefault();
     window.hide();
     if (!closeNoticeShown) {
@@ -176,7 +194,7 @@ function setupTray() {
     const icon = nativeImage.createFromPath(path.join(__dirname, 'assets', 'icon.png'));
     if (icon.isEmpty()) throw new Error('missing-icon');
     tray = new Tray(icon.resize({ width: process.platform === 'win32' ? 24 : 22, height: process.platform === 'win32' ? 24 : 22 }));
-    tray.setToolTip(`${APP_NAME} · 关闭窗口后继续后台运行`);
+    updateTrayTooltip();
     tray.setContextMenu(Menu.buildFromTemplate([
       { label: `打开${APP_NAME}`, click: showWindow },
       { label: '打开本地资料目录', click: openDataDir },
@@ -191,6 +209,10 @@ function setupTray() {
     // No hidden background state if tray creation failed: closing the visible
     // window follows the normal full shutdown path through before-quit.
   }
+}
+
+function updateTrayTooltip() {
+  tray?.setToolTip(`${APP_NAME} · ${desktopSettings?.get().closeBehavior === 'quit' ? '关闭窗口后完全退出' : '关闭窗口后继续后台运行'}`);
 }
 
 function setupMenu() {
@@ -210,7 +232,7 @@ function setupMenu() {
     ] },
     { label: '帮助', submenu: [
       { label: '后台运行说明', click: () => {
-        dialog.showMessageBox(window || undefined, { type: 'info', title: APP_NAME, message: tray ? '关闭窗口会继续在托盘后台运行' : '本次未能创建托盘图标，关闭窗口会完全退出', detail: '消息收集和定时汇总需要应用保持运行。完全退出会停止仪表盘后台；已启动的 NapCat Docker 容器继续运行，可以先在“模块管理”中停止。电脑休眠或关机时不处理新消息。' });
+        dialog.showMessageBox(window || undefined, { type: 'info', title: APP_NAME, message: !tray ? '本次未能创建托盘图标，关闭窗口会完全退出' : desktopSettings.get().closeBehavior === 'quit' ? '当前设置：关闭窗口后完全退出' : '当前设置：关闭窗口后继续在托盘后台运行', detail: '可在“设置”中修改关闭方式。消息收集和定时汇总需要应用保持运行。完全退出会停止仪表盘后台；已启动的 NapCat Docker 容器继续运行，可以先在“模块管理”中停止。电脑休眠或关机时不处理新消息。' });
       } },
       { label: `关于${APP_NAME}`, click: () => {
         dialog.showMessageBox(window || undefined, { type: 'info', title: `关于${APP_NAME}`, message: `${APP_NAME} ${app.getVersion()}`, detail: 'QQ / DeepSeek / 本人 GPT 订阅的本地配置应用。账号授权在官方页面完成。' });
@@ -396,15 +418,76 @@ async function exportSelectedAccountConfig() {
 
 function setupExportHandler() {
   ipcMain.handle('qqbridge:export-config', async (event, accountId) => {
-    if (!window || event.sender !== window.webContents
-      || event.senderFrame !== window.webContents.mainFrame
-      || !isDashboardNavigation(event.senderFrame.url, backendOrigin)) {
+    if (!isDashboardIpcSender(event, window?.webContents, backendOrigin)) {
       throw new Error('仅允许本机仪表盘导出配置。');
     }
     // A renderer supplies only a stable profile ID, never a URL or file path.
     configExportPath(accountId);
     try { return await exportConfig(accountId); }
     catch (error) { throw new Error(error.code === 'ACCOUNT_SELECTION_REQUIRED' ? error.message : '无法导出已保存的脱敏配置，请确认后台运行后重试。'); }
+  });
+}
+
+function windowState() {
+  return {
+    maximized: Boolean(window && !window.isDestroyed() && window.isMaximized()),
+    minimized: Boolean(window && !window.isDestroyed() && window.isMinimized()),
+  };
+}
+
+function publishWindowState() {
+  if (!window || window.isDestroyed() || window.webContents.isDestroyed()
+    || !isDashboardNavigation(window.webContents.getURL(), backendOrigin)) return;
+  window.webContents.send('qqbridge:window-state-changed', windowState());
+}
+
+function setupWindowHandlers() {
+  const trusted = event => {
+    if (quitting || !isDashboardIpcSender(event, window?.webContents, backendOrigin)) {
+      throw new Error('仅允许本机仪表盘操作应用窗口。');
+    }
+  };
+  ipcMain.handle('qqbridge:window-state', event => {
+    trusted(event);
+    return windowState();
+  });
+  ipcMain.handle('qqbridge:window-minimize', event => {
+    trusted(event);
+    window.minimize();
+    return windowState();
+  });
+  ipcMain.handle('qqbridge:window-toggle-maximize', event => {
+    trusted(event);
+    if (window.isMaximized()) window.unmaximize();
+    else window.maximize();
+    return windowState();
+  });
+  ipcMain.handle('qqbridge:window-quit', event => {
+    trusted(event);
+    // Resolve this fixed operation before closing the renderer. Explicit exit
+    // stops the backend through before-quit, unlike hiding the window to tray.
+    setImmediate(() => app.quit());
+    return { ok: true };
+  });
+  ipcMain.handle('qqbridge:window-close', event => {
+    trusted(event);
+    setImmediate(() => window?.close());
+    return { ok: true };
+  });
+  ipcMain.handle('qqbridge:desktop-settings-get', event => {
+    trusted(event);
+    return desktopSettings.get();
+  });
+  ipcMain.handle('qqbridge:desktop-settings-update', async (event, value) => {
+    trusted(event);
+    try {
+      const saved = await desktopSettings.update(value);
+      updateTrayTooltip();
+      return saved;
+    } catch (error) {
+      if (error.message.startsWith('关闭方式无效')) throw error;
+      throw new Error('无法保存应用设置，请检查本机用户资料目录是否可写后重试。');
+    }
   });
 }
 

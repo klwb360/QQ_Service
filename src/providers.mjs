@@ -15,8 +15,9 @@ function combineSignal(signal, timeoutMs) {
   return signal ? AbortSignal.any([signal, timeout]) : timeout;
 }
 
-function safeError(value) {
-  return String(value || '未知错误')
+function safeError(value, secret = '') {
+  const text = String(value || '未知错误');
+  return (secret ? text.split(secret).join('[已隐藏]') : text)
     .replace(/Bearer\s+\S+/gi, 'Bearer [已隐藏]')
     .replace(/\b(?:sk-|eyJ)[A-Za-z0-9._-]+/g, '[已隐藏]')
     .slice(0, 500);
@@ -24,19 +25,26 @@ function safeError(value) {
 
 /** Providers never select another billing channel when one channel fails. */
 export function createProviders({ fetchImpl = globalThis.fetch, spawnImpl = spawn } = {}) {
-  async function deepseek({ messages, config, apiKey, signal }) {
-    if (!apiKey) throw failure('尚未设置 DeepSeek API Key。', 400);
-    if (!config?.enabled) throw failure('DeepSeek 模块尚未启用。', 400);
-    const base = new URL(String(config.baseUrl).replace(/\/+$/, '') + '/');
-    if (base.protocol !== 'https:' || base.username || base.password) {
-      throw failure('DeepSeek 地址必须使用 HTTPS，且不能在地址中携带账号密码。', 400);
+  async function chatCompletion({ messages, config, apiKey, signal, provider, label, official = false }) {
+    if (!apiKey) throw failure(`尚未设置 ${label} API Key，请在模型配置的密钥栏填写并保存。`, 400);
+    if (!config?.enabled) throw failure(`${label} 模块尚未启用，请先在模型配置中开启。`, 400);
+    if (signal?.aborted) throw failure('模型请求已取消。', 409);
+    let base;
+    try {
+      base = new URL(String(config.baseUrl).replace(/\/+$/, '') + '/');
+      if (base.protocol !== 'https:' || base.username || base.password || base.search || base.hash) throw new Error();
+      if (official && (base.hostname !== 'api.deepseek.com' || base.port || !['/', '/v1/'].includes(base.pathname))) throw new Error();
+    } catch {
+      throw failure(official ? 'DeepSeek 官方地址应为 https://api.deepseek.com 或其 /v1 地址；其他服务请添加兼容 API。' : `${label} 地址须使用 HTTPS，且不能携带账号、密码或查询参数。`, 400);
     }
+    if (!config.model) throw failure(`${label} 尚未设置模型名称，请填写服务商提供的模型 ID。`, 400);
     const url = new URL('chat/completions', base);
     let response;
     try {
       response = await fetchImpl(url, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${apiKey}` },
+        redirect: 'error',
         body: JSON.stringify({
           model: config.model,
           messages,
@@ -48,8 +56,8 @@ export function createProviders({ fetchImpl = globalThis.fetch, spawnImpl = spaw
       });
     } catch (error) {
       if (signal?.aborted) throw failure('模型请求已取消。', 409);
-      if (error.name === 'TimeoutError' || error.name === 'AbortError') throw failure('DeepSeek 请求超时。');
-      throw failure(`DeepSeek 网络连接失败：${safeError(error.message)}`);
+      if (error.name === 'TimeoutError' || error.name === 'AbortError') throw failure(`${label} 请求超时，请检查网络后重试。`);
+      throw failure(`${label} 网络连接失败：${safeError(error.message, apiKey)}；请检查 API 地址和网络。`);
     }
     let payload;
     try {
@@ -57,14 +65,24 @@ export function createProviders({ fetchImpl = globalThis.fetch, spawnImpl = spaw
       if (Buffer.byteLength(raw) > MAX_OUTPUT_BYTES) throw new Error('响应超过大小限制');
       payload = JSON.parse(raw);
     } catch {
-      throw failure(`DeepSeek 返回了无法解析的响应（HTTP ${response.status}）。`);
+      throw failure(`${label} 返回了无法解析的响应（HTTP ${response.status}），请确认服务兼容 Chat Completions 接口。`);
     }
-    if (!response.ok) throw failure(`DeepSeek 请求失败（HTTP ${response.status}）：${safeError(payload?.error?.message || '请检查密钥、额度及模型名称')}`);
+    if (signal?.aborted) throw failure('模型请求已取消。', 409);
+    if (!response.ok) {
+      const guidance = [401, 403].includes(response.status) ? '请检查 API Key 及其访问权限'
+        : response.status === 429 ? '请检查服务商额度或请求频率，稍后重试'
+          : response.status === 404 ? '请检查 API 基础地址和模型 ID'
+            : '请检查密钥、额度、模型名称和参数';
+      throw failure(`${label} 请求失败（HTTP ${response.status}）：${safeError(payload?.error?.message || '服务返回错误', apiKey)}；${guidance}。`);
+    }
     const text = payload?.choices?.[0]?.message?.content;
-    if (typeof text !== 'string' || !text.trim()) throw failure('DeepSeek 没有返回可用的文字回答。');
+    if (typeof text !== 'string' || !text.trim()) throw failure(`${label} 没有返回可用的文字回答，请检查模型是否支持文字聊天。`);
     const truncated = payload.choices[0].finish_reason === 'length';
-    return { provider: 'deepseek', text: text.trim() + (truncated ? '\n\n[模型输出达到长度限制，回答可能不完整。]' : ''), usage: payload.usage || null, truncated };
+    return { provider, text: text.trim() + (truncated ? '\n\n[模型输出达到长度限制，回答可能不完整。]' : ''), usage: payload.usage || null, truncated };
   }
+
+  const deepseek = args => chatCompletion({ ...args, provider: 'deepseek', label: 'DeepSeek', official: true });
+  const compatible = args => chatCompletion({ ...args, provider: args.provider || args.config?.id, label: safeError(args.config?.label || '兼容 API') });
 
   async function codex({ prompt, config, invocation, signal }) {
     if (!config?.enabled) throw failure('GPT 订阅模块尚未启用。', 400);
@@ -198,5 +216,5 @@ export function createProviders({ fetchImpl = globalThis.fetch, spawnImpl = spaw
       child.stdin.end(prompt);
     });
   }
-  return { deepseek, codex };
+  return { deepseek, compatible, codex };
 }

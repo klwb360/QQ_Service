@@ -2,7 +2,7 @@ import fs from 'node:fs';
 import path from 'node:path';
 import { DatabaseSync } from 'node:sqlite';
 import { randomBytes, createCipheriv, createDecipheriv } from 'node:crypto';
-import { DEFAULT_CONFIG, configHash, migrateConfig } from './config.mjs';
+import { DEFAULT_CONFIG, configHash, migrateConfig, isCredentialName } from './config.mjs';
 
 export function atomicJson(file, value) {
   const temp = `${file}.${process.pid}.tmp`;
@@ -58,6 +58,8 @@ export function createStore(dataDir) {
     atomicJson(vaultFile, { iv: iv.toString('base64'), tag: cipher.getAuthTag().toString('base64'), data: encrypted.toString('base64') });
   };
   const saveState = (next) => { atomicJson(configFile, next); state = next; };
+  const stagedSecretNames = () => Object.keys(secrets).filter(name => name.startsWith('draft:') && isCredentialName(name.slice(6)));
+  const secretsPending = () => stagedSecretNames().some(name => secrets[name] !== secrets[name.slice(6)]);
   return {
     dataDir,
     getState: () => structuredClone(state),
@@ -67,10 +69,14 @@ export function createStore(dataDir) {
     hasDraftSecret: (name) => Boolean(secrets[`draft:${name}`] ?? secrets[name]),
     getSecretSnapshot: () => structuredClone(secrets),
     restoreSecrets(snapshot) { secrets = structuredClone(snapshot); saveSecrets(); },
-    stageSecrets(updates) { for (const [name, value] of Object.entries(updates)) if (value.trim()) secrets[`draft:${name}`] = value.trim(); saveSecrets(); },
-    commitSecrets() { for (const name of ['deepseekApiKey', 'napcatToken']) { if (secrets[`draft:${name}`] !== undefined) { secrets[name] = secrets[`draft:${name}`]; delete secrets[`draft:${name}`]; } } saveSecrets(); },
-    secretsPending: () => ['deepseekApiKey', 'napcatToken'].some(name => secrets[`draft:${name}`] !== undefined && secrets[`draft:${name}`] !== secrets[name]),
-    setSecret(name, value) { secrets[name] = value; saveSecrets(); },
+    stageSecrets(updates) {
+      for (const [name, value] of Object.entries(updates)) if (!isCredentialName(name) || typeof value !== 'string') throw new TypeError('凭据字段无效');
+      for (const [name, value] of Object.entries(updates)) if (value.trim()) secrets[`draft:${name}`] = value.trim();
+      saveSecrets();
+    },
+    commitSecrets() { for (const stagedName of stagedSecretNames()) { secrets[stagedName.slice(6)] = secrets[stagedName]; delete secrets[stagedName]; } saveSecrets(); },
+    secretsPending,
+    setSecret(name, value) { if (!isCredentialName(name) || typeof value !== 'string') throw new TypeError('凭据字段无效'); secrets[name] = value; saveSecrets(); },
     saveDraft(config) { saveState({ ...state, draft: structuredClone(config), revision: state.revision + 1 }); },
     commitDraft() { saveState({ ...state, previous: structuredClone(state.applied), applied: structuredClone(state.draft), appliedRevision: state.revision }); },
     restoreState(next) { saveState(next); },
@@ -79,7 +85,7 @@ export function createStore(dataDir) {
       const previous = structuredClone(state.previous);
       saveState({ draft: previous, applied: previous, revision: state.revision + 1, appliedRevision: state.revision + 1, previous: structuredClone(state.applied) });
     },
-    pendingChanges: () => configHash(state.draft) !== configHash(state.applied) || ['deepseekApiKey', 'napcatToken'].some(name => secrets[`draft:${name}`] !== undefined && secrets[`draft:${name}`] !== secrets[name]),
+    pendingChanges: () => configHash(state.draft) !== configHash(state.applied) || secretsPending(),
     recordMessage(record) {
       const time = Number(record.time) || Math.floor(Date.now() / 1000);
       const rawText = String(record.text);

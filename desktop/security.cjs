@@ -30,6 +30,17 @@ function isDashboardNavigation(value, origin) {
   return (url.pathname === '/' || url.pathname === '/index.html') && !url.search;
 }
 
+function isDashboardIpcSender(event, contents, origin) {
+  // IPC is available only to the live dashboard's top frame. An embedded
+  // same-origin frame or a previous page cannot control the native window.
+  try {
+    return Boolean(contents && !contents.isDestroyed()
+      && event?.sender === contents
+      && event.senderFrame === contents.mainFrame
+      && isDashboardNavigation(event.senderFrame.url, origin));
+  } catch { return false; }
+}
+
 function isAccountProfileId(value) {
   return typeof value === 'string' && (value === 'legacy'
     || /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(value));
@@ -60,6 +71,8 @@ function isAllowedExternalUrl(value, origin) {
       'developers.openai.com', 'learn.chatgpt.com', 'docs.docker.com',
       'www.docker.com', 'desktop.docker.com', 'napneko.github.io',
       'platform.deepseek.com', 'api-docs.deepseek.com',
+      'help.aliyun.com', 'docs.bigmodel.cn', 'platform.moonshot.cn',
+      'docs.siliconflow.cn',
     ]).has(url.hostname);
   } catch { return false; }
 }
@@ -74,5 +87,5 @@ function defaultDataDir(platform, env, homeDir) {
 module.exports = {
   validPort, backendUrlForPort, parseBackendReady,
   isDashboardResource, isDashboardNavigation, isAllowedExternalUrl, defaultDataDir,
-  isAccountProfileId, configExportPath,
+  isAccountProfileId, configExportPath, isDashboardIpcSender,
 };

@@ -7,7 +7,7 @@ const require = createRequire(import.meta.url);
 const {
   backendUrlForPort, parseBackendReady, isDashboardResource,
   isDashboardNavigation, isAllowedExternalUrl, defaultDataDir,
-  isAccountProfileId, configExportPath,
+  isAccountProfileId, configExportPath, isDashboardIpcSender,
 } = require('../desktop/security.cjs');
 
 test('桌面只信任后台公布的本机端口，拒绝无效启动记录', () => {
@@ -20,6 +20,29 @@ test('桌面只信任后台公布的本机端口，拒绝无效启动记录', ()
     'QQ Bridge dashboard: http://127.0.0.1:3210/api/state',
     'QQ Bridge dashboard: http://127.0.0.1:3210\nLocal data: private',
   ]) assert.equal(parseBackendReady(line), null);
+});
+
+test('原生窗口 IPC 仅接受当前仪表盘主框架，拒绝子框架和失效页面', () => {
+  const origin = 'http://127.0.0.1:43127';
+  const mainFrame = { url: `${origin}/#connections` };
+  const contents = { mainFrame, isDestroyed: () => false };
+  const event = { sender: contents, senderFrame: mainFrame };
+  assert.equal(isDashboardIpcSender(event, contents, origin), true);
+  assert.equal(isDashboardIpcSender(event, contents, null), false);
+  assert.equal(isDashboardIpcSender({ ...event, sender: {} }, contents, origin), false);
+  assert.equal(isDashboardIpcSender({ ...event, senderFrame: { url: `${origin}/` } }, contents, origin), false);
+  for (const url of [`${origin}/api/state`, `${origin}/?redirect=1`, 'https://evil.test/', 'about:blank']) {
+    mainFrame.url = url;
+    assert.equal(isDashboardIpcSender(event, contents, origin), false);
+  }
+  mainFrame.url = `${origin}/`;
+  contents.isDestroyed = () => true;
+  assert.equal(isDashboardIpcSender(event, contents, origin), false);
+  assert.equal(isDashboardIpcSender(event, null, origin), false);
+  assert.equal(isDashboardIpcSender(null, contents, origin), false);
+  const detached = { sender: contents, get senderFrame() { throw new Error('Frame disposed'); } };
+  contents.isDestroyed = () => false;
+  assert.equal(isDashboardIpcSender(detached, contents, origin), false);
 });
 
 test('独立窗口保留同源资源，阻止远程资源及 API 页面导航', () => {
@@ -50,11 +73,16 @@ test('外部浏览器允许官方授权与本机 QQ 登录，拒绝危险协议�
     'https://auth.openai.com/codex/device', 'https://chatgpt.com/',
     'https://docs.docker.com/desktop/setup/install/windows-install/',
     'https://platform.deepseek.com/', 'http://127.0.0.1:6099/webui/',
+    'https://help.aliyun.com/zh/model-studio/',
+    'https://docs.bigmodel.cn/cn/guide/develop/openai/introduction',
+    'https://platform.moonshot.cn/docs/guide/start-using-kimi-api',
+    'https://docs.siliconflow.cn/cn/userguide/quickstart',
     'http://localhost:6099/',
   ]) assert.equal(isAllowedExternalUrl(value, origin), true, value);
   for (const value of [
     `${origin}/api/config/export`, 'http://127.0.0.1:6099/api/login',
     'https://auth.openai.com.evil.test/codex/device', 'https://auth.openai.com@evil.test/',
+    'https://help.aliyun.com.evil.test/', 'https://docs.bigmodel.cn@evil.test/',
     'https://user:pass@auth.openai.com/', 'https://auth.openai.com:444/',
     'http://auth.openai.com/', 'file:///C:/test.exe', 'javascript:alert(1)',
     'ms-appinstaller:https://evil.test/app', 'https://example.com/',

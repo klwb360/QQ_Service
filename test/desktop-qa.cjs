@@ -85,29 +85,38 @@ async function clickNativeExportMenu() {
   });
 }
 async function selectAccount(window, accountId) {
+  await window.locator('[data-page="overview"]').click();
   await window.locator('#account-selector').selectOption(accountId);
   await window.waitForFunction(id => document.querySelector('#account-selector').value === id, accountId);
   await condition(async () => (await readState(window, accountId)).account.id === accountId, '未选中指定账号');
 }
 async function createAccount(window, name, qqNumber) {
-  await window.locator('#create-account').click();
+  await window.locator('[data-page="connections"]').click();
+  await window.locator('#create-account-entry').click();
   await window.locator('#new-account-name').fill(name);
   await window.locator('#new-account-qq').fill(qqNumber);
   const created = window.waitForResponse(response => response.url().endsWith('/api/accounts') && response.request().method() === 'POST');
-  await window.locator('#dialog-confirm').click();
+  await window.locator('#submit-create-account').click();
   const response = await created;
   assert.ok(response.ok(), `创建账号失败：${response.status()}`);
   const { account } = await response.json();
   assert.ok(account?.id);
-  await window.waitForFunction(id => !document.querySelector('#app-dialog').open
-    && document.querySelector('#account-selector').value === id, account.id);
-  await window.locator('[data-page="connections"]').click();
+  await window.waitForFunction(id => document.querySelector('#new-account-form').classList.contains('hidden')
+    && document.querySelector('#account-selector').value === id
+    && !document.querySelector('#account-workspace').classList.contains('hidden'), account.id);
+  await window.locator('#account-setup-steps [data-setup-step="identity"]').click();
   await window.waitForFunction(qq => document.querySelector('[data-config="botQQ"]').value === qq, qqNumber);
   return account;
 }
 async function configureAccount(window, account, { ownerQQ, secret, persona }) {
   await selectAccount(window, account.id);
   await window.locator('[data-page="connections"]').click();
+  if (!await window.locator('#account-workspace').isVisible()) {
+    await window.locator(`#account-cards [data-open-account="${account.id}"]`).click();
+  }
+  await window.locator('#account-setup-steps [data-setup-step="identity"]').click();
+  await window.locator('[data-config="models.deepseek.enabled"]').check();
+  await window.locator('#account-setup-steps [data-setup-step="models"]').click();
   await window.locator('[data-secret="deepseekApiKey"]').fill(secret);
   await window.locator('[data-page="scenarios"]').click();
   await window.locator('[data-scenario-tab="tasks"]').click();
@@ -124,7 +133,7 @@ async function configureAccount(window, account, { ownerQQ, secret, persona }) {
   assert.equal(state.applied.permissions.released, false);
   assert.equal(state.applied.permissions.privateReplies, false);
   assert.equal(state.applied.qq.enabled, false);
-  assert.equal(state.applied.models.deepseek.enabled, false);
+  assert.equal(state.applied.models.deepseek.enabled, true);
   assert.equal(state.applied.models.codex.enabled, false);
   assert.equal(state.secrets.deepseekApiKey, true);
 }
@@ -140,7 +149,7 @@ async function configureAccount(window, account, { ownerQQ, secret, persona }) {
     assert.equal(prefs.sandbox, true);
     assert.equal(prefs.webviewTag, false);
     assert.equal(await window.evaluate(() => typeof require), 'undefined');
-    assert.deepEqual(await window.evaluate(() => Object.keys(window.qqBridgeDesktop).sort()), ['exportConfig', 'isDesktop', 'version']);
+    assert.deepEqual(await window.evaluate(() => Object.keys(window.qqBridgeDesktop).sort()), ['close', 'exportConfig', 'getSettings', 'getWindowState', 'isDesktop', 'minimize', 'onWindowState', 'quit', 'toggleMaximize', 'updateSettings', 'version']);
     backendPid = await app.evaluate(() => process._getActiveHandles().find(handle => handle.constructor.name === 'ChildProcess' && handle.spawnargs?.some(arg => arg.endsWith('server.mjs')))?.pid);
     assert.ok(Number.isInteger(backendPid) && alive(backendPid));
     pass('真实 Electron 独立窗口、本机随机端口、隔离 preload 与禁止 NodeIntegration');
@@ -169,7 +178,7 @@ async function configureAccount(window, account, { ownerQQ, secret, persona }) {
     assert.equal((await readState(window, first.id)).applied.ownerQQ, '123456');
     assert.equal((await fetch(`${origin}/api/accounts`)).status, 200);
     assert.equal((await fetch(`${origin}/api/config/export`)).status, 409);
-    pass('通过页面新建并选择两个账号，各自保存应用；模型与 QQ 接入关闭且权限保持只读');
+    pass('通过逐步引导新建并配置两个账号，各自保存模型；QQ 接入关闭且权限保持只读');
 
     for (const [account, ownerQQ, persona] of [
       [first, '123456', '账号 A 的独立风格'],

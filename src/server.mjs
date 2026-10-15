@@ -26,6 +26,7 @@ export function createDashboard({ dataDir = defaultDataDir(), installerFactory, 
     for (const service of services.values()) for (const secret of Object.values(service.store.getSecretSnapshot())) if (secret) text = text.split(secret).join('[已隐藏]');
     return text;
   };
+  const safeErrorValue = value => typeof value === 'string' ? redactAll(value) : Array.isArray(value) ? value.map(safeErrorValue) : value && typeof value === 'object' ? Object.fromEntries(Object.entries(value).map(([key, item]) => [key, safeErrorValue(item)])) : value;
   const checkConflicts = (config, id) => {
     if (!config.qq.enabled) return;
     const port = url => { const parsed = new URL(url); return Number(parsed.port || 80); };
@@ -128,6 +129,7 @@ export function createDashboard({ dataDir = defaultDataDir(), installerFactory, 
         const action = scoped ? scoped[2] : route.slice('/api'.length);
         if (request.method === 'GET') {
           if (action === '/state') return json(response, await service.state());
+          if (action === '/setup/status') return json(response, service.setupStatus());
           if (action === '/config/export') {
             response.setHeader('Content-Disposition', 'attachment; filename="qq-service-config.json"');
             return json(response, service.store.getState().draft);
@@ -155,7 +157,7 @@ export function createDashboard({ dataDir = defaultDataDir(), installerFactory, 
       }
       throw fail('未找到页面或接口。', 404);
     } catch (error) {
-      if (!response.headersSent) json(response, { error: redactAll(error.message), ...(error.details ? { details: redactAll(typeof error.details === 'string' ? error.details : JSON.stringify(error.details)) } : {}) }, error.statusCode || error.status || (error.details ? 400 : 502));
+      if (!response.headersSent) json(response, safeErrorValue({ error: error.message, ...(typeof error.code === 'string' ? { code: error.code } : {}), ...(error.details ? { details: error.details } : {}), ...(error.issues ? { issues: error.issues } : {}), ...(error.field ? { field: error.field } : {}), ...(error.action ? { action: error.action } : {}), ...(error.nextStep ? { nextStep: error.nextStep } : {}) }), error.statusCode || error.status || (error.details ? 400 : 502));
       else response.end();
     }
   });

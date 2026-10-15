@@ -1,6 +1,8 @@
 import { randomUUID, createHash } from 'node:crypto';
 import WebSocket from 'ws';
 import { createProviders } from './providers.mjs';
+import { apiSecretName, getModelConfig, isApiProviderId } from './config.mjs';
+import { normalizeGroupEvent } from './group-events.mjs';
 
 const QUEUE_LIMIT = 12;
 const QQ_TIMEOUT_MS = 15_000;
@@ -12,6 +14,12 @@ function fail(message, status = 400) {
   error.status = status;
   return error;
 }
+
+function setupFailure(code, message, { field = 'qq.wsUrl', action = '检查 NapCat 的 QQ 登录状态和 OneBot WebSocket 配置后重试。', nextStep = 'connection', status = 502, details } = {}) {
+  return Object.assign(fail(message, status), { code, field, action, nextStep, ...(details ? { details } : {}) });
+}
+
+const publicIssue = error => ({ code: error.code || 'ONEBOT_CONNECTION_FAILED', message: error.message, field: error.field || 'qq.wsUrl', action: error.action || '检查 NapCat 的 QQ 登录状态和 OneBot WebSocket 配置后重试。', nextStep: error.nextStep || 'connection' });
 
 function id(value) { return value == null ? '' : String(value); }
 function localDay(date = new Date()) {
@@ -60,6 +68,15 @@ function normalizeEvent(event, selfId) {
   };
 }
 
+function normalizeInput(event, selfId) {
+  if (event.post_type !== 'notice') return normalizeEvent(event, selfId);
+  const notice = normalizeGroupEvent(event, { selfId, botQQ: selfId });
+  if (!notice) return { messageType: 'unsupported_notice', text: '', userId: '', groupId: '', selfId, ownMessage: false };
+  return { ...notice, messageType: 'group', isNotice: true, messageId: `notice:${notice.eventId || notice.dedupKey}`, selfId, mentioned: false, hasNonText: false, ownMessage: notice.ownEvent };
+}
+
+const groupTriggers = group => Array.isArray(group?.triggers) ? group.triggers : [group?.trigger || 'mention'];
+
 function favoriteText(summary) {
   if (typeof summary === 'string') return summary.slice(0, 4000);
   const pieces = [];
@@ -87,6 +104,9 @@ export function createRuntime({ getConfig, getSecret, store, installer, log = ()
   let connectionState = 'disconnected';
   let connectedAt = null;
   let lastError = '';
+  let lastIssue = null;
+  const modelChecks = new Map();
+  let lastGroupTest = null;
   let reconnectTimer = null;
   let schedulerTimer = null;
   let heartbeatTimer = null;
@@ -103,15 +123,43 @@ export function createRuntime({ getConfig, getSecret, store, installer, log = ()
 
   function report(level, message) { log(message, level); }
 
+  function modelFingerprint(provider) {
+    const config = getModelConfig(getConfig(), provider);
+    if (!config) return null;
+    const secret = provider === 'codex' ? '' : getSecret(provider === 'deepseek' ? 'deepseekApiKey' : apiSecretName(provider));
+    if (secret && typeof secret.then === 'function') return null;
+    return createHash('sha256').update(JSON.stringify([config, secret])).digest('hex');
+  }
+
+  function rememberConnectionIssue(error) {
+    lastError = error.message;
+    lastIssue = publicIssue(error);
+  }
+
+  function transportIssue(error) {
+    const text = String(error?.message || '');
+    const httpStatus = Number(error?.statusCode || /Unexpected server response:\s*(\d+)/i.exec(text)?.[1]);
+    if ([401, 403].includes(httpStatus)) return setupFailure('ONEBOT_AUTH_FAILED', 'NapCat 拒绝了 OneBot Token，QQ 连接尚未建立。', { field: 'secrets.napcatToken', action: '把 NapCat 网络配置中正向 WebSocket 的 Token 填入本账号连接设置；它不是 NapCat WebUI 登录密码。', status: 401 });
+    if (httpStatus) return setupFailure('ONEBOT_WRONG_ENDPOINT', `该端口未提供 OneBot WebSocket 服务（HTTP ${httpStatus}）。`, { action: '在 NapCat 中启用 OneBot 正向 WebSocket，并填写它的 ws://127.0.0.1:端口；不要填写 WebUI 端口。' });
+    if (error?.code === 'ECONNREFUSED' || /ECONNREFUSED/i.test(text)) return setupFailure('ONEBOT_UNREACHABLE', '没有连接到 NapCat：本机 OneBot 端口尚未运行或端口填写错误。', { action: '先启动 NapCat、扫码登录这个 QQ，再启用正向 WebSocket；核对两边端口一致。无需安装 Docker 也可以使用 Windows 原生 NapCat。' });
+    if (error?.code === 'ETIMEDOUT' || /timed out|timeout/i.test(text)) return setupFailure('ONEBOT_TIMEOUT', '连接 NapCat 超时，尚未验证 QQ 登录。', { action: '确认 NapCat 正在运行且 QQ 在线，并核对 OneBot 正向 WebSocket 端口。' });
+    return setupFailure('ONEBOT_CONNECTION_FAILED', 'NapCat 连接失败，尚未验证 QQ 登录。', { action: '检查 NapCat 是否启动、QQ 是否登录，以及 OneBot 正向 WebSocket 地址和 Token 是否一致。' });
+  }
+
   function status() {
     const config = getConfig();
     const released = config.permissions?.released === true;
     const privateReplies = released && config.permissions?.privateReplies === true;
     const readableGroups = config.groups.filter((group) => group.read === true).map((group) => group.id);
-    const writableGroups = released && config.chat?.enabled === true && config.chat?.provider === 'deepseek' && config.models.deepseek.enabled
+    const writableGroups = released && config.chat?.enabled === true && config.chat?.provider !== 'codex' && getModelConfig(config, config.chat?.provider)?.enabled
       ? config.groups.filter((group) => group.read === true && group.send === true).map((group) => group.id) : [];
     return {
-      state: connectionState, connected, accountId, connectedAt, lastError,
+      state: connectionState, connected, accountId, connectedAt, lastError, issue: lastIssue,
+      modelTests: Object.fromEntries([...modelChecks].map(([provider, result]) => {
+        const tested = Boolean(result.status === 'passed' && result.fingerprint && result.fingerprint === modelFingerprint(provider));
+        return [provider, { tested, status: result.status === 'passed' && !tested ? 'stale' : result.status, testedAt: result.status === 'passed' ? result.at : null, attemptedAt: result.at, message: result.message || '' }];
+      })),
+      qqTest: lastGroupTest ? { groupId: lastGroupTest.groupId, accountId: lastGroupTest.accountId, testedAt: lastGroupTest.at, tested: lastGroupTest.epoch === epoch && connected && released && accountId === lastGroupTest.accountId && writableGroups.includes(lastGroupTest.groupId) } : { tested: false },
       reconnectAttempts, queue: { running, pending: queue.length, limit: QUEUE_LIMIT },
       metrics: { ...counters },
       permissions: {
@@ -170,6 +218,7 @@ export function createRuntime({ getConfig, getSecret, store, installer, log = ()
     invalidateModelWork();
     closeSocket();
     connectionState = 'disconnected';
+    lastError = ''; lastIssue = null;
     return status();
   }
 
@@ -192,12 +241,12 @@ export function createRuntime({ getConfig, getSecret, store, installer, log = ()
     return new Promise((resolve, reject) => {
       const timer = setTimeout(() => {
         pendingActions.delete(echo);
-        const error = fail(`QQ 操作 ${actionName} 超时。`, 502);
+        const error = setupFailure(actionName === 'get_login_info' ? 'QQ_NOT_LOGGED_IN' : actionName === 'get_group_list' ? 'GROUP_LIST_UNAVAILABLE' : 'ONEBOT_TIMEOUT', actionName === 'get_login_info' ? 'NapCat 已连接，但 QQ 登录验证超时。' : `QQ 操作 ${actionName} 超时。`, { action: '打开 NapCat WebUI，确认 QQ 已扫码登录且在线，再重新连接。' });
         if (actionName.startsWith('send_')) error.deliveryUncertain = true;
         reject(error);
       }, QQ_TIMEOUT_MS);
       timer.unref?.();
-      pendingActions.set(echo, { resolve, reject, timer, isSend: actionName.startsWith('send_') });
+      pendingActions.set(echo, { resolve, reject, timer, actionName, isSend: actionName.startsWith('send_') });
       socket.send(JSON.stringify({ action: actionName, params, echo }), (error) => {
         if (!error) return;
         const pending = pendingActions.get(echo);
@@ -212,7 +261,7 @@ export function createRuntime({ getConfig, getSecret, store, installer, log = ()
   }
 
   /** Every send, including errors and summary delivery, passes this gate. */
-  function destinationGate(destination, expectedEpoch, { scenario, groupId, provider } = {}) {
+  function destinationGate(destination, expectedEpoch, { scenario, groupId, provider, triggeredBy } = {}) {
     const config = getConfig();
     if (expectedEpoch !== undefined && expectedEpoch !== epoch) throw fail('旧配置下的回复已取消。', 409);
     if (config.permissions?.released !== true) throw fail('账号当前只读；请在选定群与消息权限中明确释放发送权限。', 409);
@@ -235,9 +284,10 @@ export function createRuntime({ getConfig, getSecret, store, installer, log = ()
     if (destination.type !== 'group' || !group || group.read !== true || group.send !== true) {
       throw fail('该群未同时获得读取与发送权限，禁止发送消息。', 409);
     }
-    if (scenario !== 'chat' || provider !== 'deepseek' || config.chat.provider !== 'deepseek' || !config.models.deepseek.enabled) {
-      throw fail('群聊回复只能使用已启用的 DeepSeek 场景，个人 Codex 订阅不用于自动群聊。', 409);
+    if (scenario !== 'chat' || provider === 'codex' || provider !== config.chat.provider || !getModelConfig(config, provider)?.enabled) {
+      throw fail('群聊回复需要选择已启用的 API 模型；个人 Codex 订阅不用于自动群聊。', 409);
     }
+    if (triggeredBy && !groupTriggers(group).includes(triggeredBy)) throw fail('该群事件的触发权限已撤销，旧回复已取消。', 409);
   }
 
   async function send(destination, text, expectedEpoch, purpose) {
@@ -265,8 +315,8 @@ export function createRuntime({ getConfig, getSecret, store, installer, log = ()
 
   function selectPolicy(event, { preview = false } = {}) {
     const config = getConfig();
-    const input = normalizeEvent(event, accountId || config.botQQ);
-    if (input.ownMessage || (input.selfId && input.userId === input.selfId) || (accountId && input.userId === accountId) || (config.botQQ && input.userId === config.botQQ)) {
+    const input = normalizeInput(event, accountId || config.botQQ);
+    if (input.ownMessage || (!input.isNotice && ((input.selfId && input.userId === input.selfId) || (accountId && input.userId === accountId) || (config.botQQ && input.userId === config.botQQ)))) {
       return { allowed: false, action: 'ignore', reason: '忽略机器人自身消息。' };
     }
     if (input.messageType === 'private') {
@@ -276,7 +326,7 @@ export function createRuntime({ getConfig, getSecret, store, installer, log = ()
       }
       if (/^\/favorites\s*$/.test(input.text)) {
         if (!config.favorites.enabled) return { allowed: false, action: 'owner_error', scenario: 'favorites', reason: 'QQ 收藏模块未启用。' };
-        if (!config.models[config.favorites.provider]?.enabled) return { allowed: false, action: 'owner_error', scenario: 'favorites', reason: '收藏整理所选模型尚未启用。' };
+        if (!getModelConfig(config, config.favorites.provider)?.enabled) return { allowed: false, action: 'owner_error', scenario: 'favorites', reason: '收藏整理所选模型尚未启用。' };
         return { allowed: true, action: 'favorites_summary', scenario: 'favorites', provider: config.favorites.provider, destination: { type: 'private', id: config.ownerQQ }, reason: '本人要求整理当前账号已缓存的 QQ 收藏列表摘要。' };
       }
       if (/^\/favorites(?:\s|$)/.test(input.text)) return { allowed: false, action: 'owner_error', scenario: 'favorites', reason: '用法：/favorites；先在仪表盘同步当前账号的收藏列表。' };
@@ -293,8 +343,8 @@ export function createRuntime({ getConfig, getSecret, store, installer, log = ()
       const provider = command?.[1] === 'gpt' ? 'codex' : command?.[1] === 'ds' ? 'deepseek' : config.chat.provider;
       const text = command ? (command[2] || '').trim() : input.text;
       if (!text) return { allowed: false, action: 'owner_error', scenario: 'chat', reason: '请在 /gpt 或 /ds 后填写问题。' };
-      if (!config.models?.[provider]?.enabled) return { allowed: false, action: 'owner_error', scenario: 'chat', reason: provider === 'codex' ? 'GPT 订阅模块未启用。' : 'DeepSeek 模块未启用。' };
-      return { allowed: true, action: 'chat', scenario: 'chat', provider, text, destination: { type: 'private', id: config.ownerQQ }, reason: provider === 'codex' ? '本人私聊请求，使用个人订阅。' : '本人私聊，使用 DeepSeek API。' };
+      if (!getModelConfig(config, provider)?.enabled) return { allowed: false, action: 'owner_error', scenario: 'chat', reason: provider === 'codex' ? 'GPT 订阅模块未启用。' : '所选 API 模型尚未启用。' };
+      return { allowed: true, action: 'chat', scenario: 'chat', provider, text, destination: { type: 'private', id: config.ownerQQ }, reason: provider === 'codex' ? '本人私聊请求，使用个人订阅。' : '本人私聊，使用所选 API 模型。' };
     }
     if (input.messageType !== 'group') return { allowed: false, action: 'ignore', reason: '不支持此消息类型。' };
     const group = config.groups.find((entry) => entry.id === input.groupId);
@@ -303,22 +353,30 @@ export function createRuntime({ getConfig, getSecret, store, installer, log = ()
     if (config.permissions?.released !== true) return { allowed: true, action: 'record_only', groupId: group.id, reason: '账号当前只读；完成群与消息配置并释放权限后才可自动回复。' };
     if (group.send !== true) return { allowed: true, action: 'record_only', groupId: group.id, reason: '该群没有发送权限，只记录已授权读取的消息。' };
     if (config.chat?.enabled !== true) return { allowed: true, action: 'record_only', groupId: group.id, reason: '账号聊天功能未启用，只记录消息。' };
-    if (config.chat?.provider !== 'deepseek' || !config.models.deepseek.enabled) return { allowed: true, action: 'record_only', groupId: group.id, reason: '自动群聊只支持已启用的 DeepSeek，不会使用本人 Codex 订阅。' };
+    if (config.chat?.provider === 'codex' || !getModelConfig(config, config.chat?.provider)?.enabled) return { allowed: true, action: 'record_only', groupId: group.id, reason: '自动群聊需要已启用的 API 模型，不会使用本人 Codex 订阅。' };
     if (!input.text) return { allowed: true, action: 'record_only', groupId: group.id, reason: '没有可供回答的文字；附件当前未解析。' };
-    let triggered = false;
+    const triggers = groupTriggers(group);
+    let triggered = false, triggeredBy = '';
     let text = input.text;
-    if (group.trigger === 'mention') triggered = input.mentioned;
-    if (group.trigger === 'prefix') {
-      triggered = text.startsWith(group.prefix || '/ai');
-      if (triggered) text = text.slice((group.prefix || '/ai').length).trim();
+    if (input.isNotice) {
+      triggered = triggers.includes(input.kind) && (input.kind !== 'poke' || input.mentionsBot === true);
+      if (triggered) triggeredBy = input.kind;
+    } else {
+      if (triggers.includes('mention') && input.mentioned) { triggered = true; triggeredBy = 'mention'; }
+      if (triggers.includes('prefix') && text.startsWith(group.prefix || '/ai')) {
+        triggered = true; triggeredBy ||= 'prefix'; text = text.slice((group.prefix || '/ai').length).trim();
+      }
+      if (!triggered && triggers.includes('casual')) {
+        triggered = preview ? group.probability > 0 : Math.random() < group.probability;
+        if (triggered) triggeredBy = 'casual';
+      }
     }
-    if (group.trigger === 'casual') triggered = preview ? group.probability > 0 : Math.random() < group.probability;
-    if (!triggered || !text) return { allowed: true, action: 'record_only', groupId: group.id, reason: group.trigger === 'casual' && preview ? '插话概率为 0；不会触发回答。' : '未满足该群的回答触发条件。' };
+    if (!triggered || !text) return { allowed: true, action: 'record_only', groupId: group.id, reason: !triggers.length ? '该群已取消全部自动回复触发条件，只记录选定范围内的消息。' : triggers.includes('casual') && preview && !input.isNotice ? '未满足其他条件且插话概率为 0；不会触发回答。' : '未满足该群的回答触发条件。' };
     return {
-      allowed: true, action: 'chat', scenario: 'chat', provider: 'deepseek', text, groupId: group.id,
+      allowed: true, action: 'chat', scenario: 'chat', provider: config.chat.provider, text, groupId: group.id, triggeredBy,
       destination: { type: 'group', id: group.id },
-      probability: group.trigger === 'casual' ? group.probability : undefined,
-      reason: group.trigger === 'casual' && preview ? '仅预览：实际按插话概率抽样，并受冷却限制。' : '该群已明确授权回复；使用 DeepSeek，不使用本人 GPT 订阅。',
+      probability: triggeredBy === 'casual' ? group.probability : undefined,
+      reason: triggeredBy === 'casual' && preview ? '仅预览：实际按插话概率抽样，并受冷却限制。' : '该群已明确授权该触发条件，使用本账号为聊天选择的 API 模型。',
     };
   }
 
@@ -353,23 +411,25 @@ export function createRuntime({ getConfig, getSecret, store, installer, log = ()
     } finally { running = false; }
   }
 
-  async function infer(provider, messages, signal) {
+  async function infer(provider, messages, signal, { testing = false } = {}) {
     const config = getConfig();
-    if (!config.models?.[provider]?.enabled) throw fail('所选模型通道尚未启用。', 409);
+    if (!getModelConfig(config, provider)?.enabled) throw fail('所选模型通道尚未启用。', 409);
     counters.modelCalls++;
     if (provider === 'codex') {
       const invocation = await installer.codexInvocation();
       const prompt = messages.map((message) => `${message.role === 'system' ? '任务要求' : message.role === 'assistant' ? '此前回答' : '输入资料'}：\n${message.content}`).join('\n\n');
       return providers.codex({ prompt, config: config.models.codex, invocation, signal });
     }
+    const apiConfig = testing ? { ...getModelConfig(config, provider), maxTokens: 64, temperature: 0 } : getModelConfig(config, provider);
+    if (isApiProviderId(provider)) return providers.compatible({ messages, config: apiConfig, apiKey: await getSecret(apiSecretName(provider)), signal, provider });
     if (provider !== 'deepseek') throw fail('未知模型通道。');
-    return providers.deepseek({ messages, config: config.models.deepseek, apiKey: await getSecret('deepseekApiKey'), signal });
+    return providers.deepseek({ messages, config: apiConfig, apiKey: await getSecret('deepseekApiKey'), signal });
   }
 
   async function handleMessage(event) {
     const config = getConfig();
     const receiptEpoch = epoch;
-    const input = normalizeEvent(event, accountId);
+    const input = normalizeInput(event, accountId);
     counters.received++;
     const decision = selectPolicy(event);
     if (decision.action === 'ignore') { counters.ignored++; return; }
@@ -412,7 +472,7 @@ export function createRuntime({ getConfig, getSecret, store, installer, log = ()
     cooldowns.set(cooldownKey, Date.now());
     await enqueue(`chat:${cooldownKey}`, async (signal, taskEpoch) => {
       const current = getConfig();
-      const purpose = { scenario: 'chat', provider: decision.provider };
+      const purpose = { scenario: 'chat', provider: decision.provider, triggeredBy: decision.triggeredBy };
       destinationGate(decision.destination, taskEpoch, purpose);
       let messages;
       if (decision.destination.type === 'group') {
@@ -454,11 +514,11 @@ export function createRuntime({ getConfig, getSecret, store, installer, log = ()
       pendingActions.delete(id(packet.echo));
       clearTimeout(pending.timer);
       if (packet.status === 'failed' || Number(packet.retcode) !== 0) {
-        pending.reject(fail(`NapCat 操作失败（retcode ${packet.retcode ?? '未知'}）：${String(packet.message || packet.wording || '请检查 QQ 登录状态及接口支持情况').slice(0, 200)}`, 502));
+        pending.reject(setupFailure(pending.actionName === 'get_login_info' ? 'QQ_NOT_LOGGED_IN' : pending.actionName === 'get_group_list' ? 'GROUP_LIST_UNAVAILABLE' : 'ONEBOT_ACTION_FAILED', pending.actionName === 'get_login_info' ? 'NapCat 尚未确认 QQ 登录，请先在 NapCat 中完成扫码登录。' : pending.actionName === 'get_group_list' ? 'QQ 群列表读取失败，请检查 NapCat 中账号是否在线。' : `NapCat 操作失败（retcode ${packet.retcode ?? '未知'}）。`, { action: '在 NapCat WebUI 检查 QQ 登录状态；确认在线后重新连接。', details: [String(packet.message || packet.wording || '接口未返回成功结果').slice(0, 200)] }));
       } else pending.resolve(packet.data);
       return;
     }
-    if (!connected || !['message', 'message_sent'].includes(packet.post_type)) return;
+    if (!connected || !['message', 'message_sent', 'notice'].includes(packet.post_type)) return;
     const packetEpoch = epoch;
     const decision = selectPolicy(packet, { preview: true });
     handleMessage(packet).catch(async (error) => {
@@ -480,10 +540,10 @@ export function createRuntime({ getConfig, getSecret, store, installer, log = ()
     const operationEpoch = epoch;
     connectionPromise = operation;
     operation.catch((error) => {
-      if (wanted && operationEpoch === epoch) {
-        lastError = error.message;
+      if (operationEpoch === epoch) {
+        rememberConnectionIssue(error);
         if (!connected && connectionState === 'connecting') connectionState = 'error';
-        scheduleReconnect();
+        if (wanted) scheduleReconnect();
       }
     });
     operation.finally(() => { if (connectionPromise === operation) connectionPromise = null; }).catch(() => {});
@@ -492,10 +552,11 @@ export function createRuntime({ getConfig, getSecret, store, installer, log = ()
 
   async function beginConnect() {
     const config = getConfig();
-    if (!config.qq?.enabled) throw fail('QQ 模块未启用。');
-    const url = new URL(config.qq.wsUrl);
+    if (!config.qq?.enabled) throw setupFailure('QQ_DISABLED', '本账号尚未应用 QQ 连接设置。', { field: 'qq.enabled', action: '在账号的 QQ 连接步骤启用连接，保存并应用为只读后，再测试连接。', status: 409 });
+    let url;
+    try { url = new URL(config.qq.wsUrl); } catch { throw setupFailure('ONEBOT_WRONG_ENDPOINT', 'OneBot WebSocket 地址格式不正确。', { action: '填写 NapCat 正向 WebSocket 的本机地址，例如 ws://127.0.0.1:3001。', status: 400 }); }
     if (!['ws:', 'wss:'].includes(url.protocol) || url.username || url.password || url.search) {
-      throw fail('QQ WebSocket 地址必须是 ws:// 或 wss://，且不能在 URL 中携带认证信息或查询参数。');
+      throw setupFailure('ONEBOT_WRONG_ENDPOINT', 'OneBot WebSocket 地址应以 ws:// 开头，不能包含 Token 或查询参数。', { action: '将 Token 填入单独的 OneBot Token 输入框；WebUI 地址仅用于扫码登录。', status: 400 });
     }
     wanted = true;
     clearTimeout(reconnectTimer);
@@ -503,10 +564,11 @@ export function createRuntime({ getConfig, getSecret, store, installer, log = ()
     if (socket) invalidateModelWork();
     closeSocket();
     connectionState = 'connecting';
-    lastError = '';
+    lastError = ''; lastIssue = null;
     const connectEpoch = epoch;
     const token = await getSecret('napcatToken');
     if (!wanted || connectEpoch !== epoch) throw fail('连接已取消。', 409);
+    if (!token) throw setupFailure('NAPCAT_TOKEN_MISSING', '尚未配置本账号的 OneBot Token。', { field: 'secrets.napcatToken', action: '复制 NapCat 网络配置中正向 WebSocket 的 Token，保存并应用到本账号；不要使用 WebUI 登录密码。', status: 409 });
     const activeSocket = new WebSocket(url, {
       headers: token ? { Authorization: `Bearer ${token}` } : {},
       handshakeTimeout: QQ_TIMEOUT_MS, maxPayload: 1024 * 1024,
@@ -534,34 +596,43 @@ export function createRuntime({ getConfig, getSecret, store, installer, log = ()
           const login = await action('get_login_info', {}, { handshake: true });
           if (socket !== activeSocket || !wanted) throw fail('连接已取消。', 409);
           const actualId = id(login?.user_id);
-          if (!/^\d+$/.test(actualId)) throw fail('NapCat 未返回有效 QQ 登录账号。', 502);
-          if (getConfig().botQQ && actualId !== getConfig().botQQ) throw fail('QQ 连接组件登录的账号与账号控制中填写的 QQ 不一致，已拒绝连接。', 409);
-          if (getConfig().ownerQQ && actualId === getConfig().ownerQQ) throw fail('受控 QQ 与指令接收 QQ 相同，无法安全区分本人指令。', 409);
+          if (!/^[1-9]\d{3,19}$/.test(actualId)) throw setupFailure('QQ_NOT_LOGGED_IN', 'NapCat 尚未返回有效 QQ 登录账号。', { action: '打开 NapCat WebUI，使用本账号 QQ 扫码登录；显示在线后再测试连接。' });
+          if (getConfig().botQQ && actualId !== getConfig().botQQ) throw setupFailure('QQ_IDENTITY_MISMATCH', `NapCat 实际登录 QQ ${actualId}，与本账号填写的 QQ ${getConfig().botQQ} 不一致，已拒绝连接。`, { field: 'botQQ', action: '切换 NapCat 登录账号，或修改当前账号的接入 QQ 号，使两边一致后重新应用。', status: 409 });
+          if (getConfig().ownerQQ && actualId === getConfig().ownerQQ && (getConfig().permissions?.privateReplies || (getConfig().summary?.enabled && getConfig().summary?.sendToOwner))) throw setupFailure('PRIVATE_RECIPIENT_SAME', '私聊接收 QQ 与接入 QQ 相同，不能通过 QQ 给自己投递。', { field: 'ownerQQ', action: '如果只需要群聊或本地汇总，关闭私聊回复和私聊投递；需要私聊时再填写另一个 QQ。', nextStep: 'permissions', status: 409 });
           accountId = actualId;
           connected = true;
           connectedAt = new Date().toISOString();
           connectionState = 'connected';
           reconnectAttempts = 0;
-          lastError = '';
+          lastError = ''; lastIssue = null;
           settled = true;
           report('info', `QQ 连接已验证，当前账号 ${actualId}。`);
           resolve(status());
         } catch (error) {
           rejectOnce(error);
           if (socket !== activeSocket) return;
-          lastError = error.message;
+          rememberConnectionIssue(error);
           connectionState = 'error';
           activeSocket.close();
         }
       });
       activeSocket.on('error', (error) => {
         if (socket !== activeSocket) return;
-        lastError = `QQ WebSocket 连接失败：${error.message}`;
+        if (settled && !connected) return;
+        const issue = transportIssue(error);
+        rememberConnectionIssue(issue);
         connectionState = 'error';
-        rejectOnce(fail(lastError, 502));
+        rejectOnce(issue);
+      });
+      activeSocket.on('unexpected-response', (request, response) => {
+        if (socket !== activeSocket) return;
+        const issue = transportIssue({ statusCode: response.statusCode });
+        rememberConnectionIssue(issue); connectionState = 'error'; rejectOnce(issue);
+        response.resume(); request.destroy(); activeSocket.terminate();
       });
       activeSocket.on('close', () => {
         if (socket !== activeSocket) return;
+        if (wanted && !lastIssue) rememberConnectionIssue(setupFailure('ONEBOT_CONNECTION_CLOSED', 'NapCat 连接已关闭，QQ 当前不在线。', { action: '重新打开 NapCat，确认 QQ 在线和正向 WebSocket 已启用，再测试连接。' }));
         connected = false;
         connectedAt = null;
         accountId = '';
@@ -570,7 +641,7 @@ export function createRuntime({ getConfig, getSecret, store, installer, log = ()
         heartbeatTimer = null;
         invalidateModelWork();
         cancelActions('QQ 连接中断。');
-        rejectOnce(fail(lastError || 'QQ 连接已关闭。', 502));
+        rejectOnce(lastIssue ? Object.assign(fail(lastIssue.message, 502), lastIssue) : setupFailure('ONEBOT_CONNECTION_CLOSED', 'NapCat 连接已关闭，QQ 当前不在线。'));
         connectionState = wanted ? 'reconnecting' : 'disconnected';
         scheduleReconnect();
       });
@@ -578,21 +649,43 @@ export function createRuntime({ getConfig, getSecret, store, installer, log = ()
     return handshake;
   }
 
-  async function testDeepSeek() {
-    return enqueue('deepseek-test', async (signal) => {
-      counters.modelCalls++;
-      const result = await providers.deepseek({ messages: [
-        { role: 'system', content: '这是连接测试。请只回复“连接成功”。' },
-        { role: 'user', content: '请测试一次。' },
-      ], config: { ...getConfig().models.deepseek, maxTokens: 64, temperature: 0 }, apiKey: await getSecret('deepseekApiKey'), signal });
-      return { ...result, message: '已完成一次真实 DeepSeek API 测试，可能产生少量费用。' };
-    });
+  async function testModel(provider = 'deepseek') {
+    if (!getModelConfig(getConfig(), provider)?.enabled) throw setupFailure('MODEL_NOT_ENABLED', '请先启用并应用要测试的模型。', { field: 'models', action: '在模型步骤填写凭据，保存并应用为只读，再点击测试。', nextStep: 'models', status: 409 });
+    const attempt = randomUUID();
+    modelChecks.set(provider, { attempt, status: 'testing', fingerprint: null, at: new Date().toISOString(), message: '正在进行真实模型测试。' });
+    try {
+      return await enqueue(`${provider}-test`, async (signal) => {
+        const fingerprint = modelFingerprint(provider);
+        const result = await infer(provider, [
+          { role: 'system', content: '这是连接测试。请只回复“连接成功”。' },
+          { role: 'user', content: '请测试一次。' },
+        ], signal, { testing: true });
+        if (modelChecks.get(provider)?.attempt === attempt && fingerprint && fingerprint === modelFingerprint(provider)) modelChecks.set(provider, { attempt, status: 'passed', fingerprint, at: new Date().toISOString(), message: '最新一次真实模型测试已通过。' });
+        return { ...result, tested: true, message: provider === 'codex' ? '已完成一次真实 Codex 测试，会使用订阅额度；结果仅显示在本机。' : '已完成一次真实 API 测试，可能产生少量费用；结果仅显示在本机。' };
+      });
+    } catch (error) {
+      if (modelChecks.get(provider)?.attempt === attempt) modelChecks.set(provider, { attempt, status: 'failed', fingerprint: null, at: new Date().toISOString(), message: error.message || '最新一次模型测试未通过。' });
+      throw error;
+    }
+  }
+
+  const testDeepSeek = () => testModel('deepseek');
+
+  async function testGroupMessage(groupId) {
+    const config = getConfig();
+    if (typeof groupId !== 'string' || !config.groups.some(group => group.id === groupId)) throw setupFailure('GROUP_NOT_SELECTED', '请先在本账号权限中选择要验证的群。', { field: 'groups', action: '在群与消息权限中选择群，并明确允许读取和发送后再验证。', nextStep: 'permissions', status: 409 });
+    lastGroupTest = null;
+    const testEpoch = epoch;
+    const testAccount = accountId;
+    await send({ type: 'group', id: groupId }, 'QQ_Service 连接测试：此账号已完成连接验证，并获得向本群发送消息的权限。', testEpoch, { scenario: 'chat', groupId, provider: config.chat.provider });
+    lastGroupTest = { groupId, accountId: testAccount, at: new Date().toISOString(), epoch: testEpoch };
+    return { sent: true, groupId, accountId: testAccount, testedAt: lastGroupTest.at, message: '测试消息已由 NapCat 确认发送。此验证未调用 AI 模型。' };
   }
 
   async function listGroups() {
     const config = getConfig();
-    if (!config.qq?.enabled || !connected || !accountId) throw fail('请先连接并验证受控 QQ 账号，再读取已加入群。', 409);
-    if (!config.botQQ || accountId !== config.botQQ) throw fail('QQ 登录账号与账号控制配置不一致，拒绝读取群列表。', 409);
+    if (!config.qq?.enabled || !connected || !accountId) throw setupFailure('QQ_NOT_CONNECTED', '请先连接并验证受控 QQ 账号，再读取已加入群。', { action: '完成 NapCat 扫码登录，在本账号的 QQ 连接步骤点击测试连接。', status: 409 });
+    if (!config.botQQ || accountId !== config.botQQ) throw setupFailure('QQ_IDENTITY_MISMATCH', 'QQ 登录账号与账号控制配置不一致，拒绝读取群列表。', { field: 'botQQ', action: '将接入 QQ 号和 NapCat 实际登录账号设置为同一个账号。', status: 409 });
     const listEpoch = epoch;
     const listAccount = accountId;
     const groups = await action('get_group_list', {});
@@ -600,7 +693,7 @@ export function createRuntime({ getConfig, getSecret, store, installer, log = ()
       throw fail('读取期间 QQ 账号或配置发生变化，群列表已丢弃。', 409);
     }
     if (!Array.isArray(groups) || groups.some((group) => !group || !/^\d+$/.test(id(group.group_id)) || typeof group.group_name !== 'string')) {
-      throw fail('QQ 连接组件返回的群列表格式不受支持，请检查连接组件版本及登录状态。', 502);
+      throw setupFailure('GROUP_LIST_UNAVAILABLE', 'QQ 连接组件返回的群列表格式不受支持，请检查连接组件版本及登录状态。', { action: '在 NapCat WebUI 确认账号在线；更新 NapCat 后重新连接，不会自动生成或授权群。' });
     }
     const seen = new Set();
     return groups.filter((group) => {
@@ -695,7 +788,7 @@ export function createRuntime({ getConfig, getSecret, store, installer, log = ()
     const source = options.source || 'dashboard';
     if (source === 'schedule') throw fail('收藏整理只接受本人明确请求，当前版本不运行定时收藏任务。', 409);
     if (!config.favorites.enabled) throw fail('QQ 收藏模块未启用。');
-    if (!config.models[config.favorites.provider]?.enabled) throw fail('收藏整理所选模型尚未启用。');
+    if (!getModelConfig(config, config.favorites.provider)?.enabled) throw fail('收藏整理所选模型尚未启用。');
     const shouldSend = options.send ?? false;
     return enqueue('favorites-summary', async (signal, taskEpoch) => {
       const current = getConfig();
@@ -820,5 +913,5 @@ export function createRuntime({ getConfig, getSecret, store, installer, log = ()
     return status();
   }
 
-  return { reload, connect, stop, status, testDeepSeek, listGroups, runSummary, runFavoritesSummary, syncFavorites, preview };
+  return { reload, connect, stop, status, testDeepSeek, testModel, testGroupMessage, invalidateModelTest: provider => modelChecks.delete(provider), listGroups, runSummary, runFavoritesSummary, syncFavorites, preview };
 }
