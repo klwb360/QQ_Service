@@ -8,9 +8,16 @@
 
 [下载 Windows EXE](https://github.com/klwb360/QQ_Service/releases/latest) · [使用指南](docs/USAGE.md) · [无需 Docker 接入 QQ](docs/NATIVE_NAPCAT_WINDOWS.md) · [功能实现与架构](docs/ARCHITECTURE.md) · [开发指南](docs/DEVELOPMENT.md) · [验证记录](docs/VALIDATION.md)
 
-QQ_Service 是支持多个 QQ 账号同时在线的本地助手。「账号控制」从一个创建入口开始，每个账号展开后按步骤完成模型、QQ 登录、功能与权限配置，并显示当前卡在哪一步、接下来该做什么。支持 DeepSeek、多组 OpenAI 兼容 API，以及通过官方 Codex CLI 使用本人 ChatGPT 订阅。**新账号默认只读；填入 QQ 号、API Key 或登录 Codex 都不会自动运行场景或获得发送权限。**
+QQ_Service 是支持多个 QQ 账号同时在线的本地助手。「账号控制」集中管理创建与配置：每个账号是一条可展开的菜单，从账号信息开始逐段向下完成模型、QQ 登录、功能与权限配置，已填写的内容保留在上方。总览只显示关键统计、运行状态和最近任务，统计卡片可点击进入对应页面。支持 DeepSeek、多组 OpenAI 兼容 API，以及通过官方 Codex CLI 使用本人 ChatGPT 订阅。**新账号默认只读；填入 QQ 号、API Key 或登录 Codex 都不会自动运行场景或获得发送权限。**
 
-![QQ_Service 展开账号后的六步配置引导](docs/assets/account-control.png)
+![QQ_Service 展开账号后的连续配置面板](docs/assets/account-control.png)
+
+<details>
+<summary>查看简化后的总览</summary>
+
+![QQ_Service 关键统计、运行状态与最近任务](docs/assets/overview-simplified.png)
+
+</details>
 
 <details>
 <summary>首次使用：只有创建账号入口</summary>
@@ -37,7 +44,7 @@ QQ_Service 是支持多个 QQ 账号同时在线的本地助手。「账号控�
 
 ## 下载与快速开始
 
-文档版本：**v0.4.1**，适用于 **Windows 10/11 x64**。下载文件以对应 Release 的实际发布资产为准。
+稳定下载：**v0.4.1**，适用于 **Windows 10/11 x64**。以下界面说明对应当前源码分支；下载文件以对应 Release 的实际发布资产为准。
 
 | 下载 | 说明 |
 | --- | --- |
@@ -45,7 +52,7 @@ QQ_Service 是支持多个 QQ 账号同时在线的本地助手。「账号控�
 | [SHA256 校验文件](https://github.com/klwb360/QQ_Service/releases/download/v0.4.1/QQ_Service-0.4.1-Windows-x64.exe.sha256) | 用于核对下载文件 |
 | [最新发布与更新说明](https://github.com/klwb360/QQ_Service/releases/latest) | 查看已发布版本和更新记录 |
 
-1. **创建账号配置**：首次进入「账号控制」只显示创建入口。输入希望接入的 QQ 号，可同时选择 API Key 和 ChatGPT 订阅。每个账号有自己的展开面板、参数与数据，可以同时运行。
+1. **创建账号配置**：创建入口只在「账号控制」显示。输入希望接入的 QQ 号，可同时选择 API Key 和 ChatGPT 订阅。每个账号的栏头与展开内容连为同一菜单，可点击栏头展开或收起，参数与数据分别保存，多个账号可以同时运行。完成一部分并继续后，下一部分带动画向下展开，之前的表单保持可见，无需切换顶部步骤标签。
 2. **准备模型**：填写 DeepSeek Key，按需添加多组兼容 API 的名称、地址、模型和 Key；或安装 Codex CLI 并完成官方 ChatGPT 授权。为聊天、通知和收藏分别选择模型，多模型可在同一账号使用。
 3. **实际登录 QQ**：NapCat 是 QQ 登录与消息接口组件。按 [Windows 原生指南](docs/NATIVE_NAPCAT_WINDOWS.md) 部署并扫码登录，无需 Docker；已有 Docker 的用户也可使用应用内安装。填入 QQ 号不是登录，连接检查必须显示实际登录身份一致。
 4. **选择账号功能**：按需启用聊天回复、工作通知汇总或收藏整理，设置触发方式、模型和计划。暂不使用的功能可以关闭。

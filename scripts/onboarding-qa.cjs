@@ -63,12 +63,24 @@ async function chooseStep(step) {
     const id = await page.locator('#account-selector').inputValue();
     await page.locator(`#account-cards [data-open-account="${id}"]`).click();
   }
-  await page.locator(`#account-setup-steps [data-setup-step="${step}"]`).click();
-  await page.locator(`[data-setup-panel="${step}"]`).waitFor({ state: 'visible' });
+  // Account setup grows downwards: use the same continue/skip actions as a
+  // person, preserving every preceding section instead of jumping via tabs.
+  const order = ['identity', 'models', 'connection', 'scenarios', 'permissions', 'verification'];
+  const target = order.indexOf(step);
+  assert.ok(target >= 0, `未知配置阶段 ${step}`);
+  for (let index = 1; index <= target; index++) {
+    if (await page.locator(`[data-setup-panel="${order[index]}"]`).isVisible()) continue;
+    const previous = page.locator(`[data-setup-panel="${order[index - 1]}"]`);
+    const forward = previous.locator(`[data-setup-step="${order[index]}"], [data-setup-save="${order[index]}"], [data-setup-apply="${order[index]}"]`).first();
+    await forward.click();
+    await page.locator(`[data-setup-panel="${order[index]}"]`).waitFor({ state: 'visible' });
+  }
+  await page.locator(`[data-setup-panel="${step}"]`).scrollIntoViewIfNeeded();
 }
 async function chooseAccount(accountId) {
   await page.locator('[data-page="connections"]').click();
-  await page.locator(`#account-cards [data-open-account="${accountId}"]`).click();
+  const entry = page.locator(`#account-cards [data-open-account="${accountId}"]`);
+  if (await entry.getAttribute('aria-expanded') !== 'true') await entry.click();
   await until(async () => (await page.locator('#account-selector').inputValue()) === accountId
     && await page.locator('#account-workspace').isVisible(), '未展开指定账号');
 }
@@ -99,6 +111,33 @@ async function saveDraft(accountId) {
   const state = await response.json();
   await chooseStep('models');
   return state;
+}
+async function checkOverviewNavigation() {
+  await page.locator('[data-page="overview"]').click();
+  assert.equal(await page.locator('.account-context').isVisible(), false);
+  assert.equal(await page.locator('.config-bar').isVisible(), false);
+  assert.equal(await page.locator('#page-overview .onboarding').count(), 0);
+  assert.equal(await page.locator('#create-account').count(), 0);
+  const cards = page.locator('#overview-stats > button[data-overview-go]');
+  assert.equal(await cards.count(), 4);
+  const hasAccount = Boolean(await page.locator('#account-selector').inputValue());
+  for (const [index, destination] of [[0, 'connections'], [1, 'scenarios'], [2, 'scenarios'], [3, 'records']]) {
+    await page.locator('[data-page="overview"]').click();
+    if (!hasAccount && index > 0) { assert.equal(await cards.nth(index).isDisabled(), true); continue; }
+    await cards.nth(index).click();
+    assert.equal(await page.locator(`#page-${destination}`).isVisible(), true);
+    assert.equal(await page.locator('#new-account-form').isVisible(), false);
+    if (destination === 'scenarios') {
+      assert.equal(await page.locator('[data-scenario-tab="permissions"]').getAttribute('aria-selected'), 'true');
+    }
+    if (index === 2) assert.equal(await page.locator('#group-rows').evaluate(element => {
+      const groupCard = element.closest('.card');
+      return Boolean(groupCard?.contains(document.activeElement));
+    }), true);
+  }
+  assert.equal(await page.locator('button').evaluateAll(buttons => buttons.filter(button => /创建.*账号|创建并开始配置/.test(button.textContent)).every(button => Boolean(button.closest('#page-connections')))), true);
+  await page.locator('[data-page="connections"]').click();
+  pass(hasAccount ? '总览四张卡片支持跳转并定位群权限，创建账号入口只属于账号控制' : '空总览不显示重复账号与配置栏，账号相关卡片待创建后启用，创建入口只属于账号控制');
 }
 async function checkLegacyUpgrade() {
   await page.close();
@@ -164,6 +203,7 @@ async function checkLegacyUpgrade() {
   assert.equal(fs.readFileSync(configFile, 'utf8'), originalBytes);
   pass('旧版无 models.apis / triggers 的配置直接打开和轮询不自动修改、变脏或撤销已授权权限，原前缀及概率参数保持');
 
+  await firstRow.locator('.group-trigger-picker summary').click();
   await firstRow.locator('[data-group-triggers-clear="0"]').click();
   assert.equal(await firstRow.locator('[data-group-trigger]:checked').count(), 0);
   await page.locator('#apply-config').click();
@@ -216,6 +256,7 @@ async function checkLegacyUpgrade() {
     page.on('pageerror', error => errors.push(error.message));
     await page.goto(`http://127.0.0.1:${address.port}`);
     await page.waitForFunction(() => document.querySelector('#server-label')?.textContent === '管理服务可访问');
+    await checkOverviewNavigation();
     await page.locator('[data-page="connections"]').click();
     assert.equal(await page.locator('#account-cards [data-open-account]').count(), 0);
     assert.equal(await page.locator('#account-workspace').isVisible(), false);
@@ -231,9 +272,21 @@ async function checkLegacyUpgrade() {
     assert.equal(await page.locator('[data-config="models.deepseek.enabled"]').isChecked(), true);
     assert.equal(await page.locator('[data-config="models.codex.enabled"]').isChecked(), true);
     assert.equal((await readState(first.id)).applied.permissions.released, false);
+    assert.equal(await page.locator('[data-setup-panel="models"]').isVisible(), false);
+    assert.equal(await page.locator('#account-setup-steps, #collapse-account, #account-detail-title, #account-setup-message').count(), 0);
+    assert.equal(await page.locator('#account-workspace').evaluate(element => {
+      const accordion = element.closest('.account-accordion');
+      return Boolean(accordion?.querySelector('.account-entry') && element.closest('.account-accordion-body'));
+    }), true);
     pass('创建账号可多选 API 与 ChatGPT 订阅，默认不释放权限');
+    await checkOverviewNavigation();
 
     await chooseStep('models');
+    assert.equal(await page.locator('[data-setup-panel="identity"]').isVisible(), true);
+    assert.equal(await page.locator('[data-setup-panel="connection"]').isVisible(), false);
+    assert.equal(calls.length, 0);
+    assert.equal((await readState(first.id)).applied.permissions.released, false);
+    pass('同一账号菜单内继续配置只在下方展开下一段，前文保留且不自动调用模型或释放权限');
     await page.locator('[data-secret="deepseekApiKey"]').fill('qa-local-key-account-a');
     await page.locator('[data-page="scenarios"]').click();
     await page.locator('[data-scenario-tab="tasks"]').click();
@@ -255,12 +308,101 @@ async function checkLegacyUpgrade() {
     await chooseAccount(second.id);
     await chooseStep('models');
     assert.equal(await page.locator('[data-secret="deepseekApiKey"]').inputValue(), 'qa-local-key-account-b');
-    await page.locator('#collapse-account').click();
-    assert.equal(await page.locator('#account-workspace').isVisible(), false);
+    await page.locator(`#account-cards [data-open-account="${second.id}"]`).click();
+    await until(async () => !await page.locator('#account-workspace').isVisible(), '账号下拉栏未收起');
     await chooseAccount(second.id);
     await chooseStep('models');
     assert.equal(await page.locator('[data-secret="deepseekApiKey"]').inputValue(), 'qa-local-key-account-b');
     pass('展开、收起、账号切换和后台轮询均保留各自尚未保存的参数与密钥');
+    await chooseAccount(first.id);
+    const firstHeader = page.locator(`#account-cards [data-open-account="${first.id}"]`);
+    const initialHeader = await firstHeader.boundingBox();
+    await firstHeader.evaluate(button => button.click());
+    await page.locator(`#account-cards [data-open-account="${second.id}"]`).evaluate(button => button.click());
+    await until(async () => await page.locator('#account-selector').inputValue() === second.id, '动画切换未选中 B');
+    await firstHeader.evaluate(button => button.click());
+    await until(async () => await page.locator('#account-selector').inputValue() === first.id
+      && await page.locator('#account-workspace').isVisible(), '动画切换未恢复 A');
+    assert.equal(await page.locator('[data-secret="deepseekApiKey"]').inputValue(), 'qa-local-key-account-a');
+    const restoredHeader = await firstHeader.boundingBox();
+    assert.equal(Math.round(restoredHeader.width), Math.round(initialHeader.width));
+    assert.equal(await firstHeader.getAttribute('aria-expanded'), 'true');
+    await page.emulateMedia({ reducedMotion: 'reduce' });
+    await firstHeader.click();
+    await until(async () => !await page.locator('#account-workspace').isVisible(), '减少动态效果下未收起账号');
+    await chooseAccount(first.id);
+    assert.equal(await page.locator('[data-secret="deepseekApiKey"]').inputValue(), 'qa-local-key-account-a');
+    await page.emulateMedia({ reducedMotion: 'no-preference' });
+    pass('展开动画期间快速切换 A→B→A 保留独立草稿、统一栏宽及展开语义，减少动态效果模式也可正常操作');
+
+    // A save can finish after another profile is opened. Its response must
+    // neither advance B's visible setup nor apply B's unsaved credentials.
+    await chooseAccount(first.id);
+    let unblockApply;
+    let requestStarted;
+    const pendingApply = new Promise(resolve => { unblockApply = resolve; });
+    const applyStarted = new Promise(resolve => { requestStarted = resolve; });
+    const applyPath = `**/api/accounts/${first.id}/config/apply`;
+    await page.route(applyPath, async route => { requestStarted(); await pendingApply; await route.continue(); });
+    try {
+      const appliedA = page.waitForResponse(response => response.url().endsWith(`/api/accounts/${first.id}/config/apply`) && response.request().method() === 'POST');
+      await page.locator('[data-setup-apply="connection"]').click();
+      await applyStarted;
+      await chooseAccount(second.id);
+      assert.equal(await page.locator('[data-setup-panel="connection"]').isVisible(), false);
+      unblockApply();
+      assert.equal((await appliedA).status(), 200);
+      await until(async () => (await readState(first.id)).secrets.deepseekApiKey, '账号 A 延迟应用未完成');
+      assert.equal(await page.locator('#account-selector').inputValue(), second.id);
+      assert.equal(await page.locator('[data-setup-panel="connection"]').isVisible(), false);
+      assert.equal(await page.locator('[data-secret="deepseekApiKey"]').inputValue(), 'qa-local-key-account-b');
+      assert.equal((await readState(second.id)).secrets.deepseekApiKey, false);
+      await chooseAccount(first.id);
+      assert.equal(await page.locator('[data-setup-panel="connection"]').isVisible(), true);
+      assert.equal((await readState(first.id)).applied.permissions.released, false);
+      assert.equal(calls.length, 0);
+    } finally { unblockApply(); await page.unroute(applyPath); }
+    await chooseAccount(second.id);
+    await chooseStep('models');
+    pass('账号 A 延迟应用期间切换 B，不推进 B 的配置进度、不保存 B 的密钥，完成后进度仍归 A');
+
+    let unblockCreation;
+    let creationReadStarted;
+    const creationGate = new Promise(resolve => { unblockCreation = resolve; });
+    const creationRead = new Promise(resolve => { creationReadStarted = resolve; });
+    const creationStatePath = '**/api/accounts/*/state';
+    await page.route(creationStatePath, async route => {
+      if (![first.id, second.id].some(id => route.request().url().includes(`/accounts/${id}/`))) {
+        creationReadStarted(); await creationGate;
+      }
+      await route.continue();
+    });
+    try {
+      await page.locator('#create-account-entry').click();
+      await page.locator('#new-account-qq').fill('12345004');
+      await page.locator('#new-account-name').fill('延迟创建验收账号 C');
+      await page.locator('#new-account-api').uncheck();
+      await page.locator('#new-account-codex').check();
+      const createdResponse = page.waitForResponse(response => response.url().endsWith('/api/accounts') && response.request().method() === 'POST');
+      await page.locator('#submit-create-account').click();
+      const created = await (await createdResponse).json();
+      const createdSaved = page.waitForResponse(response => response.url().endsWith(`/api/accounts/${created.account.id}/config/save`) && response.request().method() === 'POST');
+      await creationRead;
+      await chooseAccount(second.id);
+      unblockCreation();
+      assert.equal((await createdSaved).status(), 200);
+      await until(async () => !await page.locator('#new-account-form').isVisible(), '延迟创建后表单未收起');
+      assert.equal(await page.locator('#account-selector').inputValue(), second.id);
+      assert.equal(await page.locator('[data-config="models.deepseek.enabled"]').isChecked(), true);
+      assert.equal(await page.locator('[data-config="models.codex.enabled"]').isChecked(), false);
+      assert.equal(await page.locator('[data-secret="deepseekApiKey"]').inputValue(), 'qa-local-key-account-b');
+      const createdState = await readState(created.account.id);
+      assert.equal(createdState.draft.models.deepseek.enabled, false);
+      assert.equal(createdState.draft.models.codex.enabled, true);
+      assert.equal(createdState.applied.permissions.released, false);
+      assert.equal((await readState(second.id)).secrets.deepseekApiKey, false);
+    } finally { unblockCreation(); await page.unroute(creationStatePath); }
+    pass('创建账号等待后台期间切换 B，新账号模型来源只保存给自身，B 的模型、密钥与选中状态保持');
 
     for (let i = 0; i < 2; i++) {
       await page.locator('[data-setup-panel="models"] [data-add-api]').click();
@@ -311,6 +453,18 @@ async function checkLegacyUpgrade() {
     assert.equal(state.applied.ownerQQ, '');
     assert.equal(qq.outbound.length, 0);
     pass('无需 Docker 和第二个 QQ，原生路线可保存连接信息并验证实际 QQ，连接后仍只读');
+    await page.locator('[data-config="botQQ"]').fill('12345999');
+    assert.doesNotMatch(await page.locator('#setup-connection-badge').innerText(), /身份已验证/);
+    await page.locator('[data-config="botQQ"]').fill('12345002');
+    await page.locator('[data-config="qq.wsUrl"]').fill(`${qq.url}/changed`);
+    assert.doesNotMatch(await page.locator('#setup-connection-badge').innerText(), /身份已验证/);
+    await page.locator('[data-config="qq.wsUrl"]').fill(qq.url);
+    await page.locator('[data-secret="napcatToken"]').fill('qa-changed-onebot-key');
+    assert.doesNotMatch(await page.locator('#setup-connection-badge').innerText(), /身份已验证/);
+    await page.locator('[data-secret="napcatToken"]').fill('');
+    assert.equal((await readState(second.id)).setup.connection.verified, true);
+    assert.equal(qq.outbound.length, 0);
+    pass('草稿修改 QQ、连接地址或 Token 会立即撤下旧身份已验证提示，后台实际连接不被草稿冒充');
 
     await page.locator('[data-page="scenarios"]').click();
     await page.locator('[data-scenario-tab="tasks"]').click();

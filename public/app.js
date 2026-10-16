@@ -41,7 +41,12 @@
     ['member_leave', '群成员退出'], ['admin_change', '管理员变更'], ['mute', '禁言 / 解禁'], ['recall', '撤回消息'], ['group_card', '群名片变化'], ['emoji_like', '消息表情回应']
   ];
   const accountSetupSteps = new Map();
+  const layoutAnimations = new WeakMap();
+  let renderedFlowAccount = '';
+  const reducedMotion = () => window.matchMedia('(prefers-reduced-motion: reduce)').matches;
   let customApiStructure = '';
+  let activeGroupTriggerPicker = null;
+  let groupTriggerPointerState = null;
 
   function getPath(object, path) { return path.split('.').reduce((value, key) => value?.[key], object); }
   function setPath(object, path, value) {
@@ -162,6 +167,7 @@
   }
   async function selectAccount(id) {
     if (id === selectedAccountId && state) return;
+    closeGroupTriggerPicker();
     rememberEditor();
     selectedAccountId = id;
     adoptEditor(id);
@@ -196,6 +202,7 @@
   }
   function navigate(page) {
     if (!pageInfo[page]) page = 'overview';
+    closeGroupTriggerPicker();
     currentPage = page;
     const [caption, eyebrow, title, description] = pageInfo[page];
     $('#page-caption').textContent = caption;
@@ -210,9 +217,11 @@
     });
     if (location.hash !== `#${page}`) history.replaceState(null, '', `#${page}`);
     renderPageContext();
+    renderRuntime();
     window.scrollTo({ top: 0, behavior: 'auto' });
   }
   function selectScenarioTab(tab) {
+    closeGroupTriggerPicker();
     currentScenarioTab = tab === 'permissions' ? 'permissions' : 'tasks';
     $$('.scenario-tab').forEach((button) => {
       const selected = button.dataset.scenarioTab === currentScenarioTab;
@@ -243,7 +252,7 @@
     if (selector.innerHTML !== options) selector.innerHTML = options;
     selector.value = accounts.some((account) => account.id === selectedAccountId) ? selectedAccountId : previous;
     selector.disabled = accounts.length === 0;
-    const empty = '<div class="empty-state"><strong>创建第一个账号</strong>输入 QQ 号并配置模型，新账号默认只读。</div>';
+    const empty = '<div class="empty-state"><strong>尚无账号配置</strong>在账号控制中完成接入后，这里会显示各账号的状态。</div>';
     const cards = accounts.map((account) => {
       const runtime = account.runtime ?? {};
       const connected = runtime.connected === true && String(runtime.accountId ?? '') === String(account.qqNumber ?? '');
@@ -252,17 +261,82 @@
       return { account, connected, released, note: editor?.dirty ? ' · 有未保存修改' : account.pendingChanges ? ' · 参数待应用' : '' };
     });
     const overviewHTML = cards.length ? cards.map(({ account, connected, released, note }) => `<button class="account-card ${account.id === selectedAccountId ? 'selected' : ''}" data-select-account="${escapeHTML(account.id)}"><span class="account-avatar">Q</span><span class="account-card-main"><strong>${escapeHTML(account.name || 'QQ 账号')}</strong><small>QQ ${escapeHTML(account.qqNumber || '待填写')} · ${connected ? '身份已验证' : '未确认连接'}${note}</small></span><span class="pill ${released ? 'pill-green' : 'pill-neutral'}">${released ? '已释放范围权限' : '只读'}</span></button>`).join('') : empty;
-    const entriesHTML = cards.map(({ account, connected, released, note }) => `<button class="account-card account-entry ${account.id === expandedAccountId ? 'expanded' : ''}" data-open-account="${escapeHTML(account.id)}" aria-expanded="${account.id === expandedAccountId}" aria-controls="account-workspace"><span class="account-avatar">Q</span><span class="account-card-main"><strong>${escapeHTML(account.name || 'QQ 账号')}</strong><small>QQ ${escapeHTML(account.qqNumber || '待填写')} · ${connected ? '登录身份已验证' : '接入尚未完成'}${note}</small></span><span class="pill ${released ? 'pill-green' : 'pill-neutral'}">${released ? '已授权指定范围' : '默认只读'}</span><span class="account-entry-chevron" aria-hidden="true">${account.id === expandedAccountId ? '⌃' : '⌄'}</span></button>`).join('');
-    updateRecordHTML($('#account-cards'), entriesHTML);
+    renderAccountAccordions(cards);
     updateRecordHTML($('#overview-accounts'), overviewHTML);
     $('#page-connections').classList.toggle('directory-empty', accounts.length === 0);
-    $('#no-accounts').classList.toggle('hidden', accounts.length !== 0 || currentPage === 'connections');
-    $('#account-workspace').classList.toggle('hidden', !expandedAccountId || expandedAccountId !== selectedAccountId || !state);
+
     renderPageContext();
     const appliedReleased = state?.applied?.permissions?.released === true;
     $('#account-permission-badge').textContent = selectedAccountId ? appliedReleased ? '已释放范围权限' : '只读 · 未释放发送' : '未选择账号';
     $('#account-permission-badge').className = `pill ${appliedReleased ? 'pill-green' : 'pill-neutral'}`;
     $('#records-account-note').textContent = selectedAccountId ? `这里只展示「${accountName()}」的任务、汇总与收藏；切换账号不会改变正在执行任务的归属。` : '请先创建并选择账号。';
+  }
+  // Keep each header and the editor DOM stable while status polling updates its text.
+  // The single editor moves between account bodies; drafts and secrets remain profile-scoped.
+  function animateLayout(element, from, to, { onFinish, duration = 260 } = {}) {
+    layoutAnimations.get(element)?.cancel();
+    layoutAnimations.delete(element); element.classList.remove('layout-animating');
+    if (reducedMotion() || currentPage !== 'connections' || Math.abs(to - from) < 1) {
+      onFinish?.(); return;
+    }
+    const animation = element.animate([{ height: `${from}px`, opacity: from === 0 ? .5 : 1 }, { height: `${to}px`, opacity: to === 0 ? .5 : 1 }], { duration, easing: 'cubic-bezier(.2,.7,.2,1)' });
+    layoutAnimations.set(element, animation);
+    element.classList.add('layout-animating');
+    animation.finished.then(() => {
+      if (layoutAnimations.get(element) !== animation) return;
+      layoutAnimations.delete(element); element.classList.remove('layout-animating'); onFinish?.();
+    }).catch(() => {});
+  }
+  function setAccordionOpen(body, open, previousHeight) {
+    if (body.dataset.open === String(open)) return;
+    const before = previousHeight ?? body.getBoundingClientRect().height;
+    body.dataset.open = String(open);
+    body.inert = !open;
+    body.setAttribute('aria-hidden', String(!open));
+    body.style.height = open ? 'auto' : '0px';
+    const after = open ? body.scrollHeight : 0;
+    animateLayout(body, before, after);
+  }
+  function renderAccountAccordions(cards) {
+    const directory = $('#account-cards');
+    const workspace = $('#account-workspace');
+    const targetId = expandedAccountId === selectedAccountId && state ? expandedAccountId : '';
+    const liveIds = new Set(cards.map(({ account }) => account.id));
+    for (const old of [...directory.children]) {
+      if (liveIds.has(old.dataset.accountId)) continue;
+      if (old.contains(workspace)) $('#account-workspace-parking').append(workspace);
+      old.remove();
+    }
+    const previousBody = workspace.closest('.account-accordion-body');
+    const previousHeight = previousBody?.getBoundingClientRect().height;
+    for (const { account, connected, released, note } of cards) {
+      let entry = [...directory.children].find((element) => element.dataset.accountId === account.id);
+      if (!entry) {
+        entry = document.createElement('article');
+        entry.className = 'account-accordion'; entry.dataset.accountId = account.id;
+        const header = document.createElement('button'); header.type = 'button';
+        header.className = 'account-card account-entry'; header.dataset.openAccount = account.id;
+        header.id = `account-header-${account.id}`; header.setAttribute('aria-controls', `account-body-${account.id}`);
+        const body = document.createElement('div'); body.className = 'account-accordion-body';
+        body.id = `account-body-${account.id}`; body.setAttribute('role', 'region');
+        body.setAttribute('aria-labelledby', header.id); body.dataset.open = 'false'; body.inert = true;
+        body.setAttribute('aria-hidden', 'true'); body.style.height = '0px';
+        entry.append(header, body); directory.append(entry);
+      }
+      const open = account.id === targetId;
+      const header = entry.firstElementChild;
+      const headerHTML = `<span class="account-avatar">Q</span><span class="account-card-main"><strong>${escapeHTML(account.name || 'QQ 账号')}</strong><small>QQ ${escapeHTML(account.qqNumber || '待填写')} · ${connected ? '登录身份已验证' : '接入尚未完成'}${note}</small></span><span class="pill ${released ? 'pill-green' : 'pill-neutral'}">${released ? '已授权指定范围' : '默认只读'}</span><span class="account-entry-chevron" aria-hidden="true">⌄</span>`;
+      if (header.innerHTML !== headerHTML) header.innerHTML = headerHTML;
+      header.classList.toggle('expanded', open); header.setAttribute('aria-expanded', String(open));
+      entry.classList.toggle('expanded', open);
+      const body = entry.lastElementChild;
+      if (open && workspace.parentElement !== body) {
+        body.append(workspace);
+      }
+      if (open) workspace.classList.remove('hidden');
+      setAccordionOpen(body, open, body === previousBody ? previousHeight : undefined);
+    }
+    if (!targetId && !previousBody) workspace.classList.add('hidden');
   }
   function renderConfigBar() {
     const pending = Boolean(state?.pendingChanges || state?.secretsPendingChanges);
@@ -351,7 +425,7 @@
     const writable = Array.isArray(runtime.permissions?.writableGroups) ? runtime.permissions.writableGroups.length : 0;
     const released = state?.applied?.permissions?.released === true;
     const auth = state?.codexAuth?.loggedIn !== null && state?.codexAuth?.loggedIn !== undefined ? state.codexAuth : codexLoginStatus;
-    $('#runtime-badge').textContent = selectedAccountId ? `${accountName()} · ${label}` : '尚无账号';
+    $('#runtime-badge').textContent = currentPage === 'overview' ? `${accounts.length} 个账号 · ${accounts.filter((account) => account.runtime?.connected === true || account.runtime?.connectionState === 'connected').length} 个已连接` : selectedAccountId ? `${accountName()} · ${label}` : '尚无账号';
     $('#runtime-badge').className = `heading-status ${color === 'green' ? 'connected' : color === 'red' ? 'error' : ''}`;
     $('#account-login-status').textContent = actualAccount ? `后台确认 QQ ${actualAccount} · ${label}` : `${label} · 尚未确认登录 QQ`;
     $('#account-codex-status').textContent = auth?.message || (auth?.loggedIn === true ? '此账号的官方 Codex 已授权' : auth?.loggedIn === false ? '此账号尚未登录 Codex' : '此账号授权状态等待检查');
@@ -361,12 +435,13 @@
     $('#runtime-details').textContent = JSON.stringify(runtime, null, 2);
     const connectedAccounts = accounts.filter((account) => account.runtime?.connected === true || account.runtime?.connectionState === 'connected').length;
     const stats = [
-      ['账号总数', accounts.length, `${connectedAccounts} 个账号已连接 · 可同时运行`, '⇄'],
-      ['当前账号权限', released ? '已释放' : '只读', released ? '仅在明确授权的范围内发送' : '保存和登录均不自动授权', '◎'],
-      ['当前账号可读群', readable, `${sendTargets} 个群已选择发送权限`, '▤'],
-      ['当前账号整理记录', Array.isArray(state?.summaries) ? state.summaries.length : 0, '通知与收藏均可核对原文依据', '≡']
+      ['账号总数', accounts.length, `${connectedAccounts} 个账号已连接 · 可同时运行`, '⇄', 'accounts'],
+      ['当前账号权限', released ? '已释放' : '只读', selectedAccountId ? `${accountName()} · ${released ? '已授权指定范围' : '未释放发送权限'}` : '尚未选择账号', '◎', 'permissions'],
+      ['当前账号可读群', readable, `${sendTargets} 个群已选择发送权限`, '▤', 'groups'],
+      ['当前账号整理记录', Array.isArray(state?.summaries) ? state.summaries.length : 0, '通知与收藏均可核对原文依据', '≡', 'summaries']
     ];
-    $('#overview-stats').innerHTML = stats.map(([name, value, note, icon]) => `<div class="stat-card"><div><div class="stat-label">${escapeHTML(name)}</div><div class="stat-value">${escapeHTML(value)}</div><div class="stat-note">${escapeHTML(note)}</div></div><span class="stat-icon">${icon}</span></div>`).join('');
+    const statsHTML = stats.map(([name, value, note, icon, destination]) => `<button type="button" class="stat-card" data-overview-go="${destination}" ${destination !== 'accounts' && !state ? 'disabled' : ''}><span><span class="stat-label">${escapeHTML(name)}</span><span class="stat-value">${escapeHTML(value)}</span><span class="stat-note">${escapeHTML(note)}</span></span><span class="stat-icon" aria-hidden="true">${icon}</span></button>`).join('');
+    updateRecordHTML($('#overview-stats'), statsHTML);
   }
   function renderPermissions() {
     const applied = state?.applied;
@@ -384,9 +459,73 @@
     const groups = draft?.groups ?? [];
     const html = groups.length ? groups.map((group, index) => {
       const triggers = effectiveTriggers(group);
-      return `<tr data-group-index="${index}"><td><input data-group-field="name" value="${escapeHTML(group.name)}" aria-label="群名称"><input class="group-id" data-group-field="id" value="${escapeHTML(group.id)}" inputmode="numeric" aria-label="QQ群号"></td><td><select data-group-field="mode" aria-label="群用途"><option value="social" ${group.mode !== 'work' ? 'selected' : ''}>社交群</option><option value="work" ${group.mode === 'work' ? 'selected' : ''}>工作通知群</option></select><small class="field-note">${group.mode === 'work' ? '可用于通知汇总' : '按聊天功能参数处理'}</small></td><td><details class="group-trigger-picker" data-record-id="triggers:${escapeHTML(group.id || index)}"><summary>${triggers.length ? `已选择 ${triggers.length} 项触发事件` : '尚未选择触发事件'}</summary><div class="group-trigger-tools"><button type="button" data-group-triggers-all="${index}">全选</button><button type="button" data-group-triggers-clear="${index}">全部取消</button></div><div class="group-trigger-options">${groupTriggerOptions.map(([id,label]) => `<label><input type="checkbox" data-group-trigger="${id}" ${triggers.includes(id) ? 'checked' : ''}><span>${label}</span></label>`).join('')}</div><p>只处理当前群实际收到的事件；全选也需发送授权，概率及冷却仍生效。群名变更取决于 NapCat 是否上报。</p></details></td><td><div class="group-parameter">${triggers.includes('prefix') ? `<label>前缀 <input data-group-field="prefix" value="${escapeHTML(group.prefix ?? '/ai')}" aria-label="命令前缀"></label>` : ''}${triggers.includes('casual') ? `<label>插话概率 <input type="number" data-group-field="probability" min="0" max="0.25" step="0.01" value="${escapeHTML(group.probability ?? 0.03)}" aria-label="插话概率"></label>` : ''}<label>冷却秒 <input type="number" data-group-field="cooldownSeconds" min="5" max="3600" value="${escapeHTML(group.cooldownSeconds ?? 30)}" aria-label="冷却秒数"></label></div></td><td><label class="group-permission-check"><input type="checkbox" data-group-field="read" ${group.read === true ? 'checked' : ''}>允许读取</label><label class="group-permission-check"><input type="checkbox" data-group-field="send" ${group.send === true ? 'checked' : ''} ${group.read === true ? '' : 'disabled title="先允许读取，才能授权回复"'}>允许发送</label><small class="field-note">仍需启动并确认授权范围</small></td><td><button class="remove-group" data-remove-group="${index}" aria-label="移除 ${escapeHTML(group.name || group.id)}">×</button></td></tr>`;
+      return `<tr data-group-index="${index}"><td><input data-group-field="name" value="${escapeHTML(group.name)}" aria-label="群名称"><input class="group-id" data-group-field="id" value="${escapeHTML(group.id)}" inputmode="numeric" aria-label="QQ群号"></td><td><select data-group-field="mode" aria-label="群用途"><option value="social" ${group.mode !== 'work' ? 'selected' : ''}>社交群</option><option value="work" ${group.mode === 'work' ? 'selected' : ''}>工作通知群</option></select><small class="field-note">${group.mode === 'work' ? '可用于通知汇总' : '按聊天功能参数处理'}</small></td><td><details class="group-trigger-picker" data-record-id="triggers:${escapeHTML(group.id || index)}"><summary aria-haspopup="dialog" aria-controls="group-trigger-panel-${index}" aria-expanded="false">${triggers.length ? `已选择 ${triggers.length} 项触发事件` : '尚未选择触发事件'}</summary><div id="group-trigger-panel-${index}" class="group-trigger-panel" popover="auto" role="dialog" aria-label="${escapeHTML(group.name || group.id || `第 ${index + 1} 个群`)}的触发事件"><div class="group-trigger-tools"><button type="button" data-group-triggers-all="${index}">全选</button><button type="button" data-group-triggers-clear="${index}">全部取消</button></div><div class="group-trigger-options" role="group" aria-label="选择触发事件">${groupTriggerOptions.map(([id,label]) => `<label><input type="checkbox" data-group-trigger="${id}" ${triggers.includes(id) ? 'checked' : ''}><span>${label}</span></label>`).join('')}</div><p>只处理当前群实际收到的事件；全选也需发送授权，概率及冷却仍生效。群名变更取决于 NapCat 是否上报。</p></div></details></td><td><div class="group-parameter">${triggers.includes('prefix') ? `<label>前缀 <input data-group-field="prefix" value="${escapeHTML(group.prefix ?? '/ai')}" aria-label="命令前缀"></label>` : ''}${triggers.includes('casual') ? `<label>插话概率 <input type="number" data-group-field="probability" min="0" max="0.25" step="0.01" value="${escapeHTML(group.probability ?? 0.03)}" aria-label="插话概率"></label>` : ''}<label>冷却秒 <input type="number" data-group-field="cooldownSeconds" min="5" max="3600" value="${escapeHTML(group.cooldownSeconds ?? 30)}" aria-label="冷却秒数"></label></div></td><td><label class="group-permission-check"><input type="checkbox" data-group-field="read" ${group.read === true ? 'checked' : ''}>允许读取</label><label class="group-permission-check"><input type="checkbox" data-group-field="send" ${group.send === true ? 'checked' : ''} ${group.read === true ? '' : 'disabled title="先允许读取，才能授权回复"'}>允许发送</label><small class="field-note">仍需启动并确认授权范围</small></td><td><button class="remove-group" data-remove-group="${index}" aria-label="移除 ${escapeHTML(group.name || group.id)}">×</button></td></tr>`;
     }).join('') : '<tr><td colspan="6"><div class="empty-state"><strong>添加这个账号允许处理的 QQ 群</strong>新群默认允许读取、禁止发送；选择触发事件后，最后确认启动。</div></td></tr>';
-    updateRecordHTML($('#group-rows'), html);
+    const rows = $('#group-rows');
+    if (rows.dataset.renderedHTML === html) return;
+    const previous = activeGroupTriggerPicker;
+    const focused = document.activeElement;
+    let focusSelector = previous?.summary === focused ? 'summary' : null;
+    if (previous?.panel.contains(focused)) {
+      if (focused.dataset.groupTrigger) focusSelector = `[data-group-trigger="${focused.dataset.groupTrigger}"]`;
+      else if (focused.hasAttribute('data-group-triggers-all')) focusSelector = '[data-group-triggers-all]';
+      else if (focused.hasAttribute('data-group-triggers-clear')) focusSelector = '[data-group-triggers-clear]';
+    }
+    const scrollTop = previous?.panel.scrollTop ?? 0;
+    closeGroupTriggerPicker();
+    updateRecordHTML(rows, html);
+    // A checkbox changes both its summary and optional parameter fields. Keep the
+    // same account/group's open panel usable instead of losing keyboard focus.
+    if (previous?.accountId === selectedAccountId && groups[previous.index] && String(groups[previous.index].id ?? '') === previous.groupId) {
+      const picker = $(`[data-group-index="${previous.index}"] .group-trigger-picker`, rows);
+      if (picker) openGroupTriggerPicker(picker, { focusSelector, scrollTop });
+    }
+  }
+  function closeGroupTriggerPicker({ restoreFocus = false } = {}) {
+    const previous = activeGroupTriggerPicker;
+    if (!previous) return;
+    activeGroupTriggerPicker = null;
+    if (previous.panel.matches(':popover-open')) previous.panel.hidePopover();
+    previous.picker.open = false;
+    previous.summary.setAttribute('aria-expanded', 'false');
+    if (restoreFocus && previous.summary.isConnected) previous.summary.focus({ preventScroll: true });
+  }
+  function positionGroupTriggerPicker() {
+    const active = activeGroupTriggerPicker;
+    if (!active) return;
+    const anchor = active.summary.getBoundingClientRect();
+    const margin = 10;
+    const gap = 6;
+    const width = document.documentElement.clientWidth;
+    const height = window.innerHeight;
+    if (!active.summary.isConnected || !anchor.width || !anchor.height || anchor.bottom <= 0 || anchor.top >= height || anchor.right <= 0 || anchor.left >= width) return closeGroupTriggerPicker();
+    active.panel.style.width = `${Math.max(0, Math.min(Math.max(anchor.width, 270), 340, width - margin * 2))}px`;
+    active.panel.style.maxHeight = `${Math.max(0, Math.min(420, height - margin * 2))}px`;
+    const below = height - anchor.bottom - gap - margin;
+    const above = anchor.top - gap - margin;
+    const down = below >= active.panel.offsetHeight || below >= above;
+    active.panel.style.maxHeight = `${Math.max(0, Math.min(420, down ? below : above))}px`;
+    const left = Math.max(margin, Math.min(anchor.left, width - active.panel.offsetWidth - margin));
+    const top = down ? anchor.bottom + gap : anchor.top - gap - active.panel.offsetHeight;
+    active.panel.style.left = `${left}px`;
+    active.panel.style.top = `${Math.max(margin, Math.min(top, height - active.panel.offsetHeight - margin))}px`;
+    active.anchorPosition = { left: anchor.left, top: anchor.top };
+  }
+  function openGroupTriggerPicker(picker, { focusSelector = null, scrollTop = 0 } = {}) {
+    closeGroupTriggerPicker();
+    const summary = $('summary', picker);
+    const panel = $('.group-trigger-panel', picker);
+    const index = Number(picker.closest('[data-group-index]').dataset.groupIndex);
+    picker.open = true;
+    summary.setAttribute('aria-expanded', 'true');
+    activeGroupTriggerPicker = { picker, summary, panel, index, accountId: selectedAccountId, groupId: String(draft?.groups[index]?.id ?? '') };
+    // Native top-layer rendering escapes the table's horizontal overflow clip.
+    // Auto popovers also dismiss on outside clicks and allow only one at a time.
+    panel.showPopover({ source: summary });
+    positionGroupTriggerPicker();
+    const focused = focusSelector === 'summary' ? summary : focusSelector ? $(focusSelector, panel) : null;
+    if (focused) focused.focus({ preventScroll: true });
+    panel.scrollTop = scrollTop;
   }
   function renderSummaryGroupSelect() {
     const select = $('#summary-group');
@@ -478,15 +617,37 @@
   function renderPageContext() {
     const isAccountPage = currentPage === 'connections' || currentPage === 'settings';
     $('.page-heading').classList.toggle('hidden', isAccountPage);
-    $('.account-context').classList.toggle('hidden', isAccountPage);
-    $('.config-bar').classList.toggle('hidden', isAccountPage);
+    $('.account-context').classList.toggle('hidden', isAccountPage || currentPage === 'overview');
+    const configBar = $('.config-bar');
+    if (currentPage === 'connections') {
+      if (configBar.parentElement !== $('#account-workspace')) $('#account-workspace').append(configBar);
+    } else if (configBar.previousElementSibling !== $('#global-config-slot')) {
+      $('#global-config-slot').after(configBar);
+    }
+    configBar.classList.toggle('hidden', currentPage === 'overview' || currentPage === 'settings' || (currentPage === 'connections' && (!expandedAccountId || !state)));
     $('#no-accounts').classList.toggle('hidden', accounts.length !== 0 || isAccountPage);
     $('#runtime-badge').classList.toggle('hidden', currentPage === 'settings');
   }
-  function setSetupStep(step) {
-    if (!setupSteps.some(([id]) => id === step)) return;
-    accountSetupSteps.set(selectedAccountId, step);
-    renderSetupGuide();
+  function scrollToFlowStage(step) {
+    if (currentPage !== 'connections' || expandedAccountId !== selectedAccountId) return;
+    const accountId = selectedAccountId;
+    const section = $(`[data-flow-stage="${step}"]`);
+    if (!section || section.classList.contains('hidden')) return;
+    requestAnimationFrame(() => {
+      if (currentPage !== 'connections' || selectedAccountId !== accountId || expandedAccountId !== accountId) return;
+      const bounds = section.getBoundingClientRect();
+      const topInset = $('.topbar').getBoundingClientRect().height + 18;
+      if (bounds.top < topInset || bounds.top > window.innerHeight * .72) window.scrollBy({ top: bounds.top - topInset, behavior: reducedMotion() ? 'auto' : 'smooth' });
+    });
+  }
+  function setSetupStep(step, { scroll = true, accountId = selectedAccountId } = {}) {
+    const index = setupSteps.findIndex(([id]) => id === step);
+    if (index < 0 || !accountId) return;
+    const previous = setupSteps.findIndex(([id]) => id === accountSetupSteps.get(accountId));
+    accountSetupSteps.set(accountId, setupSteps[Math.max(index, previous)][0]);
+    if (accountId !== selectedAccountId) return;
+    renderSetupGuide({ animate: true });
+    if (scroll) scrollToFlowStage(step);
   }
   function apiVendorGuide(baseUrl) {
     const links = {
@@ -566,7 +727,7 @@
     return state?.codexAuth?.loggedIn !== undefined && state?.codexAuth?.loggedIn !== null ? state.codexAuth : codexLoginStatus;
   }
   function modelEvidence(provider) {
-    if (provider.id === 'codex') return authStatus()?.loggedIn === true ? ['官方 CLI 已确认授权', 'logged_in'] : ['尚未确认官方订阅授权', 'waiting_login'];
+    if (provider.id === 'codex') return JSON.stringify(provider.config) !== JSON.stringify(state?.applied?.models?.codex) ? ['订阅模型参数尚未应用，授权状态仍可在下方检查', 'pending'] : authStatus()?.loggedIn === true ? ['官方 CLI 已确认授权', 'logged_in'] : ['尚未确认官方订阅授权', 'waiting_login'];
     if (secretUpdates[provider.secret]) return ['密钥已修改，需要保存并重新测试', 'pending'];
     const appliedProvider = provider.id === 'deepseek' ? state?.applied?.models?.deepseek : state?.applied?.models?.apis?.find((entry) => entry.id === provider.id);
     if (JSON.stringify(provider.config) !== JSON.stringify(appliedProvider)) return ['模型参数尚未应用，需要保存并实际测试', 'pending'];
@@ -579,42 +740,36 @@
     if (secretUpdates[provider.secret]) return ['密钥已输入，尚未保存与测试', 'pending'];
     return state?.secrets?.[provider.secret] ? ['密钥已保存，尚未通过实际模型测试', 'unknown'] : ['尚未填写 API Key', 'missing'];
   }
-  function renderSetupGuide() {
-    const visible = expandedAccountId && expandedAccountId === selectedAccountId && state;
-    $('#account-workspace').classList.toggle('hidden', !visible);
+  function renderSetupGuide({ animate = false } = {}) {
     if (!state || !draft) return;
     const runtime = state.runtime ?? {};
     const connection = state.setup?.connection;
     const actualQQ = String(connection?.actualQQ ?? runtime.accountId ?? '');
     const expectedQQ = String(draft.botQQ ?? '');
-    const verified = connection ? connection.verified === true : (runtime.connected === true && Boolean(actualQQ) && actualQQ === expectedQQ && state.applied?.botQQ === expectedQQ);
+    const connectionUnchanged = ['enabled', 'wsUrl'].every((key) => draft.qq?.[key] === state.applied?.qq?.[key]) && !secretUpdates.napcatToken;
+    const verified = connectionUnchanged && Boolean(actualQQ) && actualQQ === expectedQQ && state.applied?.botQQ === expectedQQ && (connection ? connection.verified === true : runtime.connected === true);
     const providers = configuredProviders();
     const modelsReady = providers.some((provider) => modelEvidence(provider)[1] === 'passed' || modelEvidence(provider)[1] === 'logged_in');
     const applied = state.applied ?? {};
     const hasTask = ['chat', 'summary', 'favorites'].some((name) => applied[name]?.enabled);
     const released = applied.permissions?.released === true;
     const readTargets = (applied.groups ?? []).filter((group) => group.read);
-    const completed = { identity: /^[1-9]\d{3,19}$/.test(expectedQQ), models: modelsReady, connection: verified, scenarios: hasTask, permissions: released, verification: verified && released && (state.setup?.verification?.tested === true || state.setup?.steps?.some((step) => step.id === 'verification' && step.state === 'complete')) };
     if (!accountSetupSteps.has(selectedAccountId)) {
-      const backendNext = state.setup?.nextStep;
-      const suggested = setupSteps.some(([id]) => id === backendNext) ? backendNext : verified ? hasTask ? 'permissions' : 'scenarios' : providers.length && !modelsReady ? 'models' : 'connection';
-      accountSetupSteps.set(selectedAccountId, suggested);
+      // Reopened profiles reveal their actual configured sections; no test or permission is inferred.
+      const last = released ? 'verification' : hasTask || (draft.groups ?? []).length ? 'permissions' : verified ? 'scenarios' : draft.qq?.enabled || applied.qq?.enabled ? 'connection' : providers.length ? 'models' : 'identity';
+      accountSetupSteps.set(selectedAccountId, last);
     }
-    const active = accountSetupSteps.get(selectedAccountId) || 'identity';
-    $('#account-detail-title').textContent = `${accountName()} · QQ ${expectedQQ || '待填写'}`;
-    $('#account-detail-description').textContent = verified ? `实际登录 QQ ${actualQQ} 已确认；${released ? state.setup?.readOnly ? '已启动 · 仅采集 / 本地处理' : '已启动已授权范围的自动任务' : '连接已就绪，设置任务和范围后才能启动自动处理'}。` : '填写信息不会自动登录 QQ。按步骤检查真实连接和模型状态。';
-    $('#account-setup-steps').innerHTML = setupSteps.map(([id, title], index) => `<button class="account-setup-step ${id === active ? 'active' : ''} ${completed[id] ? 'complete' : ''}" data-setup-step="${id}" ${id === active ? 'aria-current="step"' : ''}><span>${completed[id] ? '✓' : index + 1}</span><strong>${title}</strong><small>${completed[id] ? '已确认' : id === 'models' && providers.length ? '待实际检查' : '待完成'}</small></button>`).join('');
-    $$('[data-setup-panel]').forEach((panel) => panel.classList.toggle('hidden', panel.dataset.setupPanel !== active));
-    const messages = {
-      identity: ['先确认接入的 QQ 与模型来源', '只需要填写希望控制的 QQ；私聊接收账号是后续可选功能。'],
-      models: ['准备已选择的模型，再进入 QQ 连接', 'API 请保存并测试；订阅请安装 Codex、完成官方登录并检查授权。没有模型也可先连接 QQ。'],
-      connection: verified ? ['QQ 身份已验证，接下来设置任务和群', '你已经连接到实际 QQ。点击右侧进入群与消息权限，选择允许读取和发送的群。'] : ['先启动 NapCat、完成扫码，再验证 QQ 身份', '如果你已经在 NapCat 登录，只需核对正向 WebSocket 地址和 Token，再点击“保存并连接”。'],
-      scenarios: ['为当前账号选一项功能并保存', '任务没有启用时，即使 QQ 和模型都已连接，也不会自动回复。'],
-      permissions: ['选定群和权限，最后启动此账号', '只在这里确认并释放已选范围；私人指令和私聊汇总无需开启也能使用群功能。'],
-      verification: ['核对结果，并在实际 QQ 中完成一次测试', '未设置发送范围时，结果仅保存在本地；不会因为登录或连接成功就自动发送。']
-    };
-    const [title, description] = messages[active];
-    $('#account-setup-message').innerHTML = `<div><strong>${escapeHTML(title)}</strong><p>${escapeHTML(description)}</p></div><button class="button button-secondary button-small" data-go="scenarios" data-scenario-go="permissions">选定群与消息权限 →</button>`;
+    const highest = setupSteps.findIndex(([id]) => id === accountSetupSteps.get(selectedAccountId));
+    const sameAccount = renderedFlowAccount === selectedAccountId;
+    $$('[data-flow-stage]').forEach((wrapper, index) => {
+      if (!sameAccount) { layoutAnimations.get(wrapper)?.cancel(); layoutAnimations.delete(wrapper); wrapper.classList.remove('layout-animating'); }
+      const show = index <= highest;
+      const wasHidden = wrapper.classList.contains('hidden');
+      wrapper.classList.toggle('hidden', !show);
+      wrapper.inert = !show;
+      if (show && wasHidden && sameAccount && animate) animateLayout(wrapper, 0, wrapper.scrollHeight, { duration: 300 });
+    });
+    renderedFlowAccount = selectedAccountId;
     for (const entry of draft.models.apis ?? []) {
       const card = $(`[data-api-card="${CSS.escape(entry.id)}"]`);
       if (!card) continue;
@@ -683,6 +838,7 @@
     const nextStep = error.nextStep || (issues.find((issue) => issue.path?.startsWith('qq') || issue.path === 'botQQ' || issue.path === 'napcatToken' || issue.path === 'secrets.napcatToken') ? 'connection' : issues.find((issue) => issue.path?.startsWith('models') || issue.path?.startsWith('apiKey')) ? 'models' : sameRecipient ? 'permissions' : null);
     const html = `<strong>${escapeHTML(errorMessage(error))}</strong><ul>${messages.map((message) => `<li>${escapeHTML(message)}</li>`).join('')}</ul>${[...new Set([error.action,...issues.map((issue) => issue.action)].filter(Boolean))].map((action) => `<p>下一步：${escapeHTML(action)}</p>`).join('')}${sameRecipient ? '<p>只想处理群消息或在仪表盘看结果，无需填写另一个 QQ。</p><button class="button button-secondary button-small" data-repair-private>关闭可选私聊投递，仅使用群与本地结果</button>' : ''}${nextStep ? `<button class="button button-quiet button-small" data-error-step="${nextStep}">前往对应配置 →</button>` : ''}`;
     for (const selector of currentPage === 'connections' && !$('#new-account-form').classList.contains('hidden') ? ['#create-account-error'] : ['#setup-error','#scenario-validation-errors']) { $(selector).innerHTML = html; $(selector).classList.remove('hidden'); }
+    if (currentPage === 'connections' && $('#new-account-form').classList.contains('hidden') && setupSteps.some(([id]) => id === nextStep)) setSetupStep(nextStep);
     for (const issue of issues) {
       let secretPath = issue.path === 'secrets.napcatToken' ? 'napcatToken' : issue.path === 'models.deepseek.apiKey' ? 'deepseekApiKey' : issue.path;
       const customSecret = /^models\.apis\.(\d+)\.apiKey$/.exec(issue.path || '');
@@ -740,6 +896,7 @@
   }
 
   function renderLiveState() {
+    renderSetupGuide();
     renderAccountDirectory();
     renderSecrets();
     renderEnvironment();
@@ -804,11 +961,12 @@
     const revision = editors.get(id).state.revision;
     const result = await accountApi('/config/apply', { revision }, 'POST', id);
     acceptState(result, { accountId: id });
+    if (['chat', 'summary', 'favorites'].some((name) => result.applied?.[name]?.enabled)) setSetupStep('permissions', { accountId: id, scroll: false });
     toast(`「${accountName(id)}」参数已应用，发送权限恢复只读。需要发送时，请到「选定群与消息权限」检查并释放。`, 'info');
   }
-  async function releasePermissions() {
-    const id = requireAccount();
-    rememberEditor();
+  async function releasePermissions(accountId = selectedAccountId) {
+    const id = requireAccount(accountId);
+    if (id === selectedAccountId) rememberEditor();
     const snapshot = clone(editors.get(id).draft);
     const reads = snapshot.groups?.filter((group) => group.read === true) ?? [];
     const sends = snapshot.groups?.filter((group) => group.send === true) ?? [];
@@ -820,6 +978,7 @@
     const revision = editors.get(id).state.revision;
     const result = await accountApi('/permissions/release', { revision }, 'POST', id);
     acceptState(result, { accountId: id });
+    setSetupStep('verification', { accountId: id, scroll: false });
     toast(`「${accountName(id)}」账号已启动，后台仅按已授权范围执行。请进入验证效果，核对真实结果。`, 'info');
     return true;
   }
@@ -843,18 +1002,20 @@
     const existing = accounts.find((account) => account.id === result.account.id);
     if (existing) Object.assign(existing, result.account);
     else accounts.push(result.account);
+    accountSetupSteps.set(result.account.id, 'identity');
     acceptState(result.state, { accountId: result.account.id, replaceDraft: true });
-    await selectAccount(result.account.id);
-    expandedAccountId = result.account.id;
-    draft.models.deepseek.enabled = apiSelected;
-    draft.models.codex.enabled = codexSelected;
-    markDirty();
-    populateForm();
-    await saveDraft({ forApply: true });
-    form.reset();
-    form.classList.add('hidden');
-    setSetupStep('identity');
-    navigate('connections');
+    const id = result.account.id;
+    const editor = editors.get(id);
+    editor.draft.models.deepseek.enabled = apiSelected;
+    editor.draft.models.codex.enabled = codexSelected;
+    editor.dirty = true; editor.editVersion = (editor.editVersion ?? 0) + 1;
+    expandedAccountId = id;
+    await selectAccount(id);
+    await saveDraft({ forApply: true, accountId: id });
+    if ($('#new-account-qq').value.trim() === qqNumber && ($('#new-account-name').value.trim() || `QQ ${qqNumber}`) === name) {
+      form.reset(); form.classList.add('hidden');
+    }
+    setSetupStep('identity', { accountId: id, scroll: false });
     await refreshDirectory();
     renderLiveState();
     toast(`「${name}」已创建。展开账号，按引导完成接入；当前只读。`);
@@ -949,6 +1110,45 @@
     });
     $$('.record-content').forEach((panel) => panel.classList.toggle('hidden', panel.id !== `record-${tab}`));
   }
+  document.addEventListener('pointerdown', (event) => {
+    const summary = event.target.closest('.group-trigger-picker > summary');
+    // A summary is not a native popover invoker button: light-dismiss may run
+    // before click, so remember whether this pointer was toggling an open one.
+    groupTriggerPointerState = summary ? { summary, wasOpen: activeGroupTriggerPicker?.summary === summary } : null;
+  }, true);
+  document.addEventListener('pointercancel', () => { groupTriggerPointerState = null; });
+  document.addEventListener('beforetoggle', (event) => {
+    if (event.newState !== 'closed' || event.target !== activeGroupTriggerPicker?.panel) return;
+    const previous = activeGroupTriggerPicker;
+    activeGroupTriggerPicker = null;
+    previous.picker.open = false;
+    previous.summary.setAttribute('aria-expanded', 'false');
+  }, true);
+  document.addEventListener('keydown', (event) => {
+    const summary = event.target.closest('.group-trigger-picker > summary');
+    if (summary && event.key === 'ArrowDown') {
+      event.preventDefault();
+      openGroupTriggerPicker(summary.parentElement, { focusSelector: '[data-group-trigger]' });
+    } else if (event.key === 'Escape' && activeGroupTriggerPicker) {
+      event.preventDefault();
+      closeGroupTriggerPicker({ restoreFocus: true });
+    }
+  });
+  document.addEventListener('focusin', (event) => {
+    if (activeGroupTriggerPicker && !activeGroupTriggerPicker.picker.contains(event.target)) closeGroupTriggerPicker();
+  });
+  document.addEventListener('scroll', (event) => {
+    const active = activeGroupTriggerPicker;
+    if (!active || active.panel.contains(event.target)) return;
+    // Scroll events queued before a click or resize must not dismiss the newly
+    // positioned panel. Only close when its anchor actually moves afterwards.
+    requestAnimationFrame(() => {
+      if (active !== activeGroupTriggerPicker) return;
+      const anchor = active.summary.getBoundingClientRect();
+      if (Math.abs(anchor.left - active.anchorPosition.left) > 0.5 || Math.abs(anchor.top - active.anchorPosition.top) > 0.5) closeGroupTriggerPicker();
+    });
+  }, true);
+  window.addEventListener('resize', positionGroupTriggerPicker);
   document.addEventListener('input', (event) => {
     const input = event.target;
     if (input.dataset.config && draft) {
@@ -983,6 +1183,15 @@
     if (event.target.id === 'summary-group') rememberEditor();
   });
   document.addEventListener('click', (event) => {
+    const summary = event.target.closest('.group-trigger-picker > summary');
+    if (summary) {
+      event.preventDefault();
+      const wasOpen = activeGroupTriggerPicker?.summary === summary || (event.detail > 0 && groupTriggerPointerState?.summary === summary && groupTriggerPointerState.wasOpen);
+      groupTriggerPointerState = null;
+      if (wasOpen) closeGroupTriggerPicker();
+      else openGroupTriggerPicker(summary.parentElement);
+      return;
+    }
     const button = event.target.closest('button');
     if (!button) return;
     if (button.dataset.openAccount) return withButton(button, async () => {
@@ -991,23 +1200,33 @@
       if (expandedAccountId) await selectAccount(id);
       renderLiveState();
     });
-    if (button.dataset.selectAccount) return withButton(button, () => selectAccount(button.dataset.selectAccount));
+    if (button.dataset.selectAccount) return withButton(button, async () => { expandedAccountId = button.dataset.selectAccount; await selectAccount(button.dataset.selectAccount); navigate('connections'); renderLiveState(); });
+    if (button.dataset.overviewGo) {
+      const destination = button.dataset.overviewGo;
+      if (destination === 'accounts') return navigate('connections');
+      if (destination === 'summaries') { selectRecordTab('summaries'); return navigate('records'); }
+      selectScenarioTab('permissions'); navigate('scenarios');
+      if (destination === 'groups') requestAnimationFrame(() => { const card = $('.group-table').closest('.card'); card.tabIndex = -1; card.focus({ preventScroll: true }); card.scrollIntoView({ behavior: reducedMotion() ? 'auto' : 'smooth', block: 'start' }); });
+      return;
+    }
     if (button.hasAttribute('data-add-api')) return withButton(button, addCustomApi);
     if (button.dataset.removeApi) return withButton(button, () => removeCustomApi(button.dataset.removeApi));
     if (button.dataset.setupStep) return setSetupStep(button.dataset.setupStep);
-    if (button.dataset.setupSave) return withButton(button, async () => { await saveDraft(); setSetupStep(button.dataset.setupSave); });
-    if (button.dataset.setupApply) return withButton(button, async () => { await applyConfig(); setSetupStep(button.dataset.setupApply); });
+    if (button.dataset.setupSave) return withButton(button, async () => { const id = requireAccount(); await saveDraft({ accountId: id }); setSetupStep(button.dataset.setupSave, { accountId: id }); });
+    if (button.dataset.setupApply) return withButton(button, async () => { const id = requireAccount(); await applyConfig(id); setSetupStep(button.dataset.setupApply, { accountId: id }); });
     if (button.hasAttribute('data-setup-connect')) return withButton(button, async () => {
+      const id = requireAccount();
       setPath(draft, 'qq.enabled', true); markDirty(); populateForm();
-      await applyConfig(); await mutate('/runtime/connect', {}, '连接检查已返回，请核对下方实际 QQ 身份。');
+      await applyConfig(id); await mutate('/runtime/connect', {}, '连接检查已返回，请核对下方实际 QQ 身份。', id);
+      if (editors.get(id)?.state?.setup?.connection?.verified) setSetupStep('scenarios', { accountId: id });
     });
-    if (button.hasAttribute('data-setup-start')) return withButton(button, async () => { const started = await releasePermissions(); if (started) setSetupStep('verification'); });
+    if (button.hasAttribute('data-setup-start')) return withButton(button, async () => { const id = requireAccount(); const started = await releasePermissions(id); if (started) setSetupStep('verification', { accountId: id }); });
     if (button.hasAttribute('data-setup-refresh')) return withButton(button, () => refreshState({ notify: true }));
     if (button.dataset.setupModelTest) return withButton(button, () => testSetupModel(button.dataset.setupModelTest));
     if (button.dataset.connectionRoute) return selectConnectionRoute(button.dataset.connectionRoute);
-    if (button.hasAttribute('data-return-to-setup')) { expandedAccountId = selectedAccountId; setSetupStep(currentScenarioTab === 'permissions' ? 'permissions' : 'scenarios'); navigate('connections'); renderLiveState(); return; }
+    if (button.hasAttribute('data-return-to-setup')) { expandedAccountId = selectedAccountId; navigate('connections'); renderLiveState(); setSetupStep(currentScenarioTab === 'permissions' ? 'permissions' : 'scenarios'); return; }
     if (button.hasAttribute('data-repair-private')) return repairPrivateDelivery();
-    if (button.dataset.errorStep) { if (button.dataset.errorStep === 'permissions') { selectScenarioTab('permissions'); navigate('scenarios'); } else { expandedAccountId = selectedAccountId; setSetupStep(button.dataset.errorStep); navigate('connections'); renderLiveState(); } return; }
+    if (button.dataset.errorStep) { if (button.dataset.errorStep === 'permissions') { selectScenarioTab('permissions'); navigate('scenarios'); } else { expandedAccountId = selectedAccountId; navigate('connections'); renderLiveState(); setSetupStep(button.dataset.errorStep); } return; }
 
     if (button.dataset.page) return navigate(button.dataset.page);
     if (button.dataset.go) {
@@ -1031,6 +1250,7 @@
       markDirty(); renderGroups(); return;
     }
     if (button.dataset.removeGroup !== undefined && draft) {
+      closeGroupTriggerPicker();
       draft.groups.splice(Number(button.dataset.removeGroup), 1);
       markDirty();
       renderGroups();
@@ -1038,15 +1258,13 @@
     }
   });
   $('#account-selector').addEventListener('change', (event) => withButton(null, () => selectAccount(event.target.value)));
-  $('#create-account').addEventListener('click', showCreateAccount);
   $('#create-account-entry').addEventListener('click', showCreateAccount);
   $('#cancel-create-account').addEventListener('click', () => $('#new-account-form').classList.add('hidden'));
   $('#new-account-form').addEventListener('submit', (event) => { event.preventDefault(); withButton($('#submit-create-account'), createAccount); });
-  $('#collapse-account').addEventListener('click', () => { expandedAccountId = ''; renderLiveState(); });
   $('#refresh-state').addEventListener('click', (event) => withButton(event.currentTarget, () => refreshState({ notify: true })));
   $('#save-draft').addEventListener('click', (event) => withButton(event.currentTarget, () => saveDraft()));
   $('#apply-config').addEventListener('click', (event) => withButton(event.currentTarget, () => applyConfig()));
-  $('#release-permissions').addEventListener('click', (event) => withButton(event.currentTarget, releasePermissions));
+  $('#release-permissions').addEventListener('click', (event) => withButton(event.currentTarget, () => releasePermissions()));
   $('#revoke-permissions').addEventListener('click', (event) => withButton(event.currentTarget, async () => {
     const id = requireAccount();
     await mutate('/permissions/revoke', {}, '已恢复只读，后续发送已被后台阻止。其他账号不受影响。', id);
