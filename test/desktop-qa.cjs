@@ -85,8 +85,9 @@ async function clickNativeExportMenu() {
   });
 }
 async function selectAccount(window, accountId) {
-  await window.locator('[data-page="overview"]').click();
-  await window.locator('#account-selector').selectOption(accountId);
+  await window.locator('[data-page="connections"]').click();
+  const entry = window.locator(`#account-cards [data-open-account="${accountId}"]`);
+  if (await entry.getAttribute('aria-expanded') !== 'true') await entry.click();
   await window.waitForFunction(id => document.querySelector('#account-selector').value === id, accountId);
   await condition(async () => (await readState(window, accountId)).account.id === accountId, '未选中指定账号');
 }
@@ -104,7 +105,6 @@ async function createAccount(window, name, qqNumber) {
   await window.waitForFunction(id => document.querySelector('#new-account-form').classList.contains('hidden')
     && document.querySelector('#account-selector').value === id
     && !document.querySelector('#account-workspace').classList.contains('hidden'), account.id);
-  await window.locator('#account-setup-steps [data-setup-step="identity"]').click();
   await window.waitForFunction(qq => document.querySelector('[data-config="botQQ"]').value === qq, qqNumber);
   return account;
 }
@@ -114,9 +114,11 @@ async function configureAccount(window, account, { ownerQQ, secret, persona }) {
   if (!await window.locator('#account-workspace').isVisible()) {
     await window.locator(`#account-cards [data-open-account="${account.id}"]`).click();
   }
-  await window.locator('#account-setup-steps [data-setup-step="identity"]').click();
   await window.locator('[data-config="models.deepseek.enabled"]').check();
-  await window.locator('#account-setup-steps [data-setup-step="models"]').click();
+  if (!await window.locator('[data-setup-panel="models"]').isVisible()) {
+    await window.locator('[data-setup-save="models"]').click();
+    await window.locator('[data-setup-panel="models"]').waitFor({ state: 'visible' });
+  }
   await window.locator('[data-secret="deepseekApiKey"]').fill(secret);
   await window.locator('[data-page="scenarios"]').click();
   await window.locator('[data-scenario-tab="tasks"]').click();
