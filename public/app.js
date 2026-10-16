@@ -42,6 +42,8 @@
   ];
   const accountSetupSteps = new Map();
   let customApiStructure = '';
+  let activeGroupTriggerPicker = null;
+  let groupTriggerPointerState = null;
 
   function getPath(object, path) { return path.split('.').reduce((value, key) => value?.[key], object); }
   function setPath(object, path, value) {
@@ -162,6 +164,7 @@
   }
   async function selectAccount(id) {
     if (id === selectedAccountId && state) return;
+    closeGroupTriggerPicker();
     rememberEditor();
     selectedAccountId = id;
     adoptEditor(id);
@@ -196,6 +199,7 @@
   }
   function navigate(page) {
     if (!pageInfo[page]) page = 'overview';
+    closeGroupTriggerPicker();
     currentPage = page;
     const [caption, eyebrow, title, description] = pageInfo[page];
     $('#page-caption').textContent = caption;
@@ -213,6 +217,7 @@
     window.scrollTo({ top: 0, behavior: 'auto' });
   }
   function selectScenarioTab(tab) {
+    closeGroupTriggerPicker();
     currentScenarioTab = tab === 'permissions' ? 'permissions' : 'tasks';
     $$('.scenario-tab').forEach((button) => {
       const selected = button.dataset.scenarioTab === currentScenarioTab;
@@ -384,9 +389,73 @@
     const groups = draft?.groups ?? [];
     const html = groups.length ? groups.map((group, index) => {
       const triggers = effectiveTriggers(group);
-      return `<tr data-group-index="${index}"><td><input data-group-field="name" value="${escapeHTML(group.name)}" aria-label="群名称"><input class="group-id" data-group-field="id" value="${escapeHTML(group.id)}" inputmode="numeric" aria-label="QQ群号"></td><td><select data-group-field="mode" aria-label="群用途"><option value="social" ${group.mode !== 'work' ? 'selected' : ''}>社交群</option><option value="work" ${group.mode === 'work' ? 'selected' : ''}>工作通知群</option></select><small class="field-note">${group.mode === 'work' ? '可用于通知汇总' : '按聊天功能参数处理'}</small></td><td><details class="group-trigger-picker" data-record-id="triggers:${escapeHTML(group.id || index)}"><summary>${triggers.length ? `已选择 ${triggers.length} 项触发事件` : '尚未选择触发事件'}</summary><div class="group-trigger-tools"><button type="button" data-group-triggers-all="${index}">全选</button><button type="button" data-group-triggers-clear="${index}">全部取消</button></div><div class="group-trigger-options">${groupTriggerOptions.map(([id,label]) => `<label><input type="checkbox" data-group-trigger="${id}" ${triggers.includes(id) ? 'checked' : ''}><span>${label}</span></label>`).join('')}</div><p>只处理当前群实际收到的事件；全选也需发送授权，概率及冷却仍生效。群名变更取决于 NapCat 是否上报。</p></details></td><td><div class="group-parameter">${triggers.includes('prefix') ? `<label>前缀 <input data-group-field="prefix" value="${escapeHTML(group.prefix ?? '/ai')}" aria-label="命令前缀"></label>` : ''}${triggers.includes('casual') ? `<label>插话概率 <input type="number" data-group-field="probability" min="0" max="0.25" step="0.01" value="${escapeHTML(group.probability ?? 0.03)}" aria-label="插话概率"></label>` : ''}<label>冷却秒 <input type="number" data-group-field="cooldownSeconds" min="5" max="3600" value="${escapeHTML(group.cooldownSeconds ?? 30)}" aria-label="冷却秒数"></label></div></td><td><label class="group-permission-check"><input type="checkbox" data-group-field="read" ${group.read === true ? 'checked' : ''}>允许读取</label><label class="group-permission-check"><input type="checkbox" data-group-field="send" ${group.send === true ? 'checked' : ''} ${group.read === true ? '' : 'disabled title="先允许读取，才能授权回复"'}>允许发送</label><small class="field-note">仍需启动并确认授权范围</small></td><td><button class="remove-group" data-remove-group="${index}" aria-label="移除 ${escapeHTML(group.name || group.id)}">×</button></td></tr>`;
+      return `<tr data-group-index="${index}"><td><input data-group-field="name" value="${escapeHTML(group.name)}" aria-label="群名称"><input class="group-id" data-group-field="id" value="${escapeHTML(group.id)}" inputmode="numeric" aria-label="QQ群号"></td><td><select data-group-field="mode" aria-label="群用途"><option value="social" ${group.mode !== 'work' ? 'selected' : ''}>社交群</option><option value="work" ${group.mode === 'work' ? 'selected' : ''}>工作通知群</option></select><small class="field-note">${group.mode === 'work' ? '可用于通知汇总' : '按聊天功能参数处理'}</small></td><td><details class="group-trigger-picker" data-record-id="triggers:${escapeHTML(group.id || index)}"><summary aria-haspopup="dialog" aria-controls="group-trigger-panel-${index}" aria-expanded="false">${triggers.length ? `已选择 ${triggers.length} 项触发事件` : '尚未选择触发事件'}</summary><div id="group-trigger-panel-${index}" class="group-trigger-panel" popover="auto" role="dialog" aria-label="${escapeHTML(group.name || group.id || `第 ${index + 1} 个群`)}的触发事件"><div class="group-trigger-tools"><button type="button" data-group-triggers-all="${index}">全选</button><button type="button" data-group-triggers-clear="${index}">全部取消</button></div><div class="group-trigger-options" role="group" aria-label="选择触发事件">${groupTriggerOptions.map(([id,label]) => `<label><input type="checkbox" data-group-trigger="${id}" ${triggers.includes(id) ? 'checked' : ''}><span>${label}</span></label>`).join('')}</div><p>只处理当前群实际收到的事件；全选也需发送授权，概率及冷却仍生效。群名变更取决于 NapCat 是否上报。</p></div></details></td><td><div class="group-parameter">${triggers.includes('prefix') ? `<label>前缀 <input data-group-field="prefix" value="${escapeHTML(group.prefix ?? '/ai')}" aria-label="命令前缀"></label>` : ''}${triggers.includes('casual') ? `<label>插话概率 <input type="number" data-group-field="probability" min="0" max="0.25" step="0.01" value="${escapeHTML(group.probability ?? 0.03)}" aria-label="插话概率"></label>` : ''}<label>冷却秒 <input type="number" data-group-field="cooldownSeconds" min="5" max="3600" value="${escapeHTML(group.cooldownSeconds ?? 30)}" aria-label="冷却秒数"></label></div></td><td><label class="group-permission-check"><input type="checkbox" data-group-field="read" ${group.read === true ? 'checked' : ''}>允许读取</label><label class="group-permission-check"><input type="checkbox" data-group-field="send" ${group.send === true ? 'checked' : ''} ${group.read === true ? '' : 'disabled title="先允许读取，才能授权回复"'}>允许发送</label><small class="field-note">仍需启动并确认授权范围</small></td><td><button class="remove-group" data-remove-group="${index}" aria-label="移除 ${escapeHTML(group.name || group.id)}">×</button></td></tr>`;
     }).join('') : '<tr><td colspan="6"><div class="empty-state"><strong>添加这个账号允许处理的 QQ 群</strong>新群默认允许读取、禁止发送；选择触发事件后，最后确认启动。</div></td></tr>';
-    updateRecordHTML($('#group-rows'), html);
+    const rows = $('#group-rows');
+    if (rows.dataset.renderedHTML === html) return;
+    const previous = activeGroupTriggerPicker;
+    const focused = document.activeElement;
+    let focusSelector = previous?.summary === focused ? 'summary' : null;
+    if (previous?.panel.contains(focused)) {
+      if (focused.dataset.groupTrigger) focusSelector = `[data-group-trigger="${focused.dataset.groupTrigger}"]`;
+      else if (focused.hasAttribute('data-group-triggers-all')) focusSelector = '[data-group-triggers-all]';
+      else if (focused.hasAttribute('data-group-triggers-clear')) focusSelector = '[data-group-triggers-clear]';
+    }
+    const scrollTop = previous?.panel.scrollTop ?? 0;
+    closeGroupTriggerPicker();
+    updateRecordHTML(rows, html);
+    // A checkbox changes both its summary and optional parameter fields. Keep the
+    // same account/group's open panel usable instead of losing keyboard focus.
+    if (previous?.accountId === selectedAccountId && groups[previous.index] && String(groups[previous.index].id ?? '') === previous.groupId) {
+      const picker = $(`[data-group-index="${previous.index}"] .group-trigger-picker`, rows);
+      if (picker) openGroupTriggerPicker(picker, { focusSelector, scrollTop });
+    }
+  }
+  function closeGroupTriggerPicker({ restoreFocus = false } = {}) {
+    const previous = activeGroupTriggerPicker;
+    if (!previous) return;
+    activeGroupTriggerPicker = null;
+    if (previous.panel.matches(':popover-open')) previous.panel.hidePopover();
+    previous.picker.open = false;
+    previous.summary.setAttribute('aria-expanded', 'false');
+    if (restoreFocus && previous.summary.isConnected) previous.summary.focus({ preventScroll: true });
+  }
+  function positionGroupTriggerPicker() {
+    const active = activeGroupTriggerPicker;
+    if (!active) return;
+    const anchor = active.summary.getBoundingClientRect();
+    const margin = 10;
+    const gap = 6;
+    const width = document.documentElement.clientWidth;
+    const height = window.innerHeight;
+    if (!active.summary.isConnected || !anchor.width || !anchor.height || anchor.bottom <= 0 || anchor.top >= height || anchor.right <= 0 || anchor.left >= width) return closeGroupTriggerPicker();
+    active.panel.style.width = `${Math.max(0, Math.min(Math.max(anchor.width, 270), 340, width - margin * 2))}px`;
+    active.panel.style.maxHeight = `${Math.max(0, Math.min(420, height - margin * 2))}px`;
+    const below = height - anchor.bottom - gap - margin;
+    const above = anchor.top - gap - margin;
+    const down = below >= active.panel.offsetHeight || below >= above;
+    active.panel.style.maxHeight = `${Math.max(0, Math.min(420, down ? below : above))}px`;
+    const left = Math.max(margin, Math.min(anchor.left, width - active.panel.offsetWidth - margin));
+    const top = down ? anchor.bottom + gap : anchor.top - gap - active.panel.offsetHeight;
+    active.panel.style.left = `${left}px`;
+    active.panel.style.top = `${Math.max(margin, Math.min(top, height - active.panel.offsetHeight - margin))}px`;
+    active.anchorPosition = { left: anchor.left, top: anchor.top };
+  }
+  function openGroupTriggerPicker(picker, { focusSelector = null, scrollTop = 0 } = {}) {
+    closeGroupTriggerPicker();
+    const summary = $('summary', picker);
+    const panel = $('.group-trigger-panel', picker);
+    const index = Number(picker.closest('[data-group-index]').dataset.groupIndex);
+    picker.open = true;
+    summary.setAttribute('aria-expanded', 'true');
+    activeGroupTriggerPicker = { picker, summary, panel, index, accountId: selectedAccountId, groupId: String(draft?.groups[index]?.id ?? '') };
+    // Native top-layer rendering escapes the table's horizontal overflow clip.
+    // Auto popovers also dismiss on outside clicks and allow only one at a time.
+    panel.showPopover({ source: summary });
+    positionGroupTriggerPicker();
+    const focused = focusSelector === 'summary' ? summary : focusSelector ? $(focusSelector, panel) : null;
+    if (focused) focused.focus({ preventScroll: true });
+    panel.scrollTop = scrollTop;
   }
   function renderSummaryGroupSelect() {
     const select = $('#summary-group');
@@ -949,6 +1018,45 @@
     });
     $$('.record-content').forEach((panel) => panel.classList.toggle('hidden', panel.id !== `record-${tab}`));
   }
+  document.addEventListener('pointerdown', (event) => {
+    const summary = event.target.closest('.group-trigger-picker > summary');
+    // A summary is not a native popover invoker button: light-dismiss may run
+    // before click, so remember whether this pointer was toggling an open one.
+    groupTriggerPointerState = summary ? { summary, wasOpen: activeGroupTriggerPicker?.summary === summary } : null;
+  }, true);
+  document.addEventListener('pointercancel', () => { groupTriggerPointerState = null; });
+  document.addEventListener('beforetoggle', (event) => {
+    if (event.newState !== 'closed' || event.target !== activeGroupTriggerPicker?.panel) return;
+    const previous = activeGroupTriggerPicker;
+    activeGroupTriggerPicker = null;
+    previous.picker.open = false;
+    previous.summary.setAttribute('aria-expanded', 'false');
+  }, true);
+  document.addEventListener('keydown', (event) => {
+    const summary = event.target.closest('.group-trigger-picker > summary');
+    if (summary && event.key === 'ArrowDown') {
+      event.preventDefault();
+      openGroupTriggerPicker(summary.parentElement, { focusSelector: '[data-group-trigger]' });
+    } else if (event.key === 'Escape' && activeGroupTriggerPicker) {
+      event.preventDefault();
+      closeGroupTriggerPicker({ restoreFocus: true });
+    }
+  });
+  document.addEventListener('focusin', (event) => {
+    if (activeGroupTriggerPicker && !activeGroupTriggerPicker.picker.contains(event.target)) closeGroupTriggerPicker();
+  });
+  document.addEventListener('scroll', (event) => {
+    const active = activeGroupTriggerPicker;
+    if (!active || active.panel.contains(event.target)) return;
+    // Scroll events queued before a click or resize must not dismiss the newly
+    // positioned panel. Only close when its anchor actually moves afterwards.
+    requestAnimationFrame(() => {
+      if (active !== activeGroupTriggerPicker) return;
+      const anchor = active.summary.getBoundingClientRect();
+      if (Math.abs(anchor.left - active.anchorPosition.left) > 0.5 || Math.abs(anchor.top - active.anchorPosition.top) > 0.5) closeGroupTriggerPicker();
+    });
+  }, true);
+  window.addEventListener('resize', positionGroupTriggerPicker);
   document.addEventListener('input', (event) => {
     const input = event.target;
     if (input.dataset.config && draft) {
@@ -983,6 +1091,15 @@
     if (event.target.id === 'summary-group') rememberEditor();
   });
   document.addEventListener('click', (event) => {
+    const summary = event.target.closest('.group-trigger-picker > summary');
+    if (summary) {
+      event.preventDefault();
+      const wasOpen = activeGroupTriggerPicker?.summary === summary || (event.detail > 0 && groupTriggerPointerState?.summary === summary && groupTriggerPointerState.wasOpen);
+      groupTriggerPointerState = null;
+      if (wasOpen) closeGroupTriggerPicker();
+      else openGroupTriggerPicker(summary.parentElement);
+      return;
+    }
     const button = event.target.closest('button');
     if (!button) return;
     if (button.dataset.openAccount) return withButton(button, async () => {
@@ -1031,6 +1148,7 @@
       markDirty(); renderGroups(); return;
     }
     if (button.dataset.removeGroup !== undefined && draft) {
+      closeGroupTriggerPicker();
       draft.groups.splice(Number(button.dataset.removeGroup), 1);
       markDirty();
       renderGroups();

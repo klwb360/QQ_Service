@@ -164,6 +164,7 @@ async function checkLegacyUpgrade() {
   assert.equal(fs.readFileSync(configFile, 'utf8'), originalBytes);
   pass('旧版无 models.apis / triggers 的配置直接打开和轮询不自动修改、变脏或撤销已授权权限，原前缀及概率参数保持');
 
+  await firstRow.locator('.group-trigger-picker summary').click();
   await firstRow.locator('[data-group-triggers-clear="0"]').click();
   assert.equal(await firstRow.locator('[data-group-trigger]:checked').count(), 0);
   await page.locator('#apply-config').click();
