@@ -67,3 +67,18 @@ html{scrollbar-width:none}html::-webkit-scrollbar{width:0;height:0}
 @media(max-width:620px){.account-accordion-body .account-workspace{padding:0 14px 14px}.account-accordion>.account-entry{padding:15px 14px}.setup-flow-section .setup-panel{padding:20px 0}.setup-flow-section .setup-panel>.card{padding:14px}.account-workspace>.config-bar{padding:12px}.stat-card:hover:not(:disabled){transform:none}}
 @media(prefers-reduced-motion:reduce){.account-accordion .account-entry-chevron,.stat-card{transition:none}.stat-card:hover:not(:disabled){transform:none}}
 .account-accordion-body[data-open=false]:not(.layout-animating){visibility:hidden}
+
+/* A single model source belongs to one account; saved alternatives stay available. */
+.llm-source-field{margin-top:22px;max-width:700px}
+.profile-name-controls{display:flex;align-items:center;gap:9px;min-width:0}
+.profile-name-controls input{flex:1;min-width:0}
+.profile-name-controls .button{flex-shrink:0;min-height:38px}
+.account-card-main .account-name-line{display:flex;align-items:center;gap:9px;flex-wrap:wrap}
+.account-online-badge{display:inline-flex;align-items:center;gap:5px;white-space:nowrap;font-size:9px;line-height:1.5;font-weight:500;border-radius:20px;padding:2px 7px;background:#f0f3f6;color:#8191a1}
+.account-online-badge>span{width:5px;height:5px;border-radius:50%;background:currentColor}
+.account-online-online{color:#26866c;background:#eaf7f0}
+.account-online-mismatch{color:#ad665f;background:#fcefed}
+.account-online-unverified{color:#a18344;background:#fff6e7}
+#legacy-model-warning{margin-top:15px}
+#frontend-editor-toggle{white-space:nowrap}
+@media(max-width:620px){.profile-name-controls{flex-wrap:wrap}.profile-name-controls input{flex-basis:100%}.profile-name-controls .button{min-height:32px}.account-card-main .account-name-line{gap:6px}.account-online-badge{font-size:8px}.topbar-actions #frontend-editor-toggle{font-size:10px;padding:5px}}

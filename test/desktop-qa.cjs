@@ -96,6 +96,7 @@ async function createAccount(window, name, qqNumber) {
   await window.locator('#create-account-entry').click();
   await window.locator('#new-account-name').fill(name);
   await window.locator('#new-account-qq').fill(qqNumber);
+  await window.locator('#new-account-llm-source').selectOption('deepseek');
   const created = window.waitForResponse(response => response.url().endsWith('/api/accounts') && response.request().method() === 'POST');
   await window.locator('#submit-create-account').click();
   const response = await created;
@@ -114,7 +115,7 @@ async function configureAccount(window, account, { ownerQQ, secret, persona }) {
   if (!await window.locator('#account-workspace').isVisible()) {
     await window.locator(`#account-cards [data-open-account="${account.id}"]`).click();
   }
-  await window.locator('[data-config="models.deepseek.enabled"]').check();
+  await window.locator('#account-llm-source').selectOption('deepseek');
   if (!await window.locator('[data-setup-panel="models"]').isVisible()) {
     await window.locator('[data-setup-save="models"]').click();
     await window.locator('[data-setup-panel="models"]').waitFor({ state: 'visible' });
@@ -151,7 +152,7 @@ async function configureAccount(window, account, { ownerQQ, secret, persona }) {
     assert.equal(prefs.sandbox, true);
     assert.equal(prefs.webviewTag, false);
     assert.equal(await window.evaluate(() => typeof require), 'undefined');
-    assert.deepEqual(await window.evaluate(() => Object.keys(window.qqBridgeDesktop).sort()), ['close', 'exportConfig', 'getSettings', 'getWindowState', 'isDesktop', 'minimize', 'onWindowState', 'quit', 'toggleMaximize', 'updateSettings', 'version']);
+    assert.deepEqual(await window.evaluate(() => Object.keys(window.qqBridgeDesktop).sort()), ['close', 'exportConfig', 'exportUiDesign', 'getSettings', 'getUiDesign', 'getWindowState', 'isDesktop', 'minimize', 'onWindowState', 'quit', 'saveUiDesign', 'toggleMaximize', 'updateSettings', 'version']);
     backendPid = await app.evaluate(() => process._getActiveHandles().find(handle => handle.constructor.name === 'ChildProcess' && handle.spawnargs?.some(arg => arg.endsWith('server.mjs')))?.pid);
     assert.ok(Number.isInteger(backendPid) && alive(backendPid));
     pass('真实 Electron 独立窗口、本机随机端口、隔离 preload 与禁止 NodeIntegration');

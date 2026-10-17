@@ -16,6 +16,9 @@ contextBridge.exposeInMainWorld('qqBridgeDesktop', Object.freeze({
   quit: () => ipcRenderer.invoke('qqbridge:window-quit'),
   getSettings: () => ipcRenderer.invoke('qqbridge:desktop-settings-get'),
   updateSettings: settings => ipcRenderer.invoke('qqbridge:desktop-settings-update', settings),
+  getUiDesign: () => ipcRenderer.invoke('qqbridge:ui-design-get'),
+  saveUiDesign: value => ipcRenderer.invoke('qqbridge:ui-design-save', value),
+  exportUiDesign: value => ipcRenderer.invoke('qqbridge:ui-design-export', value),
   getWindowState: () => ipcRenderer.invoke('qqbridge:window-state'),
   onWindowState: callback => {
     if (typeof callback !== 'function') throw new TypeError('窗口状态回调必须是函数。');

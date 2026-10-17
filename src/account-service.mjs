@@ -29,7 +29,7 @@ export function createAccountService({ account, dataDir, csrfToken, installerFac
   const runtime = runtimeFactory({ platform: account.platform, profileId: account.id, accountId: account.id, getConfig: store.getConfig, getSecret: store.getSecret, store, installer, log });
   const summary = () => {
     const config = store.getState();
-    return { ...account, qqNumber: config.draft.botQQ, runtime: safeDetails(runtime.status()), permissions: config.applied.permissions, pendingChanges: store.pendingChanges(), enabled: config.applied.qq.enabled };
+    return { ...account, qqNumber: config.draft.botQQ, appliedQQ: config.applied.botQQ, runtime: safeDetails(runtime.status()), permissions: config.applied.permissions, pendingChanges: store.pendingChanges(), enabled: config.applied.qq.enabled };
   };
   const state = async () => {
     let modules;
@@ -58,7 +58,7 @@ export function createAccountService({ account, dataDir, csrfToken, installerFac
     const blockers = [];
     const add = (code, message, field, action, nextStep) => blockers.push({ code, message, field, action, nextStep });
     if (!draft.botQQ) add('QQ_NUMBER_MISSING', '请填写要接入的 QQ 号。', 'botQQ', '这个 QQ 号应与 NapCat 稍后扫码登录的账号一致。', 'identity');
-    if (!selected.length) add('MODEL_NOT_SELECTED', '尚未选择 AI 模型。', 'models', '选择 API 模型或 ChatGPT 订阅；可以同时配置多个模型。', 'models');
+    if (!selected.length) add('MODEL_NOT_SELECTED', '尚未选择 AI 模型。', 'models', '从模型来源下拉栏选择一个 API 厂商或 ChatGPT 订阅。', 'models');
     for (const provider of selected.filter(provider => !provider.credentialReady)) add(provider.id === 'codex' ? 'CODEX_LOGIN_REQUIRED' : 'MODEL_KEY_MISSING', provider.id === 'codex' ? '请登录或检查此账号的 Codex 授权。' : `${provider.label} 尚未配置 API Key。`, provider.id === 'codex' ? 'models.codex' : isApiProviderId(provider.id) ? `models.apis.${provider.id}` : 'models.deepseek', provider.id === 'codex' ? '点击官方设备登录；已有登录时点击检查状态。' : '填写对应服务商的 API Key，然后保存。', 'models');
     for (const provider of selected.filter(provider => isApiProviderId(provider.id) && !getModelConfig(draft, provider.id).model)) add('MODEL_NAME_MISSING', `${provider.label} 尚未填写模型名称。`, `models.apis.${provider.id}.model`, '填写服务商提供的模型 ID；API Key 并不能代替模型名称。', 'models');
     if (!draft.qq.enabled) add('QQ_DISABLED', '尚未启用本账号的 QQ 连接。', 'qq.enabled', '先准备 NapCat 并扫码登录，再保存并应用为只读。', 'connection');
@@ -69,9 +69,9 @@ export function createAccountService({ account, dataDir, csrfToken, installerFac
     if (draft.ownerQQ && draft.ownerQQ === draft.botQQ && (draft.permissions.privateReplies || (draft.summary.enabled && draft.summary.sendToOwner))) add('PRIVATE_RECIPIENT_SAME', '私聊接收 QQ 不能与接入 QQ 相同。', 'ownerQQ', '仅群聊或本地整理时关闭私聊回复和私聊投递；需要私聊时填写另一个 QQ。', 'permissions');
     const steps = [
       { id: 'identity', title: '创建账号', complete: Boolean(draft.botQQ), description: '填写要接入的 QQ 号，与 NapCat 登录账号保持一致。' },
-      { id: 'models', title: '配置 AI', complete: modelsReady, description: modelsReady ? '凭据已配置；可主动测试真实调用，测试可能消耗费用或订阅额度。' : '选择一个或多个模型，配置 API Key 或官方订阅登录。' },
+      { id: 'models', title: '配置 AI', complete: modelsReady, description: modelsReady ? '凭据已配置；可主动测试真实调用，测试可能消耗费用或订阅额度。' : '选择一个模型来源，配置 API Key 或官方订阅登录。' },
       { id: 'connection', title: '连接 QQ', complete: verified, description: verified ? `NapCat 实际登录 QQ ${actual.accountId}，已核对身份。` : '先在 NapCat 登录 QQ，再验证本机 OneBot 连接；AI 登录不能代替 QQ 登录。' },
-      { id: 'scenarios', title: '选择任务', complete: scenariosReady, description: '为当前账号选择聊天、通知汇总、收藏整理及各自模型。' },
+      { id: 'scenarios', title: '选择任务', complete: scenariosReady, description: '选择当前账号需要执行的聊天、通知汇总或收藏整理任务。' },
       { id: 'permissions', title: '授权并启动', complete: Boolean(released && hasTargets && !store.pendingChanges()), description: released ? '已释放当前已应用参数的权限；修改后应用会恢复只读。' : '选择群和消息范围后，明确点击启动；保存或测试连接不会授权发送。' },
       { id: 'verification', title: '验证效果', complete: Boolean(released && (!groupTestNeeded || actual.qqTest?.tested)), optional: !groupTestNeeded, description: groupTestNeeded ? '可主动向已授权群发送一条固定测试消息，不调用 AI。' : '当前方案无需向群发送测试消息；本地结果可在仪表盘查看。' },
     ];

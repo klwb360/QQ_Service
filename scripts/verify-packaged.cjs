@@ -22,6 +22,8 @@ async function verifyWindowsPackage(appOutDir, expectedVersion) {
     path.join(resources, 'runtime', 'node.exe'), npmCli,
     path.join(backend, 'src', 'server.mjs'),
     path.join(backend, 'src', 'group-events.mjs'),
+    path.join(backend, 'public', 'designer.js'),
+    path.join(backend, 'public', 'designer.css'),
     path.join(backend, 'node_modules', 'ws', 'package.json')
   ];
   for (const file of required) {
@@ -43,7 +45,7 @@ async function verifyWindowsPackage(appOutDir, expectedVersion) {
   assert.equal(windowsMachine(await fs.readFile(path.join(appOutDir, 'QQ_Service.exe'))), 0x8664, 'Packaged desktop executable is not Windows x64');
   const asar = await import('@electron/asar');
   const files = asar.listPackage(path.join(resources, 'app.asar')).map(file => file.replaceAll('\\', '/'));
-  for (const file of ['/desktop/main.cjs', '/desktop/preload.cjs', '/desktop/security.cjs', '/desktop/settings.cjs']) {
+  for (const file of ['/desktop/main.cjs', '/desktop/preload.cjs', '/desktop/security.cjs', '/desktop/settings.cjs', '/desktop/ui-design.cjs']) {
     assert(files.includes(file), `Required desktop shell file is missing: ${file}`);
   }
   const privateFile = /(?:^|\/)(?:auth\.json|config(?:\.v\d+\.backup)?\.json|secrets\.json|vault\.(?:json|key)|accounts\.json|module-state\.json|\.env(?:\.[^/]*)?|[^/]+\.sqlite(?:-wal|-shm)?|codex-home|accounts|data)(?:\/|$)/i;

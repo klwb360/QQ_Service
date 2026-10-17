@@ -84,13 +84,15 @@ async function chooseAccount(accountId) {
   await until(async () => (await page.locator('#account-selector').inputValue()) === accountId
     && await page.locator('#account-workspace').isVisible(), '未展开指定账号');
 }
-async function createAccount(name, number, { api = false, codex = false } = {}) {
+async function createAccount(name, number, { source = '' } = {}) {
   await page.locator('[data-page="connections"]').click();
   await page.locator('#create-account-entry').click();
   await page.locator('#new-account-qq').fill(number);
   await page.locator('#new-account-name').fill(name);
-  await page.locator('#new-account-api').setChecked(api);
-  await page.locator('#new-account-codex').setChecked(codex);
+  const sources = await page.locator('#new-account-llm-source option').evaluateAll(options => options.map(option => option.value));
+  for (const value of ['deepseek', 'openai', 'dashscope', 'zhipu', 'kimi', 'siliconflow', 'custom', 'codex']) assert.ok(sources.includes(value));
+  assert.equal(await page.locator('#new-account-llm-source').evaluate(select => select.multiple), false);
+  await page.locator('#new-account-llm-source').selectOption(source);
   const creating = page.waitForResponse(response => response.url().endsWith('/api/accounts') && response.request().method() === 'POST');
   await page.locator('#submit-create-account').click();
   const response = await creating;
@@ -158,6 +160,7 @@ async function checkLegacyUpgrade() {
   Object.assign(legacy, { botQQ: '12345003', ownerQQ: '76543210' });
   Object.assign(legacy.qq, { enabled: true, wsUrl: qq.url });
   legacy.models.deepseek.enabled = true;
+  legacy.models.codex.enabled = true;
   legacy.chat.enabled = true;
   legacy.permissions = { released: true, privateReplies: false };
   legacy.groups = [
@@ -182,6 +185,7 @@ async function checkLegacyUpgrade() {
   await chooseAccount('legacy');
   await chooseStep('models');
   assert.equal(await page.locator('#custom-api-cards [data-api-card]').count(), 0);
+  assert.equal(await page.locator('#account-llm-source').inputValue(), '');
   await page.locator('[data-page="scenarios"]').click();
   await page.locator('[data-scenario-tab="permissions"]').click();
   const firstRow = page.locator('#group-rows [data-group-index="0"]');
@@ -201,8 +205,14 @@ async function checkLegacyUpgrade() {
   assert.equal(state.pendingChanges, false);
   assert.equal(await page.locator('#save-draft').isDisabled(), true);
   assert.equal(fs.readFileSync(configFile, 'utf8'), originalBytes);
-  pass('旧版无 models.apis / triggers 的配置直接打开和轮询不自动修改、变脏或撤销已授权权限，原前缀及概率参数保持');
+  assert.equal(state.applied.models.deepseek.enabled, true);
+  assert.equal(state.applied.models.codex.enabled, true);
+  pass('旧版多模型配置打开和轮询不自动选择、修改、变脏或撤销授权，原前缀及概率参数保持');
 
+  await chooseStep('models');
+  await page.locator('#account-llm-source').selectOption('deepseek');
+  await page.locator('[data-page="scenarios"]').click();
+  await page.locator('[data-scenario-tab="permissions"]').click();
   await firstRow.locator('.group-trigger-picker summary').click();
   await firstRow.locator('[data-group-triggers-clear="0"]').click();
   assert.equal(await firstRow.locator('[data-group-trigger]:checked').count(), 0);
@@ -224,6 +234,33 @@ async function checkLegacyUpgrade() {
   assert.equal(calls.length, beforeCalls);
   assert.equal(qq.outbound.length, beforeSent);
   pass('只有显式应用撤销旧权限；明确清空触发事件后保留空数组，重新授权也不会回退旧前缀触发');
+
+  await page.close(); await app.close(); app = null;
+  const stale = structuredClone(legacy);
+  stale.models.codex.enabled = false;
+  stale.chat.provider = 'codex';
+  const staleState = { draft: structuredClone(stale), applied: structuredClone(stale), previous: structuredClone(stale), revision: 23, appliedRevision: 23 };
+  const staleBytes = `${JSON.stringify(staleState, null, 2)}\n`;
+  fs.writeFileSync(configFile, staleBytes);
+  app = createDashboard({ dataDir,
+    installerFactory(context) { return { ...createInstaller(context), environment: async () => ({}), status: async () => [] }; },
+    runtimeFactory(context) { return createRuntime({ ...context, providers: { deepseek: async () => { throw new Error('权限预览不得调用模型'); } } }); },
+  });
+  const reopened = await app.listen(0);
+  page = await browser.newPage({ viewport: { width: 1380, height: 1000 } });
+  page.on('pageerror', error => errors.push(error.message));
+  await page.goto(`http://127.0.0.1:${reopened.port}`);
+  await page.waitForFunction(() => document.querySelector('#server-label')?.textContent === '管理服务可访问');
+  await page.locator('[data-page="scenarios"]').click();
+  await page.locator('[data-scenario-tab="permissions"]').click();
+  await page.locator('#release-permissions').click();
+  await page.locator('#app-dialog').waitFor({ state: 'visible' });
+  assert.match(await page.locator('#dialog-content').innerText(), /聊天与回复：已启用 · DeepSeek API/);
+  assert.doesNotMatch(await page.locator('#dialog-content').innerText(), /Codex 仅本人私聊/);
+  await page.locator('#app-dialog .dialog-close').click();
+  assert.equal(fs.readFileSync(configFile, 'utf8'), staleBytes);
+  assert.equal((await readState('legacy')).applied.permissions.released, true);
+  pass('旧任务残留禁用模型引用时，授权预览显示最终所选模型；取消预览不改旧配置或权限');
 }
 
 (async () => {
@@ -267,10 +304,13 @@ async function checkLegacyUpgrade() {
 
     // Remaining interactions intentionally use the same visible controls as a
     // user. Keep endpoint calls limited to independent state assertions.
-    const first = await createAccount('本地验收账号 A', '12345001', { api: true, codex: true });
+    const first = await createAccount('本地验收账号 A', '12345001', { source: 'deepseek' });
     await chooseStep('identity');
-    assert.equal(await page.locator('[data-config="models.deepseek.enabled"]').isChecked(), true);
-    assert.equal(await page.locator('[data-config="models.codex.enabled"]').isChecked(), true);
+    assert.equal(await page.locator('#account-llm-source').inputValue(), 'deepseek');
+    assert.equal((await readState(first.id)).draft.models.deepseek.enabled, true);
+    assert.equal((await readState(first.id)).draft.models.codex.enabled, false);
+    assert.equal(await page.locator('#account-login-status').count(), 0);
+    assert.equal(await page.locator(`#account-cards [data-open-account="${first.id}"] [data-account-online]`).count(), 1);
     assert.equal((await readState(first.id)).applied.permissions.released, false);
     assert.equal(await page.locator('[data-setup-panel="models"]').isVisible(), false);
     assert.equal(await page.locator('#account-setup-steps, #collapse-account, #account-detail-title, #account-setup-message').count(), 0);
@@ -278,7 +318,7 @@ async function checkLegacyUpgrade() {
       const accordion = element.closest('.account-accordion');
       return Boolean(accordion?.querySelector('.account-entry') && element.closest('.account-accordion-body'));
     }), true);
-    pass('创建账号可多选 API 与 ChatGPT 订阅，默认不释放权限');
+    pass('创建及编辑使用单选 LLM 来源，QQ 真实状态显示在账号名旁，默认不释放权限');
     await checkOverviewNavigation();
 
     await chooseStep('models');
@@ -291,7 +331,7 @@ async function checkLegacyUpgrade() {
     await page.locator('[data-page="scenarios"]').click();
     await page.locator('[data-scenario-tab="tasks"]').click();
     await page.locator('[data-config="chat.persona"]').fill('账号 A 未保存的独立风格');
-    const second = await createAccount('本地验收账号 B', '12345002', { api: true });
+    const second = await createAccount('本地验收账号 B', '12345002', { source: 'deepseek' });
     await chooseStep('models');
     await page.locator('[data-secret="deepseekApiKey"]').fill('qa-local-key-account-b');
     await page.locator('[data-page="scenarios"]').click();
@@ -381,8 +421,7 @@ async function checkLegacyUpgrade() {
       await page.locator('#create-account-entry').click();
       await page.locator('#new-account-qq').fill('12345004');
       await page.locator('#new-account-name').fill('延迟创建验收账号 C');
-      await page.locator('#new-account-api').uncheck();
-      await page.locator('#new-account-codex').check();
+      await page.locator('#new-account-llm-source').selectOption('codex');
       const createdResponse = page.waitForResponse(response => response.url().endsWith('/api/accounts') && response.request().method() === 'POST');
       await page.locator('#submit-create-account').click();
       const created = await (await createdResponse).json();
@@ -393,8 +432,7 @@ async function checkLegacyUpgrade() {
       assert.equal((await createdSaved).status(), 200);
       await until(async () => !await page.locator('#new-account-form').isVisible(), '延迟创建后表单未收起');
       assert.equal(await page.locator('#account-selector').inputValue(), second.id);
-      assert.equal(await page.locator('[data-config="models.deepseek.enabled"]').isChecked(), true);
-      assert.equal(await page.locator('[data-config="models.codex.enabled"]').isChecked(), false);
+      assert.equal(await page.locator('#account-llm-source').inputValue(), 'deepseek');
       assert.equal(await page.locator('[data-secret="deepseekApiKey"]').inputValue(), 'qa-local-key-account-b');
       const createdState = await readState(created.account.id);
       assert.equal(createdState.draft.models.deepseek.enabled, false);
@@ -404,23 +442,21 @@ async function checkLegacyUpgrade() {
     } finally { unblockCreation(); await page.unroute(creationStatePath); }
     pass('创建账号等待后台期间切换 B，新账号模型来源只保存给自身，B 的模型、密钥与选中状态保持');
 
-    for (let i = 0; i < 2; i++) {
-      await page.locator('[data-setup-panel="models"] [data-add-api]').click();
-      await page.locator('#api-vendor-choice').selectOption('custom');
-      await page.locator('#dialog-confirm').click();
-      await page.locator(`[data-config="models.apis.${i}.label"]`).fill(`本地模型 ${i + 1}`);
-      await page.locator(`[data-config="models.apis.${i}.baseUrl"]`).fill(`https://api${i + 1}.example.com/v1`);
-      await page.locator(`[data-config="models.apis.${i}.model"]`).fill(`qa-model-${i + 1}`);
-      await page.locator('#custom-api-cards [data-secret^="apiKey:"]').nth(i).fill(`qa-local-custom-key-${i + 1}`);
-    }
+    await page.locator('#account-llm-source').selectOption('vendor:custom');
+    await page.locator('[data-config="models.apis.0.label"]').fill('本地自定义模型');
+    await page.locator('[data-config="models.apis.0.baseUrl"]').fill('https://api1.example.com/v1');
+    await page.locator('[data-config="models.apis.0.model"]').fill('qa-model-1');
+    await page.locator('#custom-api-cards [data-secret^="apiKey:"]').first().fill('qa-local-custom-key-1');
     let state = await saveDraft(second.id);
-    assert.equal(state.draft.models.apis.length, 2);
+    assert.equal(state.draft.models.apis.length, 1);
+    assert.equal(state.draft.models.deepseek.enabled, false);
+    assert.equal(state.draft.models.codex.enabled, false);
     const apiId = state.draft.models.apis[0].id;
     for (const item of state.draft.models.apis) assert.equal(state.secrets[`apiKey:${item.id}`], true);
     for (const key of ['qa-local-key-account-a', 'qa-local-key-account-b', 'qa-local-custom-key-1', 'qa-local-custom-key-2']) {
       assert.equal(JSON.stringify(state).includes(key), false);
     }
-    pass('同一账号可添加两个兼容 API，密钥只返回存在状态，不进入配置或状态响应');
+    pass('下拉选择自定义 API 后只启用所选来源，历史密钥保留且不进入配置或状态响应');
 
     await page.locator(`[data-setup-model-test="${apiId}"]`).click();
     await page.locator('#app-dialog').waitFor({ state: 'visible' });
@@ -470,7 +506,8 @@ async function checkLegacyUpgrade() {
     await page.locator('[data-scenario-tab="tasks"]').click();
     await page.locator('label.switch:has([data-config="chat.enabled"])').click();
     assert.equal(await page.locator('[data-config="chat.enabled"]').isChecked(), true);
-    await page.locator('[data-config="chat.provider"]').selectOption(apiId);
+    assert.equal(await page.locator('[data-config="chat.provider"]').inputValue(), apiId);
+    assert.equal(await page.locator('[data-config="chat.provider"]').isDisabled(), true);
     await page.locator('[data-scenario-tab="permissions"]').click();
     await page.locator('[data-action="groups-list"]').click();
     await page.locator('#app-dialog').waitFor({ state: 'visible' });
@@ -518,6 +555,24 @@ async function checkLegacyUpgrade() {
     assert.equal(state.applied.permissions.privateReplies, false);
     assert.deepEqual(state.applied.groups[0].triggers, ['mention', 'prefix', 'casual', 'poke', 'group_name']);
     assert.equal((await readState(first.id)).applied.permissions.released, false);
+    const beforeRename = structuredClone(state);
+    const callsBeforeRename = calls.length;
+    await chooseAccount(second.id);
+    await page.locator('#account-profile-name').fill('本地验收账号 B · 已重命名');
+    const renamed = page.waitForResponse(response => response.url().endsWith(`/api/accounts/${second.id}/profile`) && response.request().method() === 'POST');
+    await page.locator('#save-account-profile').click();
+    assert.equal((await renamed).status(), 200);
+    await until(async () => (await page.locator(`#account-cards [data-open-account="${second.id}"]`).innerText()).includes('已重命名'), '独立名称保存未更新账号栏');
+    const afterRename = await readState(second.id);
+    assert.equal(afterRename.revision, beforeRename.revision);
+    assert.equal(afterRename.appliedRevision, beforeRename.appliedRevision);
+    assert.equal(afterRename.applied.permissions.released, true);
+    assert.equal(afterRename.runtime.accountId, beforeRename.runtime.accountId);
+    assert.equal(calls.length, callsBeforeRename);
+    assert.equal(await page.locator(`#account-cards [data-open-account="${second.id}"] [data-account-online]`).getAttribute('data-account-online'), 'online');
+    await page.locator('[data-page="scenarios"]').click();
+    await page.locator('[data-scenario-tab="permissions"]').click();
+    pass('独立保存账号名称仅更新资料，真实在线标记正确，配置版本、已释放权限与模型调用均不改变');
     const beforeMessageCalls = calls.length;
     await qq.event('98765002', 'qa-unselected');
     await qq.event('98765001', 'qa-groupname-is-text', '群名称修改为测试新群名');

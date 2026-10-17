@@ -40,6 +40,14 @@
     ['poke', '戳一戳'], ['group_name', '修改群名'], ['member_join', '群成员加入'],
     ['member_leave', '群成员退出'], ['admin_change', '管理员变更'], ['mute', '禁言 / 解禁'], ['recall', '撤回消息'], ['group_card', '群名片变化'], ['emoji_like', '消息表情回应']
   ];
+  const llmVendors = [
+    { id: 'openai', label: 'OpenAI API', url: 'https://api.openai.com/v1', hosts: ['api.openai.com'] },
+    { id: 'dashscope', label: '阿里云百炼 / 通义', url: 'https://dashscope.aliyuncs.com/compatible-mode/v1', hosts: ['dashscope.aliyuncs.com', 'dashscope-intl.aliyuncs.com'] },
+    { id: 'zhipu', label: '智谱 GLM', url: 'https://open.bigmodel.cn/api/paas/v4', hosts: ['open.bigmodel.cn'] },
+    { id: 'kimi', label: 'Kimi / Moonshot', url: 'https://api.moonshot.cn/v1', hosts: ['api.moonshot.cn', 'api.moonshot.ai'] },
+    { id: 'siliconflow', label: '硅基流动', url: 'https://api.siliconflow.cn/v1', hosts: ['api.siliconflow.cn'] },
+    { id: 'custom', label: '自定义兼容 API', url: 'https://api.example.com/v1', hosts: [] }
+  ];
   const accountSetupSteps = new Map();
   const layoutAnimations = new WeakMap();
   let renderedFlowAccount = '';
@@ -63,7 +71,7 @@
   function rememberEditor() {
     if (!selectedAccountId) return;
     const previous = editors.get(selectedAccountId) ?? {};
-    editors.set(selectedAccountId, { ...previous, state, draft, dirty, editVersion, secretUpdates, codexLoginStatus, summaryGroup: $('#summary-group').value });
+    editors.set(selectedAccountId, { ...previous, state, draft, dirty, editVersion, secretUpdates, codexLoginStatus, profileName: $('#account-profile-name').value, summaryGroup: $('#summary-group').value });
   }
   function adoptEditor(id, { populate = true } = {}) {
     const editor = editors.get(id) ?? {};
@@ -81,6 +89,7 @@
     rememberEditor();
     renderConfigBar();
     renderSetupGuide();
+    renderAccountDirectory();
   }
   function toast(message, kind = 'success') {
     const item = document.createElement('div');
@@ -209,6 +218,7 @@
     $('#page-eyebrow').textContent = eyebrow;
     $('#page-title').textContent = title;
     $('#page-description').textContent = description;
+    for (const [selector, field] of [['#page-title', 'title'], ['#page-description', 'description'], ['#page-eyebrow', 'eyebrow']]) $(selector).dataset.uiKey = `page.${page}.${field}`;
     $$('.page-panel').forEach((panel) => panel.classList.toggle('hidden', panel.id !== `page-${page}`));
     $$('.nav-link').forEach((link) => {
       link.classList.toggle('active', link.dataset.page === page);
@@ -231,6 +241,8 @@
     $$('.scenario-content').forEach((panel) => panel.classList.toggle('hidden', panel.id !== `scenario-${currentScenarioTab}`));
   }
   function populateForm() {
+    $('#account-profile-name').value = editors.get(selectedAccountId)?.profileName ?? accountName();
+    renderLlmSelector();
     renderCustomApis();
     renderProviderOptions();
     $$('[data-config]').forEach((input) => {
@@ -243,7 +255,23 @@
       input.value = secretUpdates[input.dataset.secret] ?? '';
       input.disabled = !draft;
     });
+    renderProviderOptions();
     renderGroups();
+  }
+  function accountOnlineState(account) {
+    const editor = editors.get(account.id);
+    const runtime = account.id === selectedAccountId ? state?.runtime ?? account.runtime ?? {} : account.runtime ?? editor?.state?.runtime ?? {};
+    const applied = editor?.state?.applied;
+    const actual = String(runtime.accountId ?? runtime.qq?.accountId ?? '');
+    const expected = String(account.appliedQQ ?? applied?.botQQ ?? '');
+    const configured = String(editor?.draft?.botQQ ?? account.qqNumber ?? '');
+    if (runtime.issue?.code === 'QQ_IDENTITY_MISMATCH' || runtime.connected === true && actual && expected && actual !== expected) return { status: 'mismatch', label: '身份不匹配' };
+    if (runtime.connected !== true) return { status: 'offline', label: '离线' };
+    const localConnectionChanged = editor && (String(editor.draft?.botQQ ?? '') !== expected || ['enabled', 'wsUrl'].some((key) => editor.draft?.qq?.[key] !== applied?.qq?.[key]) || Boolean(editor.secretUpdates?.napcatToken));
+    return actual && expected && actual === expected && configured === expected && !localConnectionChanged ? { status: 'online', label: '在线' } : { status: 'unverified', label: '待验证' };
+  }
+  function accountOnlineBadge(online) {
+    return `<span class="account-online-badge account-online-${online.status}" data-account-online="${online.status}" data-ui-protected><span aria-hidden="true"></span>${online.label}</span>`;
   }
   function renderAccountDirectory() {
     const selector = $('#account-selector');
@@ -255,12 +283,13 @@
     const empty = '<div class="empty-state"><strong>尚无账号配置</strong>在账号控制中完成接入后，这里会显示各账号的状态。</div>';
     const cards = accounts.map((account) => {
       const runtime = account.runtime ?? {};
-      const connected = runtime.connected === true && String(runtime.accountId ?? '') === String(account.qqNumber ?? '');
+      const online = accountOnlineState(account);
+      const connected = online.status === 'online';
       const released = account.permissions?.released === true;
       const editor = editors.get(account.id);
-      return { account, connected, released, note: editor?.dirty ? ' · 有未保存修改' : account.pendingChanges ? ' · 参数待应用' : '' };
+      return { account, online, connected, released, note: editor?.dirty ? ' · 有未保存修改' : account.pendingChanges ? ' · 参数待应用' : '' };
     });
-    const overviewHTML = cards.length ? cards.map(({ account, connected, released, note }) => `<button class="account-card ${account.id === selectedAccountId ? 'selected' : ''}" data-select-account="${escapeHTML(account.id)}"><span class="account-avatar">Q</span><span class="account-card-main"><strong>${escapeHTML(account.name || 'QQ 账号')}</strong><small>QQ ${escapeHTML(account.qqNumber || '待填写')} · ${connected ? '身份已验证' : '未确认连接'}${note}</small></span><span class="pill ${released ? 'pill-green' : 'pill-neutral'}">${released ? '已释放范围权限' : '只读'}</span></button>`).join('') : empty;
+    const overviewHTML = cards.length ? cards.map(({ account, online, connected, released, note }) => `<button class="account-card ${account.id === selectedAccountId ? 'selected' : ''}" data-select-account="${escapeHTML(account.id)}" data-ui-text-protected><span class="account-avatar">Q</span><span class="account-card-main"><strong class="account-name-line"><span data-ui-protected>${escapeHTML(account.name || 'QQ 账号')}</span>${accountOnlineBadge(online)}</strong><small data-ui-protected>QQ ${escapeHTML(account.qqNumber || '待填写')} · ${connected ? '身份已验证' : '未确认连接'}${note}</small></span><span data-ui-protected class="pill ${released ? 'pill-green' : 'pill-neutral'}">${released ? '已释放范围权限' : '只读'}</span></button>`).join('') : empty;
     renderAccountAccordions(cards);
     updateRecordHTML($('#overview-accounts'), overviewHTML);
     $('#page-connections').classList.toggle('directory-empty', accounts.length === 0);
@@ -309,13 +338,14 @@
     }
     const previousBody = workspace.closest('.account-accordion-body');
     const previousHeight = previousBody?.getBoundingClientRect().height;
-    for (const { account, connected, released, note } of cards) {
+    for (const { account, online, connected, released, note } of cards) {
       let entry = [...directory.children].find((element) => element.dataset.accountId === account.id);
       if (!entry) {
         entry = document.createElement('article');
-        entry.className = 'account-accordion'; entry.dataset.accountId = account.id;
+        entry.className = 'account-accordion'; entry.dataset.accountId = account.id; entry.dataset.uiKey = 'account.menuCard';
         const header = document.createElement('button'); header.type = 'button';
         header.className = 'account-card account-entry'; header.dataset.openAccount = account.id;
+        header.dataset.uiKey = 'account.menuHeader'; header.setAttribute('data-ui-text-protected', '');
         header.id = `account-header-${account.id}`; header.setAttribute('aria-controls', `account-body-${account.id}`);
         const body = document.createElement('div'); body.className = 'account-accordion-body';
         body.id = `account-body-${account.id}`; body.setAttribute('role', 'region');
@@ -325,7 +355,7 @@
       }
       const open = account.id === targetId;
       const header = entry.firstElementChild;
-      const headerHTML = `<span class="account-avatar">Q</span><span class="account-card-main"><strong>${escapeHTML(account.name || 'QQ 账号')}</strong><small>QQ ${escapeHTML(account.qqNumber || '待填写')} · ${connected ? '登录身份已验证' : '接入尚未完成'}${note}</small></span><span class="pill ${released ? 'pill-green' : 'pill-neutral'}">${released ? '已授权指定范围' : '默认只读'}</span><span class="account-entry-chevron" aria-hidden="true">⌄</span>`;
+      const headerHTML = `<span class="account-avatar">Q</span><span class="account-card-main"><strong class="account-name-line"><span data-ui-protected>${escapeHTML(account.name || 'QQ 账号')}</span>${accountOnlineBadge(online)}</strong><small data-ui-protected>QQ ${escapeHTML(account.qqNumber || '待填写')} · ${connected ? '登录身份已验证' : '接入尚未完成'}${note}</small></span><span data-ui-protected class="pill ${released ? 'pill-green' : 'pill-neutral'}">${released ? '已授权指定范围' : '默认只读'}</span><span class="account-entry-chevron" aria-hidden="true">⌄</span>`;
       if (header.innerHTML !== headerHTML) header.innerHTML = headerHTML;
       header.classList.toggle('expanded', open); header.setAttribute('aria-expanded', String(open));
       entry.classList.toggle('expanded', open);
@@ -427,7 +457,6 @@
     const auth = state?.codexAuth?.loggedIn !== null && state?.codexAuth?.loggedIn !== undefined ? state.codexAuth : codexLoginStatus;
     $('#runtime-badge').textContent = currentPage === 'overview' ? `${accounts.length} 个账号 · ${accounts.filter((account) => account.runtime?.connected === true || account.runtime?.connectionState === 'connected').length} 个已连接` : selectedAccountId ? `${accountName()} · ${label}` : '尚无账号';
     $('#runtime-badge').className = `heading-status ${color === 'green' ? 'connected' : color === 'red' ? 'error' : ''}`;
-    $('#account-login-status').textContent = actualAccount ? `后台确认 QQ ${actualAccount} · ${label}` : `${label} · 尚未确认登录 QQ`;
     $('#account-codex-status').textContent = auth?.message || (auth?.loggedIn === true ? '此账号的官方 Codex 已授权' : auth?.loggedIn === false ? '此账号尚未登录 Codex' : '此账号授权状态等待检查');
     $('#runtime-status').innerHTML = checkRow('QQ 实际连接', actualAccount ? `后台确认 QQ ${actualAccount}` : `尚未确认实际登录 QQ${configuredAccount ? `；配置 QQ ${configuredAccount}` : ''}`, qqStatus)
       + checkRow('消息发送权限', released ? `已释放 · ${writable} 个满足任务条件的发送群 · 私聊${state?.applied?.permissions?.privateReplies ? '已授权指定接收 QQ' : '未授权'}` : '只读：不会因连接 QQ 或登录模型而发送消息', released ? 'ready' : 'disabled')
@@ -440,7 +469,7 @@
       ['当前账号可读群', readable, `${sendTargets} 个群已选择发送权限`, '▤', 'groups'],
       ['当前账号整理记录', Array.isArray(state?.summaries) ? state.summaries.length : 0, '通知与收藏均可核对原文依据', '≡', 'summaries']
     ];
-    const statsHTML = stats.map(([name, value, note, icon, destination]) => `<button type="button" class="stat-card" data-overview-go="${destination}" ${destination !== 'accounts' && !state ? 'disabled' : ''}><span><span class="stat-label">${escapeHTML(name)}</span><span class="stat-value">${escapeHTML(value)}</span><span class="stat-note">${escapeHTML(note)}</span></span><span class="stat-icon" aria-hidden="true">${icon}</span></button>`).join('');
+    const statsHTML = stats.map(([name, value, note, icon, destination]) => `<button type="button" class="stat-card" data-ui-key="overview.stat.${destination}" data-overview-go="${destination}" ${destination !== 'accounts' && !state ? 'disabled' : ''}><span><span class="stat-label" data-ui-key="overview.statLabel.${destination}">${escapeHTML(name)}</span><span class="stat-value" data-ui-protected>${escapeHTML(value)}</span><span class="stat-note" data-ui-protected>${escapeHTML(note)}</span></span><span class="stat-icon" aria-hidden="true">${icon}</span></button>`).join('');
     updateRecordHTML($('#overview-stats'), statsHTML);
   }
   function renderPermissions() {
@@ -669,59 +698,95 @@
       ...(config.models?.codex?.enabled ? [{ id: 'codex', label: 'ChatGPT / Codex', config: config.models.codex }] : [])
     ];
   }
+  function vendorForApi(entry) {
+    try { const host = new URL(entry.baseUrl).hostname; return llmVendors.find((vendor) => vendor.hosts.includes(host))?.id ?? 'custom'; } catch { return 'custom'; }
+  }
+  function chooseSingleLlm(config, selection) {
+    config.models.apis ??= [];
+    let provider = selection;
+    if (selection.startsWith('vendor:')) {
+      const vendorId = selection.slice(7);
+      const vendor = llmVendors.find((entry) => entry.id === vendorId);
+      if (!vendor) throw new Error('请选择列表中的模型来源。');
+      let entry = config.models.apis.find((item) => vendorForApi(item) === vendorId);
+      if (!entry) {
+        if (config.models.apis.length >= 20) throw new Error('此账号已保存 20 个兼容接口，请选择一个已保存配置。');
+        entry = { id: `api_${crypto.randomUUID()}`, label: vendor.label, enabled: false, baseUrl: vendor.url, model: '', maxTokens: 1024, temperature: .7 };
+        config.models.apis.push(entry);
+      }
+      provider = entry.id;
+    }
+    if (provider && !['deepseek', 'codex'].includes(provider) && !config.models.apis.some((item) => item.id === provider)) throw new Error('所选模型配置已不存在，请重新选择。');
+    config.models.deepseek.enabled = provider === 'deepseek';
+    config.models.codex.enabled = provider === 'codex';
+    config.models.apis.forEach((entry) => { entry.enabled = entry.id === provider; });
+    if (provider) for (const task of ['chat', 'summary', 'favorites']) config[task].provider = provider;
+    return provider;
+  }
+  function assertLlmChoice(config) {
+    const providers = configuredProviders(config);
+    if (providers.length > 1) throw Object.assign(new Error('这份旧配置启用了多个模型。请在账号控制明确选择一个模型，再保存或应用。'), { nextStep: 'identity' });
+    if (!providers.length && ['chat', 'summary', 'favorites'].some((task) => config[task]?.enabled)) throw Object.assign(new Error('请先选择一个模型来源，或关闭已启用的账号任务后再应用。'), { nextStep: 'identity' });
+    return providers[0];
+  }
+  function taskModelNeedsSync(config) {
+    const provider = assertLlmChoice(config);
+    return provider && ['chat', 'summary', 'favorites'].some((task) => config[task]?.provider !== provider.id);
+  }
+  function renderLlmSelector() {
+    const select = $('#account-llm-source');
+    const providers = configuredProviders();
+    const entries = draft?.models?.apis ?? [];
+    const options = [{ value: '', label: providers.length > 1 ? '旧配置启用了多个模型，请明确选择一个' : '请选择一个模型来源' }, { value: 'deepseek', label: 'DeepSeek API', key: 'deepseek' }];
+    const used = new Set();
+    for (const vendor of llmVendors) {
+      const matching = entries.filter((entry) => vendorForApi(entry) === vendor.id);
+      const first = matching[0];
+      options.push({ value: first?.id ?? `vendor:${vendor.id}`, label: first ? `${vendor.label} · ${first.label}` : vendor.label, key: vendor.id });
+      if (first) used.add(first.id);
+    }
+    for (const entry of entries) if (!used.has(entry.id)) options.push({ value: entry.id, label: `已保存 · ${entry.label}` });
+    options.push({ value: 'codex', label: 'ChatGPT 订阅 / Codex', key: 'codex' });
+    const html = options.map((option) => `<option value="${escapeHTML(option.value)}" ${option.key ? `data-ui-option-key="${option.key}"` : 'data-ui-protected'} ${option.value === '' ? 'disabled' : ''}>${escapeHTML(option.label)}</option>`).join('');
+    if (select.innerHTML !== html) select.innerHTML = html;
+    select.value = providers.length === 1 ? providers[0].id : '';
+    select.disabled = !draft;
+    $('#legacy-model-warning').classList.toggle('hidden', providers.length <= 1);
+  }
   function renderProviderOptions() {
-    const providers = [
-      { id: 'deepseek', label: 'DeepSeek API', enabled: draft?.models?.deepseek?.enabled },
-      ...(draft?.models?.apis ?? []).map((entry) => ({ id: entry.id, label: entry.label || '自定义 API', enabled: entry.enabled })),
-      { id: 'codex', label: 'ChatGPT / Codex · 仅本人任务', enabled: draft?.models?.codex?.enabled }
-    ];
+    const providers = configuredProviders();
+    const chosen = providers.length === 1 ? providers[0] : null;
     $$('select[data-config$=".provider"]').forEach((select) => {
-      const selected = getPath(draft, select.dataset.config) ?? select.value;
-      const html = providers.map((entry) => `<option value="${escapeHTML(entry.id)}">${escapeHTML(entry.label)}${entry.enabled ? '' : ' · 尚未启用'}</option>`).join('');
+      const current = getPath(draft, select.dataset.config) ?? select.value;
+      const available = chosen ? [chosen, ...(current && current !== chosen.id ? [{ id: current, label: `原配置：${providerLabel(current)}（保存后统一）` }] : [])] : [{ id: current || '', label: providers.length > 1 ? '请先在账号控制选择一个模型' : '尚未选择模型' }];
+      const html = available.map((entry) => `<option value="${escapeHTML(entry.id)}">${escapeHTML(entry.label)}</option>`).join('');
       if (select.innerHTML !== html) select.innerHTML = html;
-      select.value = selected;
+      select.value = current;
+      select.disabled = true;
+      select.setAttribute('aria-description', '任务统一使用账号控制中选择的模型。');
     });
   }
   function renderCustomApis() {
     const entries = draft?.models?.apis ?? [];
+    const active = configuredProviders().length === 1 ? configuredProviders()[0].id : '';
     const structure = `${selectedAccountId}:${entries.map((entry) => entry.id).join(',')}`;
-    if (customApiStructure === structure) return;
-    customApiStructure = structure;
-    $('#custom-api-cards').innerHTML = entries.map((entry, index) => `<section class="card custom-api-card" data-api-card="${escapeHTML(entry.id)}" data-api-id="${escapeHTML(entry.id)}"><div class="section-heading"><div><h2>兼容 API · ${escapeHTML(entry.label || '自定义模型')}</h2><p>使用自己的服务商密钥，按服务商 API 规则计费。</p></div><button class="button button-quiet button-small" data-remove-api="${escapeHTML(entry.id)}">移除</button></div><div class="form-grid"><label class="field">配置名称<input data-config="models.apis.${index}.label" value="${escapeHTML(entry.label)}" maxlength="80" placeholder="例如：OpenAI / 通义 / Kimi"></label><div class="field"><span>启用此模型</span><label class="check-field"><input type="checkbox" data-config="models.apis.${index}.enabled" ${entry.enabled ? 'checked' : ''}><span>可用于当前账号任务</span></label></div><label class="field field-wide">API 地址<input data-config="models.apis.${index}.baseUrl" value="${escapeHTML(entry.baseUrl)}" placeholder="https://api.example.com/v1" spellcheck="false"><small>需要兼容 OpenAI Chat Completions 的 HTTPS 接口；不是服务商聊天网页。</small></label><label class="field field-wide">API Key <small class="api-secret-note">${state?.secrets?.[`apiKey:${entry.id}`] ? '此账号已保存密钥，留空保留' : '尚未配置密钥'}</small><input type="password" data-secret="apiKey:${escapeHTML(entry.id)}" autocomplete="new-password" value="${escapeHTML(secretUpdates[`apiKey:${entry.id}`] || '')}" placeholder="粘贴此服务商 API Key"></label><label class="field field-wide">模型名称<input data-config="models.apis.${index}.model" value="${escapeHTML(entry.model)}" spellcheck="false" placeholder="以服务商文档中的模型 ID 为准"></label><label class="field">最大输出 Token<input type="number" min="128" max="131072" data-config="models.apis.${index}.maxTokens" value="${escapeHTML(entry.maxTokens ?? 1024)}"></label><label class="field">Temperature<input type="number" min="0" max="2" step="0.1" data-config="models.apis.${index}.temperature" value="${escapeHTML(entry.temperature ?? 0.7)}"></label></div><div class="api-vendor-guide" data-api-guide></div><div class="card-actions"><button class="button button-secondary" data-setup-model-test="${escapeHTML(entry.id)}">保存并测试此 API · 可能产生费用</button></div></section>`).join('');
-  }
-  async function addCustomApi() {
-    requireAccount();
-    draft.models.apis ??= [];
-    if (draft.models.apis.length >= 20) return toast('每个账号最多添加 20 个自定义 API。', 'error');
-    const presets = [
-      ['deepseek','DeepSeek','https://api.deepseek.com','https://api-docs.deepseek.com/zh-cn/'],
-      ['openai','OpenAI','https://api.openai.com/v1','https://developers.openai.com/api/docs/'],
-      ['dashscope','阿里云百炼 / 通义','https://dashscope.aliyuncs.com/compatible-mode/v1','https://help.aliyun.com/zh/model-studio/compatibility-of-openai-with-dashscope'],
-      ['zhipu','智谱','https://open.bigmodel.cn/api/paas/v4','https://docs.bigmodel.cn/cn/guide/develop/openai/introduction'],
-      ['kimi','Kimi / Moonshot','https://api.moonshot.cn/v1','https://platform.moonshot.cn/docs/guide/start-using-kimi-api'],
-      ['siliconflow','硅基流动','https://api.siliconflow.cn/v1','https://docs.siliconflow.cn/cn/userguide/quickstart'],
-      ['custom','自定义兼容接口','','']
-    ];
-    if (!await openDialog('选择 API 服务商', `<label class="field">服务商<select id="api-vendor-choice">${presets.map(([id,label]) => `<option value="${id}">${escapeHTML(label)}</option>`).join('')}</select></label><p>只填入服务商的常见接口地址。API Key、模型名称和额度以服务商后台为准，可在账号中继续修改。此操作不会调用模型。</p><div class="notice notice-info">ChatGPT 订阅在“账号与来源”中单独勾选。API Key 与 ChatGPT 订阅分别计费。</div>`, '添加此 API')) return;
-    const preset = presets.find(([id]) => id === $('#api-vendor-choice').value) || presets.at(-1);
-    if (preset[0] === 'deepseek' && !draft.models.deepseek.enabled) {
-      draft.models.deepseek.enabled = true; markDirty(); populateForm(); expandedAccountId = selectedAccountId; setSetupStep('models'); navigate('connections'); renderLiveState(); return;
+    if (customApiStructure !== structure) {
+      customApiStructure = structure;
+      $('#custom-api-cards').innerHTML = entries.map((entry, index) => `<section class="card custom-api-card hidden" data-api-card="${escapeHTML(entry.id)}" data-api-id="${escapeHTML(entry.id)}" data-ui-key="account.apiForm"><div class="section-heading"><div><h2 data-ui-protected>${escapeHTML(entry.label || '兼容 API')}</h2><p data-ui-key="account.apiFormNote">密钥属于当前账号。切换来源会保留此配置，留空会保留已保存密钥。</p></div></div><div class="form-grid"><label class="field">接口名称<input data-ui-protected data-config="models.apis.${index}.label" value="${escapeHTML(entry.label)}" maxlength="80" placeholder="例如：OpenAI 工作助手"></label><label class="field">模型名称<input data-ui-protected data-config="models.apis.${index}.model" value="${escapeHTML(entry.model)}" spellcheck="false" placeholder="以服务商文档中的模型 ID 为准"></label><label class="field field-wide">API 地址<input data-ui-protected data-config="models.apis.${index}.baseUrl" value="${escapeHTML(entry.baseUrl)}" placeholder="https://api.example.com/v1" spellcheck="false"><small>需要兼容 OpenAI Chat Completions 的 HTTPS 接口；不是服务商聊天网页。</small></label><label class="field field-wide">API Key <small class="api-secret-note" data-ui-protected></small><input data-ui-protected type="password" data-secret="apiKey:${escapeHTML(entry.id)}" autocomplete="new-password" value="${escapeHTML(secretUpdates[`apiKey:${entry.id}`] || '')}" placeholder="粘贴此服务商 API Key"></label><label class="field">最大输出 Token<input data-ui-protected type="number" min="128" max="131072" data-config="models.apis.${index}.maxTokens" value="${escapeHTML(entry.maxTokens ?? 1024)}"></label><label class="field">Temperature<input data-ui-protected type="number" min="0" max="2" step="0.1" data-config="models.apis.${index}.temperature" value="${escapeHTML(entry.temperature ?? 0.7)}"></label></div><div class="api-vendor-guide" data-api-guide></div><div class="card-actions"><button class="button button-secondary" data-setup-model-test="${escapeHTML(entry.id)}" data-ui-key="account.testApi"><span>保存并测试此 API · 可能产生费用</span></button></div></section>`).join('');
     }
-    const id = `api_${crypto.randomUUID()}`;
-    draft.models.apis.push({ id, label: preset[1], enabled: true, baseUrl: preset[2], model: '', maxTokens: 1024, temperature: 0.7 });
-    markDirty(); renderCustomApis(); populateForm();
-    expandedAccountId = selectedAccountId;
-    setSetupStep('models'); navigate('connections'); renderLiveState();
-    $(`[data-api-card="${CSS.escape(id)}"] input`)?.focus();
+    $$('[data-api-card]').forEach((card) => card.classList.toggle('hidden', card.dataset.apiCard !== active));
   }
-  async function removeCustomApi(id) {
-    if (!await openDialog('移除这个 API 配置', '<p>从当前账号草稿移除此模型。使用它的任务需要重新选择模型；保存应用前不会改变运行配置。</p>', '移除 API')) return;
-    const index = draft.models.apis.findIndex((entry) => entry.id === id);
-    if (index < 0) return;
-    draft.models.apis.splice(index, 1);
-    for (const section of ['chat', 'summary', 'favorites']) if (draft[section].provider === id) { draft[section].enabled = false; draft[section].provider = 'deepseek'; }
-    delete secretUpdates[`apiKey:${id}`];
-    markDirty(); populateForm(); renderLiveState();
+  async function saveAccountProfile() {
+    const id = requireAccount();
+    const name = $('#account-profile-name').value.trim();
+    if (!name || name.length > 80) throw new Error('配置名称需要填写 1–80 个字符。');
+    const editor = editors.get(id);
+    editor.profileName = $('#account-profile-name').value;
+    const sentName = editor.profileName;
+    const result = await accountApi('/profile', { name }, 'POST', id);
+    if (editors.get(id)?.profileName === sentName) editors.get(id).profileName = name;
+    acceptState(result, { accountId: id });
+    toast(`「${name}」名称已保存；运行模型与权限保持原状。`);
   }
   function authStatus() {
     return state?.codexAuth?.loggedIn !== undefined && state?.codexAuth?.loggedIn !== null ? state.codexAuth : codexLoginStatus;
@@ -748,8 +813,11 @@
     const expectedQQ = String(draft.botQQ ?? '');
     const connectionUnchanged = ['enabled', 'wsUrl'].every((key) => draft.qq?.[key] === state.applied?.qq?.[key]) && !secretUpdates.napcatToken;
     const verified = connectionUnchanged && Boolean(actualQQ) && actualQQ === expectedQQ && state.applied?.botQQ === expectedQQ && (connection ? connection.verified === true : runtime.connected === true);
+    renderLlmSelector();
+    renderCustomApis();
     const providers = configuredProviders();
-    const modelsReady = providers.some((provider) => modelEvidence(provider)[1] === 'passed' || modelEvidence(provider)[1] === 'logged_in');
+    const selectedProvider = providers.length === 1 ? providers[0] : null;
+    const modelsReady = Boolean(selectedProvider && ['passed', 'logged_in'].includes(modelEvidence(selectedProvider)[1]));
     const applied = state.applied ?? {};
     const hasTask = ['chat', 'summary', 'favorites'].some((name) => applied[name]?.enabled);
     const released = applied.permissions?.released === true;
@@ -778,11 +846,11 @@
       $('[data-api-guide]', card).innerHTML = guide ? `<a href="${guide[1]}" target="_blank" rel="noopener noreferrer">查看 ${guide[0]} 密钥与模型说明 ↗</a><small>具体模型、可用地区与额度以服务商后台为准。</small>` : '<small>请按服务商官方文档填写兼容接口地址和模型 ID。</small>';
       $('.api-secret-note', card).textContent = secretUpdates[`apiKey:${entry.id}`] ? '密钥已输入，尚未保存' : state.secrets?.[`apiKey:${entry.id}`] ? '此账号已保存密钥，留空保留' : '尚未配置密钥';
     }
-    $('#setup-selected-models').textContent = providers.length ? `当前选择：${providers.map((provider) => provider.label).join('、')}。这些模型可在每个任务中分别选择。` : '尚未选择模型；可先连接 QQ，稍后再配置。';
+    $('#setup-selected-models').textContent = providers.length > 1 ? '旧配置尚未归一：请选择一个模型后明确保存，原有运行模型不会自动更改。' : selectedProvider ? `当前选择：${selectedProvider.label}。账号任务统一使用此模型；其他已保存接口与密钥会保留。` : '尚未选择模型；可先连接 QQ，稍后再配置。';
     $('#setup-model-empty').classList.toggle('hidden', providers.length !== 0);
-    $('#deepseek-model-card').classList.toggle('hidden', !draft.models.deepseek.enabled);
-    $('#codex-model-card').classList.toggle('hidden', !draft.models.codex.enabled);
-    $('#setup-model-status').innerHTML = providers.map((provider) => { const [description, status] = modelEvidence(provider); return checkRow(provider.label, description, status); }).join('');
+    $('#deepseek-model-card').classList.toggle('hidden', selectedProvider?.id !== 'deepseek');
+    $('#codex-model-card').classList.toggle('hidden', selectedProvider?.id !== 'codex');
+    $('#setup-model-status').innerHTML = (selectedProvider ? [selectedProvider] : []).map((provider) => { const [description, status] = modelEvidence(provider); return checkRow(provider.label, description, status); }).join('');
     $('#setup-connection-badge').textContent = verified ? `QQ ${actualQQ} · 身份已验证` : '尚未验证 QQ 身份';
     $('#setup-connection-badge').className = `pill ${verified ? 'pill-green' : 'pill-neutral'}`;
     const issue = connection?.issue ?? runtime.issue;
@@ -946,6 +1014,8 @@
     const editor = editors.get(id);
     const sentVersion = editor.editVersion;
     const config = clone(editor.draft);
+    const choice = assertLlmChoice(config);
+    if (choice) chooseSingleLlm(config, choice.id);
     const submittedSecrets = clone(editor.secretUpdates);
     const result = await accountApi('/config/save', { config, ...(Object.keys(submittedSecrets).length ? { secretUpdates: submittedSecrets } : {}) }, 'POST', id);
     if (!result.draft) throw new Error('后台未返回保存后的账号配置，请刷新确认。');
@@ -956,7 +1026,8 @@
   async function applyConfig(id = selectedAccountId) {
     requireAccount(id);
     if (id === selectedAccountId) rememberEditor();
-    if (editors.get(id).dirty) await saveDraft({ forApply: true, accountId: id });
+    const needsModelSync = taskModelNeedsSync(editors.get(id).draft);
+    if (editors.get(id).dirty || needsModelSync) await saveDraft({ forApply: true, accountId: id });
     if (editors.get(id).dirty) throw new Error('保存过程中有新增编辑，尚未应用。请再次点击应用参数。');
     const revision = editors.get(id).state.revision;
     const result = await accountApi('/config/apply', { revision }, 'POST', id);
@@ -968,12 +1039,14 @@
     const id = requireAccount(accountId);
     if (id === selectedAccountId) rememberEditor();
     const snapshot = clone(editors.get(id).draft);
+    const confirmedModel = assertLlmChoice(snapshot);
+    if (confirmedModel) chooseSingleLlm(snapshot, confirmedModel.id);
     const reads = snapshot.groups?.filter((group) => group.read === true) ?? [];
     const sends = snapshot.groups?.filter((group) => group.send === true) ?? [];
     const targets = sends.length ? sends.map((group) => `<li>${escapeHTML(group.name || group.id)}（${escapeHTML(group.id)}）</li>`).join('') : '<li>不向任何群发送</li>';
     const privateTarget = snapshot.permissions?.privateReplies && snapshot.ownerQQ ? `指定 QQ ${escapeHTML(snapshot.ownerQQ)}` : '未允许私聊发送';
     if (!await openDialog(`释放「${accountName(id)}」的范围权限`, `<p>将保存并应用这个账号当前的任务和权限配置，并校验实际登录 QQ ${escapeHTML(snapshot.botQQ || '尚未填写')}。</p><div class="apply-preview"><p>允许读取：${reads.length} 个群</p><p>允许群发送：</p><ul>${targets}</ul><p>私聊：${privateTarget}</p><p>聊天与回复：${snapshot.chat?.enabled ? (snapshot.chat?.provider === 'codex' ? '已启用 · Codex 仅本人私聊' : `已启用 · ${escapeHTML(providerLabel(snapshot.chat?.provider))}`) : '未启用'}；通知汇总：${snapshot.summary?.enabled ? '已启用' : '未启用'}；收藏：${snapshot.favorites?.enabled ? '已启用' : '未启用'}。</p></div><p>仅释放本次列出的范围。其他账号的配置和权限不受影响。</p>`, '保存并释放此账号权限')) return;
-    if (editors.get(id).dirty) await saveDraft({ forApply: true, accountId: id });
+    if (editors.get(id).dirty || taskModelNeedsSync(editors.get(id).draft)) await saveDraft({ forApply: true, accountId: id });
     if (editors.get(id).dirty) throw new Error('此账号仍有新编辑，请重新检查权限后再释放。');
     const revision = editors.get(id).state.revision;
     const result = await accountApi('/permissions/release', { revision }, 'POST', id);
@@ -994,8 +1067,7 @@
     const qqNumber = $('#new-account-qq').value.trim();
     const name = $('#new-account-name').value.trim() || `QQ ${qqNumber}`;
     if (!/^[1-9]\d{3,19}$/.test(qqNumber)) throw new Error('QQ 号应为 4–20 位数字。');
-    const apiSelected = $('#new-account-api').checked;
-    const codexSelected = $('#new-account-codex').checked;
+    const source = $('#new-account-llm-source').value;
     const result = await api('/api/accounts', { name, platform: 'qq', qqNumber });
     if (!result.account?.id || !result.state?.draft) throw new Error('后台未返回创建后的账号配置，请刷新账号目录确认。');
     rememberEditor();
@@ -1006,8 +1078,7 @@
     acceptState(result.state, { accountId: result.account.id, replaceDraft: true });
     const id = result.account.id;
     const editor = editors.get(id);
-    editor.draft.models.deepseek.enabled = apiSelected;
-    editor.draft.models.codex.enabled = codexSelected;
+    chooseSingleLlm(editor.draft, ['deepseek', 'codex', ''].includes(source) ? source : `vendor:${source}`);
     editor.dirty = true; editor.editVersion = (editor.editVersion ?? 0) + 1;
     expandedAccountId = id;
     await selectAccount(id);
@@ -1151,6 +1222,7 @@
   window.addEventListener('resize', positionGroupTriggerPicker);
   document.addEventListener('input', (event) => {
     const input = event.target;
+    if (input.id === 'account-profile-name') { if (selectedAccountId) { const editor = editors.get(selectedAccountId); if (editor) editor.profileName = input.value; } return; }
     if (input.dataset.config && draft) {
       const value = input.type === 'checkbox' ? input.checked : input.type === 'number' ? (input.value === '' ? null : Number(input.value)) : input.value;
       setPath(draft, input.dataset.config, value);
@@ -1178,6 +1250,9 @@
     }
   });
   document.addEventListener('change', (event) => {
+    if (event.target.id === 'account-llm-source' && draft) {
+      chooseSingleLlm(draft, event.target.value); markDirty(); populateForm(); renderLiveState(); return;
+    }
     if (['mode', 'trigger'].includes(event.target.dataset.groupField)) renderGroups();
     if (event.target.dataset.config) { renderModules(); renderSetupGuide(); }
     if (event.target.id === 'summary-group') rememberEditor();
@@ -1209,8 +1284,6 @@
       if (destination === 'groups') requestAnimationFrame(() => { const card = $('.group-table').closest('.card'); card.tabIndex = -1; card.focus({ preventScroll: true }); card.scrollIntoView({ behavior: reducedMotion() ? 'auto' : 'smooth', block: 'start' }); });
       return;
     }
-    if (button.hasAttribute('data-add-api')) return withButton(button, addCustomApi);
-    if (button.dataset.removeApi) return withButton(button, () => removeCustomApi(button.dataset.removeApi));
     if (button.dataset.setupStep) return setSetupStep(button.dataset.setupStep);
     if (button.dataset.setupSave) return withButton(button, async () => { const id = requireAccount(); await saveDraft({ accountId: id }); setSetupStep(button.dataset.setupSave, { accountId: id }); });
     if (button.dataset.setupApply) return withButton(button, async () => { const id = requireAccount(); await applyConfig(id); setSetupStep(button.dataset.setupApply, { accountId: id }); });
@@ -1258,6 +1331,7 @@
     }
   });
   $('#account-selector').addEventListener('change', (event) => withButton(null, () => selectAccount(event.target.value)));
+  $('#save-account-profile').addEventListener('click', (event) => withButton(event.currentTarget, saveAccountProfile));
   $('#create-account-entry').addEventListener('click', showCreateAccount);
   $('#cancel-create-account').addEventListener('click', () => $('#new-account-form').classList.add('hidden'));
   $('#new-account-form').addEventListener('submit', (event) => { event.preventDefault(); withButton($('#submit-create-account'), createAccount); });

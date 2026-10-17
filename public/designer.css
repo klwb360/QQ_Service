@@ -1,0 +1,44 @@
+[data-ui-hidden="true"] { display: none !important; }
+body[data-ui-design-mode="edit"] [data-ui-key] { cursor: crosshair !important; }
+body[data-ui-design-mode="edit"] #frontend-editor-toggle, body[data-ui-design-mode="edit"] #window-controls * { cursor: pointer !important; }
+#designer-root { position: fixed; z-index: 2147483600; top: 76px; right: 18px; bottom: 18px; width: 354px; max-width: calc(100vw - 30px); display: flex; flex-direction: column; color: #253850; font: 13px/1.5 system-ui, "Microsoft YaHei", sans-serif; background: #fff; border: 1px solid #cbdadf; border-radius: 16px; box-shadow: 0 16px 54px #173e5d30; isolation: isolate; }
+#designer-root[hidden], #designer-root [hidden], .designer-outline[hidden] { display: none !important; }
+#designer-root *, #designer-root *::before, #designer-root *::after { box-sizing: border-box; }
+#designer-root button, #designer-root input, #designer-root select, #designer-root textarea { -webkit-app-region: no-drag; font: inherit; letter-spacing: normal; }
+#designer-root button { cursor: pointer; min-height: 32px; padding: 5px 10px; color: #34576a; background: #f4f8fa; border: 1px solid #d8e4e9; border-radius: 7px; }
+#designer-root button:hover { background: #e8f3f3; border-color: #7fbab5; }
+#designer-root button:focus-visible, #designer-root input:focus-visible, #designer-root select:focus-visible, #designer-root textarea:focus-visible { outline: 2px solid #16968c; outline-offset: 2px; }
+#designer-root button:disabled { opacity: .45; cursor: default; }
+#designer-root .designer-heading { display: flex; align-items: center; justify-content: space-between; gap: 12px; padding: 15px 16px 10px; }
+#designer-root .designer-heading strong { font-size: 17px; }
+#designer-root small { display: block; color: #788c9b; font-size: 11px; }
+#designer-root #designer-close { font-size: 22px; line-height: 1; padding: 0; width: 30px; border: 0; background: transparent; }
+#designer-root .designer-mode-switch { display: flex; gap: 5px; margin: 0 14px 10px; }
+#designer-root .designer-mode-switch button { flex: 1; }
+#designer-root .designer-mode-switch button[aria-pressed="true"], #designer-root .designer-primary { color: #fff; background: #087f84; border-color: #087f84; }
+#designer-root > .designer-field { margin: 0 14px 10px; }
+#designer-root .designer-scroll { overflow-y: auto; overflow-x: hidden; padding: 0 15px 14px; scrollbar-width: thin; }
+#designer-root .designer-selection { padding: 10px 11px; background: #edf7f6; border-radius: 9px; margin-bottom: 10px; overflow-wrap: anywhere; }
+#designer-root .designer-selection strong { display: block; font-size: 13px; }
+#designer-root .designer-selection small { margin-top: 3px; }
+#designer-root fieldset { border: 0; margin: 0; padding: 0; min-width: 0; }
+#designer-root .designer-field { display: flex; flex-direction: column; gap: 4px; color: #466075; margin-bottom: 9px; font-size: 12px; }
+#designer-root input:not([type="checkbox"]), #designer-root select, #designer-root textarea { width: 100%; min-height: 34px; border: 1px solid #d7e1e8; border-radius: 6px; padding: 7px 8px; color: #2c4359; background: #fff; font-size: 12px; resize: vertical; }
+#designer-root select { appearance: auto; }
+#designer-root textarea:disabled { background: #f4f6f8; }
+#designer-root .designer-note { color: #82909e; font-size: 11px; line-height: 1.6; margin: 5px 0 11px; }
+#designer-root .designer-style-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 0 10px; margin-top: 8px; }
+#designer-root details { border-top: 1px solid #e6edf1; padding-top: 9px; margin: 10px 0; }
+#designer-root summary { cursor: pointer; color: #446173; font-weight: 600; }
+#designer-root .designer-checkbox { display: flex; align-items: center; gap: 7px; margin: 12px 0; font-size: 12px; }
+#designer-root .designer-checkbox input { width: 16px; height: 16px; accent-color: #087f84; }
+#designer-root .designer-actions { display: flex; flex-wrap: wrap; gap: 6px; margin: 9px 0; }
+#designer-root .designer-actions button { flex: 1 0 auto; font-size: 12px; }
+#designer-root .designer-error { color: #b44938; background: #fff2ee; border: 1px solid #efc6bd; padding: 8px; border-radius: 7px; font-size: 12px; overflow-wrap: anywhere; }
+#designer-root .designer-save-status { border-top: 1px solid #e4ecef; padding: 9px 14px; color: #6e8790; font-size: 11px; }
+#designer-root .designer-restore { display: block; width: 100%; text-align: left; margin-top: 6px; overflow-wrap: anywhere; }
+#designer-root.designer-docked-left { left: 18px; right: auto; }
+.designer-outline { position: fixed; z-index: 2147483500; pointer-events: none; border-radius: 5px; box-sizing: border-box; }
+.designer-outline-selection { border: 2px solid #078a83; box-shadow: 0 0 0 3px #078a8320; }
+.designer-outline-hover { border: 1px dashed #4aa4ad; background: #65c5c50b; }
+@media (max-width: 650px) { #designer-root { top: 66px; bottom: 8px; right: 8px; width: 315px; } }

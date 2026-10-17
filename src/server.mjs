@@ -149,7 +149,7 @@ export function createDashboard({ dataDir = defaultDataDir(), installerFactory, 
         }
         throw fail('接口不存在。', 404);
       }
-      const files = { '/': ['index.html', 'text/html'], '/index.html': ['index.html', 'text/html'], '/styles.css': ['styles.css', 'text/css'], '/app.js': ['app.js', 'text/javascript'] };
+      const files = { '/': ['index.html', 'text/html'], '/index.html': ['index.html', 'text/html'], '/styles.css': ['styles.css', 'text/css'], '/app.js': ['app.js', 'text/javascript'], '/designer.js': ['designer.js', 'text/javascript'], '/designer.css': ['designer.css', 'text/css'] };
       if (request.method === 'GET' && files[route]) {
         const [file, type] = files[route];
         response.writeHead(200, { 'Content-Type': `${type}; charset=utf-8`, 'Cache-Control': 'no-cache' });
