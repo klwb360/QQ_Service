@@ -1,4 +1,8 @@
-[data-ui-hidden="true"] { display: none !important; }
+[data-ui-hidden="true"], [data-ui-collapsed="true"] { display: none !important; }
+[data-ui-reflow-cols] { grid-template-columns: repeat(var(--ui-reflow-cols), minmax(0, 1fr)) !important; }
+[data-ui-reflow-cols] > * { min-width: 0; }
+[data-ui-reflow-cols="1"] > * { grid-column: 1 / -1; }
+.form-grid > [data-ui-reflow-tail="true"] { grid-column: span var(--ui-reflow-span) !important; }
 body[data-ui-design-mode="edit"] [data-ui-key] { cursor: crosshair !important; }
 body[data-ui-design-mode="edit"] #frontend-editor-toggle, body[data-ui-design-mode="edit"] #window-controls * { cursor: pointer !important; }
 #designer-root { position: fixed; z-index: 2147483600; top: 76px; right: 18px; bottom: 18px; width: 354px; max-width: calc(100vw - 30px); display: flex; flex-direction: column; color: #253850; font: 13px/1.5 system-ui, "Microsoft YaHei", sans-serif; background: #fff; border: 1px solid #cbdadf; border-radius: 16px; box-shadow: 0 16px 54px #173e5d30; isolation: isolate; }
@@ -21,6 +25,10 @@ body[data-ui-design-mode="edit"] #frontend-editor-toggle, body[data-ui-design-mo
 #designer-root .designer-selection { padding: 10px 11px; background: #edf7f6; border-radius: 9px; margin-bottom: 10px; overflow-wrap: anywhere; }
 #designer-root .designer-selection strong { display: block; font-size: 13px; }
 #designer-root .designer-selection small { margin-top: 3px; }
+#designer-root #designer-select-parent { width: 100%; margin-top: 9px; text-align: left; font-size: 12px; }
+#designer-root #designer-breadcrumb { display: flex; gap: 4px; flex-wrap: wrap; margin-top: 8px; }
+#designer-root #designer-breadcrumb button { min-height: 25px; max-width: 100%; padding: 3px 6px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-size: 10px; background: #fff; }
+#designer-root #designer-breadcrumb button[aria-current="true"] { color: #fff; background: #087f84; border-color: #087f84; }
 #designer-root fieldset { border: 0; margin: 0; padding: 0; min-width: 0; }
 #designer-root .designer-field { display: flex; flex-direction: column; gap: 4px; color: #466075; margin-bottom: 9px; font-size: 12px; }
 #designer-root input:not([type="checkbox"]), #designer-root select, #designer-root textarea { width: 100%; min-height: 34px; border: 1px solid #d7e1e8; border-radius: 6px; padding: 7px 8px; color: #2c4359; background: #fff; font-size: 12px; resize: vertical; }

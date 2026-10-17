@@ -8,10 +8,15 @@
   const PROTECTED = '#window-controls, #frontend-editor-toggle, #app-dialog, #toast-region, [data-ui-protected], input, textarea, pre, code, [contenteditable], #account-selector, #summary-group, #setup-test-group, #group-rows, #overview-accounts, #recent-jobs, #module-cards, #module-jobs, #all-jobs, #summary-records, #favorite-records, #log-records, #runtime-status, #runtime-details, #environment-checks, #setup-task-summary, #setup-permission-summary, #setup-verification-checks, #setup-live-metrics, #account-login-status, #account-codex-status, #setup-connection-result, #setup-model-status, #setup-selected-models, #setup-codex-jobs, #setup-connection-jobs, #server-label, #runtime-badge, #config-label, #config-detail, #account-permission-badge, #deepseek-secret-state, #napcat-secret-state, #permissions-status, #permissions-applied-summary, #setup-send-test-result, #setup-test-guide, #policy-result, #load-error, #setup-error, #create-account-error, #scenario-validation-errors';
   const BAD_KEY = /(?:window-|designer-|ui-designer|secret|token|login-status|codex-status|runtime-status)|\d{5}|[a-f0-9]{8}-[a-f0-9]{4}/i;
   const registry = new Map();
+  const retiredKeys = new Set();
+  const bakedEdits = new Map();
   const baselines = new WeakMap();
   const optionBaselines = new WeakMap();
   const elementKeys = new WeakMap();
   const STATIC_OPTION_KEYS = ['', 'deepseek', 'openai', 'dashscope', 'zhipu', 'kimi', 'siliconflow', 'custom', 'codex'];
+  const CONTAINER_SELECTOR = '.field, .form-grid, .two-columns, .stats-grid, .section-heading, .section-heading > div, .card-actions, .setup-stage-actions, .connection-settings, .connection-route, .connection-route-tabs, .connection-instructions, .connection-instructions > li, .settings-options, .profile-name-controls, .setup-send-test, .account-directory-heading, .scenario-tabs, .record-tabs, .page-heading, .page-heading > div';
+  const EMPTY_WRAPPER_SELECTOR = `${CONTAINER_SELECTOR}, section.card, .notice, .sidebar-note, .page-footer`;
+  const REFLOW_GRID_SELECTOR = '.form-grid, .two-columns, .stats-grid, .module-grid, .account-list';
   let documentState = { version: VERSION, edits: [] };
   let undoStack = [];
   let redoStack = [];
@@ -49,7 +54,57 @@
   }
 
   function keyAllowed(key) {
-    return /^[a-zA-Z][a-zA-Z0-9_.:-]{0,119}$/.test(key) && !BAD_KEY.test(key);
+    return typeof key === 'string' && /^[a-zA-Z][a-zA-Z0-9_.:-]{0,119}$/.test(key) && !BAD_KEY.test(key);
+  }
+
+  function stableKey(element, prefix = 'ui-auto-') {
+    let path = '';
+    for (let current = element; current && current !== document.body; current = current.parentElement) {
+      if (current.id && !/\d{5}|[a-f0-9]{8}-[a-f0-9]{4}/i.test(current.id)) { path = `#${current.id}/${path}`; break; }
+      const index = current.parentElement ? [...current.parentElement.children].filter(sibling => sibling.tagName === current.tagName).indexOf(current) : 0;
+      path = `${current.tagName.toLowerCase()}:${index}/${path}`;
+    }
+    let hash = 2166136261;
+    for (const letter of path) hash = Math.imul(hash ^ letter.charCodeAt(0), 16777619) >>> 0;
+    let encoded = ''; do { encoded = String.fromCharCode(97 + hash % 26) + encoded; hash = Math.floor(hash / 26); } while (hash);
+    return `${prefix}${encoded}`;
+  }
+
+  function loadBaselineManifest() {
+    const manifest = document.getElementById('ui-design-baseline');
+    if (!manifest) return;
+    const value = JSON.parse(manifest.textContent);
+    if (value.version !== VERSION || !Array.isArray(value.retiredKeys) || !Array.isArray(value.bakedEdits) || value.retiredKeys.length > 400 || value.bakedEdits.length > 400) throw new Error('内置界面基线格式不正确。');
+    for (const key of value.retiredKeys) {
+      if (!keyAllowed(key)) throw new Error('内置界面基线包含不支持的标识。');
+      retiredKeys.add(key);
+      registry.set(key, { text: true, options: new Set(), name: '已从本版移除的元素', retired: true });
+    }
+    for (const entry of value.bakedEdits) {
+      const key = /^\[data-ui-key="([a-zA-Z][a-zA-Z0-9_.:-]{0,119})"\]$/.exec(entry?.selector)?.[1];
+      if (keyAllowed(key)) bakedEdits.set(entry.selector, clone(entry));
+    }
+  }
+
+  function normalizeBaselineEdits(edits) {
+    return edits.flatMap(original => {
+      const key = /^\[data-ui-key="([^"]+)"\]$/.exec(original.selector)?.[1];
+      if (retiredKeys.has(key)) return [];
+      const entry = clone(original);
+      const baked = bakedEdits.get(entry.selector);
+      if (baked) {
+        for (const property of ['text', 'hidden']) if (property in entry && property in baked && entry[property] === baked[property]) delete entry[property];
+        if (entry.styles && baked.styles) {
+          for (const property of Object.keys(entry.styles)) if (entry.styles[property] === baked.styles[property]) delete entry.styles[property];
+          if (!Object.keys(entry.styles).length) delete entry.styles;
+        }
+        if (entry.optionLabels && baked.optionLabels) {
+          entry.optionLabels = entry.optionLabels.filter(option => !baked.optionLabels.some(previous => previous.value === option.value && previous.label === option.label));
+          if (!entry.optionLabels.length) delete entry.optionLabels;
+        }
+      }
+      return Object.keys(entry).length > 1 ? [entry] : [];
+    });
   }
 
   function captureBaseline(element, key) {
@@ -117,18 +172,6 @@
   }
 
   function annotateStaticDOM() {
-    function stableKey(element) {
-      let path = '';
-      for (let current = element; current && current !== document.body; current = current.parentElement) {
-        if (current.id && !/\d{5}|[a-f0-9]{8}-[a-f0-9]{4}/i.test(current.id)) { path = `#${current.id}/${path}`; break; }
-        const index = current.parentElement ? [...current.parentElement.children].filter(sibling => sibling.tagName === current.tagName).indexOf(current) : 0;
-        path = `${current.tagName.toLowerCase()}:${index}/${path}`;
-      }
-      let hash = 2166136261;
-      for (const letter of path) hash = Math.imul(hash ^ letter.charCodeAt(0), 16777619) >>> 0;
-      let encoded = ''; do { encoded = String.fromCharCode(97 + hash % 26) + encoded; hash = Math.floor(hash / 26); } while (hash);
-      return `ui-auto-${encoded}`;
-    }
     const candidates = document.querySelectorAll('[data-ui-key], h1, h2, h3, h4, p, small, legend, summary, button, a, label, select, span, section.card, .notice, .sidebar-label, .page-footer');
     for (const element of candidates) {
       if (protectedElement(element) || element.closest('#designer-root') || element.tagName === 'OPTION') continue;
@@ -138,6 +181,21 @@
         key = stableKey(element); element.setAttribute('data-ui-key', key);
       }
       if (keyAllowed(key)) captureBaseline(element, key);
+    }
+    annotateContainers();
+  }
+
+  function annotateContainers() {
+    for (const element of document.querySelectorAll(CONTAINER_SELECTOR)) {
+      if (element.hasAttribute('data-ui-key') || protectedElement(element) || ownUI(element)) continue;
+      if (element.closest('#custom-api-cards, #overview-stats') || (element.closest('.account-accordion') && !element.closest('#account-workspace'))) continue;
+      const key = stableKey(element, 'ui-container-');
+      if (!keyAllowed(key)) continue;
+      element.setAttribute('data-ui-key', key);
+      captureBaseline(element, key);
+      const names = [['field', '表单项'], ['form-grid', '表单布局'], ['two-columns', '双栏布局'], ['section-heading', '区块标题'], ['card-actions', '按钮组'], ['setup-stage-actions', '步骤按钮组']];
+      const name = names.find(([className]) => element.classList.contains(className))?.[1] || '内容容器';
+      registry.get(key).name = name;
     }
   }
 
@@ -189,10 +247,11 @@
       }
       return clone(entry);
     });
-    return { version: VERSION, edits };
+    return { version: VERSION, edits: normalizeBaselineEdits(edits) };
   }
 
   function applyDesign() {
+    annotateContainers();
     registerExplicitTargets();
     const byKey = new Map(documentState.edits.map(entry => [entry.selector, entry]));
     for (const element of document.querySelectorAll('[data-ui-key]')) {
@@ -230,7 +289,70 @@
         }
       }
     }
+    compactLayout();
     updateOutline();
+  }
+
+  function hasRemainingContent(node) {
+    if (node.nodeType === Node.TEXT_NODE) return Boolean(node.textContent.trim());
+    if (!(node instanceof Element)) return false;
+    if (node.matches('[data-ui-hidden="true"], [data-ui-collapsed="true"]')) return false;
+    // A business-controlled placeholder remains meaningful even before data arrives.
+    // It must not disappear merely because the current runtime/page hides it.
+    if (node.matches(PROTECTED) || node.matches('.hidden, [hidden], input, select, textarea, button, a, img, svg, canvas, video, iframe, hr, progress, meter, [role="status"], [aria-live]')) return true;
+    return [...node.childNodes].some(hasRemainingContent);
+  }
+
+  function compactLayout() {
+    for (const element of document.querySelectorAll('[data-ui-collapsed]')) element.removeAttribute('data-ui-collapsed');
+    for (const element of document.querySelectorAll('[data-ui-reflow-tail]')) { element.removeAttribute('data-ui-reflow-tail'); element.style.removeProperty('--ui-reflow-span'); }
+    for (const entry of documentState.edits) {
+      if (entry.text !== '') continue;
+      for (const element of document.querySelectorAll(entry.selector)) {
+        if (protectedElement(element) || element.matches('button, a, select, input, textarea') || hasRemainingContent(element)) continue;
+        element.setAttribute('data-ui-collapsed', 'true');
+      }
+    }
+    for (const element of [...document.querySelectorAll(EMPTY_WRAPPER_SELECTOR)].reverse()) {
+      if (protectedElement(element) || ownUI(element) || !element.querySelector('[data-ui-hidden="true"], [data-ui-collapsed="true"]')) continue;
+      if (![...element.childNodes].some(hasRemainingContent)) element.setAttribute('data-ui-collapsed', 'true');
+    }
+    for (const grid of document.querySelectorAll(REFLOW_GRID_SELECTOR)) {
+      grid.removeAttribute('data-ui-reflow-cols'); grid.style.removeProperty('--ui-reflow-cols');
+      if (protectedElement(grid) || ownUI(grid)) continue;
+      const children = [...grid.children].filter(child => !child.matches('script, style, template'));
+      if (!children.some(child => child.matches('[data-ui-hidden="true"], [data-ui-collapsed="true"]'))) continue;
+      const visible = children.filter(child => !child.matches('[data-ui-hidden="true"], [data-ui-collapsed="true"], .hidden, [hidden]'));
+      if (!visible.length || !grid.getClientRects().length) continue;
+      const computed = getComputedStyle(grid);
+      if (computed.display !== 'grid') continue;
+      const tracks = computed.gridTemplateColumns.trim().split(/\s+/);
+      // Resolved grid tracks are pixels. Read the original responsive layout on
+      // every pass rather than overriding its mobile breakpoints permanently.
+      if (!tracks.length || !tracks.every(track => /^\d+(?:\.\d+)?px$/.test(track))) continue;
+      const columns = Math.max(1, Math.min(tracks.length, visible.length));
+      if (columns < tracks.length) {
+        grid.setAttribute('data-ui-reflow-cols', String(columns));
+        grid.style.setProperty('--ui-reflow-cols', String(columns));
+      }
+      if (grid.matches('.form-grid') && columns > 1) {
+        let occupied = 0; let last = null;
+        const finishRow = () => {
+          if (last && occupied && occupied < columns) {
+            last.setAttribute('data-ui-reflow-tail', 'true');
+            last.style.setProperty('--ui-reflow-span', String(columns - occupied + 1));
+          }
+          occupied = 0; last = null;
+        };
+        for (const child of visible) {
+          const style = getComputedStyle(child);
+          if (child.matches('.field-wide') || (style.gridColumnStart === '1' && style.gridColumnEnd === '-1')) { finishRow(); continue; }
+          occupied++; last = child;
+          if (occupied === columns) { occupied = 0; last = null; }
+        }
+        finishRow();
+      }
+    }
   }
 
   function showError(message = '') { $('designer-error').textContent = message; $('designer-error').hidden = !message; }
@@ -272,12 +394,41 @@
 
   function targetElement() { return selectedKey ? [...document.querySelectorAll(selectorFor(selectedKey))].find(element => !protectedElement(element)) : null; }
 
+  function selectionAncestors() {
+    const ancestors = [];
+    for (let element = targetElement(); element && element !== document.body; element = element.parentElement) {
+      const key = element.getAttribute('data-ui-key');
+      if (key && registry.has(key) && !protectedElement(element)) ancestors.push({ element, key });
+    }
+    return ancestors;
+  }
+
+  function selectKey(key) {
+    if (!keyAllowed(key) || !registry.has(key) || retiredKeys.has(key)) return;
+    selectedKey = key; showError(); refreshInspector();
+  }
+
+  function refreshSelectionPath() {
+    const ancestors = selectionAncestors();
+    $('designer-select-parent').disabled = ancestors.length < 2;
+    const breadcrumb = $('designer-breadcrumb'); breadcrumb.replaceChildren();
+    for (const { key } of ancestors.slice(0, 6).reverse()) {
+      const button = document.createElement('button'); button.type = 'button';
+      button.textContent = registry.get(key)?.name || '内容容器';
+      button.title = key;
+      button.setAttribute('aria-current', key === selectedKey ? 'true' : 'false');
+      button.addEventListener('click', () => selectKey(key)); breadcrumb.append(button);
+    }
+    breadcrumb.hidden = !ancestors.length;
+  }
+
   function refreshInspector() {
     const element = targetElement();
     const entry = documentState.edits.find(edit => edit.selector === selectorFor(selectedKey));
     const baseline = element ? captureBaseline(element, selectedKey) : null;
     $('designer-target-label').textContent = selectedKey ? registry.get(selectedKey)?.name || '所选元素' : '点击页面中的文字、按钮或下拉栏';
     $('designer-target-key').textContent = selectedKey || '仅修改展示，不改变账号配置';
+    refreshSelectionPath();
     $('designer-fields').disabled = !element;
     $('designer-text').disabled = !baseline || baseline.text === null;
     $('designer-text').value = baseline?.text !== null && baseline ? entry?.text ?? baseline.text : '';
@@ -315,7 +466,7 @@
   }
 
   function outlineAt(outline, element) {
-    if (!element || !element.isConnected || !element.getClientRects().length || element.closest('[data-ui-hidden="true"]')) { outline.hidden = true; return; }
+    if (!element || !element.isConnected || !element.getClientRects().length || element.closest('[data-ui-hidden="true"], [data-ui-collapsed="true"]')) { outline.hidden = true; return; }
     const rect = element.getBoundingClientRect();
     outline.hidden = false;
     for (const [name, value] of Object.entries({ left: rect.left, top: rect.top, width: rect.width, height: rect.height })) outline.style[name] = `${value}px`;
@@ -360,14 +511,14 @@
   function createUI() {
     root = document.createElement('aside'); root.id = 'designer-root'; root.hidden = true; root.setAttribute('aria-label', '界面可视化编辑器');
     // This is a fixed local template. User text is always assigned with textContent/value.
-    root.innerHTML = `<div class="designer-heading"><div><strong>界面编辑</strong><small>仅调整本机展示 · 不修改账号权限</small></div><button type="button" id="designer-close" aria-label="退出界面编辑">×</button></div>
+    root.innerHTML = `<div class="designer-heading"><div><strong>界面编辑 · 进阶版</strong><small>仅调整本机展示 · 不修改账号权限</small></div><button type="button" id="designer-close" aria-label="退出界面编辑">×</button></div>
       <div class="designer-mode-switch"><button type="button" id="designer-edit-mode" aria-pressed="true">选择并编辑</button><button type="button" id="designer-preview-mode" aria-pressed="false">预览并操作</button></div>
-      <label class="designer-field">切换页面<select id="designer-page"><option value="overview">总览</option><option value="connections">账号控制</option><option value="scenarios">场景与权限</option><option value="modules">模块管理</option><option value="records">任务与记录</option><option value="settings">应用设置</option></select></label>
-      <div class="designer-scroll"><div class="designer-selection"><strong id="designer-target-label"></strong><small id="designer-target-key"></small></div><p id="designer-error" class="designer-error" role="alert" hidden></p>
+      <label class="designer-field">切换页面<select id="designer-page"><option value="overview">仪表盘</option><option value="connections">账号</option><option value="scenarios">权限</option><option value="modules">模块</option><option value="records">日志</option><option value="settings">设置</option></select></label>
+      <div class="designer-scroll"><div class="designer-selection"><strong id="designer-target-label"></strong><small id="designer-target-key"></small><button type="button" id="designer-select-parent" disabled>选择父级容器 ↑</button><nav id="designer-breadcrumb" aria-label="所选元素层级" hidden></nav></div><p class="designer-note">点击文字、按钮或下拉栏；选择父级可调整整张卡片、表单项或按钮组。隐藏或清空内容后，空容器自动收起，网格自动补位。</p><p id="designer-error" class="designer-error" role="alert" hidden></p>
       <fieldset id="designer-fields"><label class="designer-field">显示文字<textarea id="designer-text" rows="2" maxlength="500" placeholder="这个元素不支持修改文字"></textarea></label><p class="designer-note" id="designer-text-note"></p>
       <div id="designer-option-fields" hidden><label class="designer-field">下拉选项<select id="designer-option-value"></select></label><label class="designer-field">选项显示名称<input id="designer-option-label" maxlength="120"></label><p class="designer-note">只改显示名称，不改变选项值和模型行为。</p></div><p id="designer-option-note" class="designer-note" hidden>账号、群及自定义接口的选项包含业务资料，仅开放下拉栏外观。</p>
-      <details class="designer-style-panel" open><summary>样式</summary><div id="designer-style-fields" class="designer-style-grid"></div><p class="designer-note">留空恢复原样；颜色用 #RRGGBB；尺寸例：16px、1rem、100%。</p></details><label class="designer-checkbox"><input id="designer-hidden" type="checkbox">隐藏此元素</label><div class="designer-actions"><button type="button" id="designer-apply" class="designer-primary">应用到元素</button><button type="button" id="designer-reset-element">还原此元素</button></div></fieldset>
-      <details class="designer-hidden-panel"><summary id="designer-hidden-count">已隐藏元素（0）</summary><div id="designer-hidden-list"></div></details><div class="designer-actions"><button type="button" id="designer-undo">撤销</button><button type="button" id="designer-redo">重做</button><button type="button" id="designer-reset-all">全部恢复</button></div><div class="designer-actions"><button type="button" id="designer-export">导出 JSON</button><button type="button" id="designer-import-button">导入 JSON</button><button type="button" id="designer-dock">面板移到左侧</button></div><input id="designer-import" type="file" accept="application/json,.json" hidden><p class="designer-note">导出仅包含手动设置的文字、样式和显隐，不包含输入值、密钥、QQ 号或消息。Esc 退出；退出后保留展示。</p></div><div class="designer-save-status" id="designer-save-status" role="status">正在读取本机设置…</div>`;
+      <details class="designer-style-panel" open><summary>样式</summary><div id="designer-style-fields" class="designer-style-grid"></div><p class="designer-note">留空恢复本版默认；颜色用 #RRGGBB；尺寸例：16px、1rem、100%。</p></details><label class="designer-checkbox"><input id="designer-hidden" type="checkbox">隐藏此元素并让布局补位</label><div class="designer-actions"><button type="button" id="designer-apply" class="designer-primary">应用到元素</button><button type="button" id="designer-reset-element">还原此元素</button></div></fieldset>
+      <details class="designer-hidden-panel"><summary id="designer-hidden-count">已隐藏元素（0）</summary><div id="designer-hidden-list"></div></details><div class="designer-actions"><button type="button" id="designer-undo">撤销</button><button type="button" id="designer-redo">重做</button><button type="button" id="designer-reset-all">恢复本版默认</button></div><div class="designer-actions"><button type="button" id="designer-export">导出 JSON</button><button type="button" id="designer-import-button">导入 JSON</button><button type="button" id="designer-dock">面板移到左侧</button></div><input id="designer-import" type="file" accept="application/json,.json" hidden><p class="designer-note">本版默认已包含你确认的界面调整。下一轮完成后，导出 JSON 发给开发者，方便继续实现相关功能。导出只含展示修改，不含输入值、密钥、QQ 号或消息；不会修改后端行为。Esc 退出编辑并保留展示。</p></div><div class="designer-save-status" id="designer-save-status" role="status">正在读取本机设置…</div>`;
     document.body.append(root);
     const styleFields = $('designer-style-fields');
     STYLE_KEYS.forEach((key, index) => { const label = document.createElement('label'); label.className = 'designer-field'; label.textContent = STYLE_NAMES[index]; const input = document.createElement('input'); input.id = `designer-style-${key}`; input.maxLength = 80; input.autocomplete = 'off'; label.append(input); styleFields.append(label); });
@@ -379,6 +530,7 @@
     $('designer-close').addEventListener('click', () => setMode('closed'));
     $('designer-edit-mode').addEventListener('click', () => setMode('edit'));
     $('designer-preview-mode').addEventListener('click', () => setMode('preview'));
+    $('designer-select-parent').addEventListener('click', () => { const parent = selectionAncestors()[1]; if (parent) selectKey(parent.key); });
     $('designer-page').addEventListener('change', event => { const nav = document.querySelector(`.nav-link[data-page="${event.target.value}"]`); if (!nav || nav.classList.contains('hidden')) { showError('当前运行模式尚未提供这个页面。'); return; } internalNavigation = true; try { nav.click(); } finally { internalNavigation = false; } });
     $('designer-option-value').addEventListener('change', updateOptionField);
     $('designer-apply').addEventListener('click', () => { try { editSelected(edit => { const element = targetElement(); const baseline = currentBaseline(element); if (baseline.text !== null) { const text = $('designer-text').value; if (text !== baseline.text) edit.text = text; else delete edit.text; } const styles = {}; for (const key of STYLE_KEYS) { const value = $(`designer-style-${key}`).value.trim(); if (value) styles[key] = value; } if (Object.keys(styles).length) edit.styles = styles; else delete edit.styles; if ($('designer-hidden').checked) edit.hidden = true; else delete edit.hidden; if (!$('designer-option-fields').hidden) { const value = $('designer-option-value').value; const label = $('designer-option-label').value; const options = (edit.optionLabels || []).filter(option => option.value !== value); if (label !== baseline.options.get(value)) options.push({ value, label }); if (options.length) edit.optionLabels = options; else delete edit.optionLabels; } }); } catch (error) { showError(error.message); } });
@@ -395,19 +547,20 @@
       if (event.type === 'keydown' && ['Escape', 'Tab'].includes(event.key)) return;
       if (event.type === 'keydown' && !['Enter', ' ', 'Spacebar'].includes(event.key) && !event.target.matches?.('input, textarea, select')) return;
       event.preventDefault(); event.stopImmediatePropagation();
-      if (['pointerdown', 'click', 'keydown'].includes(event.type)) { const target = resolveTarget(event.target); if (target) { selectedKey = target.getAttribute('data-ui-key'); showError(); refreshInspector(); } else showError('这个区域包含账号资料或实际运行状态，不支持展示覆盖。请点击静态文字、按钮或下拉栏。'); }
+      if (['pointerdown', 'click', 'keydown'].includes(event.type)) { const target = resolveTarget(event.target); if (target) selectKey(target.getAttribute('data-ui-key')); else showError('这个区域包含账号资料或实际运行状态，不支持展示覆盖。请点击静态文字、按钮或下拉栏。'); }
     };
     for (const type of ['pointerdown', 'mousedown', 'click', 'dblclick', 'input', 'change', 'submit', 'keydown']) document.addEventListener(type, intercept, true);
     document.addEventListener('keydown', event => { if (mode !== 'closed' && event.key === 'Escape') { event.preventDefault(); event.stopImmediatePropagation(); setMode('closed'); } }, true);
     document.addEventListener('pointermove', event => { if (mode === 'edit' && !ownUI(event.target)) outlineAt(hoverOutline, resolveTarget(event.target)); else hoverOutline.hidden = true; }, true);
-    window.addEventListener('resize', updateOutline);
+    const scheduleRefresh = () => { if (observerQueued) return; observerQueued = true; requestAnimationFrame(() => { observerQueued = false; applyDesign(); syncPageSelection(); }); };
+    window.addEventListener('resize', scheduleRefresh);
     document.addEventListener('scroll', updateOutline, true);
-    const observer = new MutationObserver(mutations => { if (observerQueued || mutations.every(mutation => ownUI(mutation.target))) return; observerQueued = true; requestAnimationFrame(() => { observerQueued = false; applyDesign(); syncPageSelection(); }); });
-    observer.observe(document.body, { subtree: true, childList: true, characterData: true, attributes: true, attributeFilter: ['data-ui-key', 'data-ui-option-key'] });
+    const observer = new MutationObserver(mutations => { if (!mutations.every(mutation => ownUI(mutation.target))) scheduleRefresh(); });
+    observer.observe(document.body, { subtree: true, childList: true, characterData: true, attributes: true, attributeFilter: ['data-ui-key', 'data-ui-option-key', 'class', 'hidden'] });
   }
 
   async function initialize() {
-    annotateStaticDOM(); createUI(); bindEvents();
+    loadBaselineManifest(); annotateStaticDOM(); createUI(); bindEvents();
     for (const page of ['overview', 'connections', 'scenarios', 'modules', 'records', 'settings']) for (const field of ['title', 'description', 'eyebrow']) registry.set(`page.${page}.${field}`, { text: true, options: new Set(), name: `${page} · ${field}` });
     for (const [key, text] of [['account.menuCard', false], ['account.menuHeader', false], ['account.apiForm', false], ['account.apiFormNote', true], ['account.testApi', true]]) if (!registry.has(key)) registry.set(key, { text, options: new Set(), name: key });
     for (const destination of ['accounts', 'permissions', 'groups', 'summaries']) for (const [kind, text] of [['stat', false], ['statLabel', true]]) { const key = `overview.${kind}.${destination}`; if (!registry.has(key)) registry.set(key, { text, options: new Set(), name: key }); }
@@ -416,7 +569,7 @@
       const saved = window.qqBridgeDesktop?.getUiDesign ? await window.qqBridgeDesktop.getUiDesign() : JSON.parse(localStorage.getItem(STORAGE_KEY) || 'null');
       if (saved) documentState = validateDesign(saved);
       $('designer-save-status').textContent = '已读取本机界面设置';
-    } catch (error) { showError(`读取界面设置失败：${error.message}。可用“全部恢复”重新保存。`); $('designer-save-status').textContent = '界面设置未载入'; }
+    } catch (error) { showError(`读取界面设置失败：${error.message}。可用“恢复本版默认”重新保存。`); $('designer-save-status').textContent = '界面设置未载入'; }
     ready = true; applyDesign(); refreshInspector();
     window.QQServiceDesigner = Object.freeze({
       enter: () => setMode('edit'), exit: () => setMode('closed'), setMode,

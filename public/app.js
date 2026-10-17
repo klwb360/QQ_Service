@@ -6,12 +6,12 @@
   const clone = (value) => structuredClone(value);
   const escapeHTML = (value) => String(value ?? '').replace(/[&<>"']/g, (character) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[character]));
   const pageInfo = {
-    overview: ['总览', 'WORKSPACE OVERVIEW', '你的账号控制工作台', '多个账号独立运行；先配置模型与任务，再明确释放消息权限。'],
-    connections: ['账号控制', 'ACCOUNT CONTROL', '你的账号，由你配置', '从一份账号配置开始，按步骤连接 QQ、准备模型并明确授权。'],
-    scenarios: ['场景与权限', 'SCENARIOS & PERMISSIONS', '为这个账号设置任务与范围', '功能参数决定做什么，群与消息权限决定能读取和发送到哪里。'],
-    modules: ['模块管理', 'MODULE MANAGEMENT', '管理这个账号的运行模块', '可连接原生 NapCat；自动安装 NapCat 使用 Docker 方式。'],
-    settings: ['应用设置', 'APPLICATION SETTINGS', '让应用按你的习惯运行', '关闭窗口的行为可随时修改，所有账号配置保持独立。'],
-    records: ['任务与记录', 'ACTIVITY & EVIDENCE', '查看这个账号的任务与依据', '每个账号的安装、授权、通知和收藏记录彼此独立。']
+    overview: ['仪表盘', 'WORKSPACE OVERVIEW', '仪表盘', '多个账号独立运行；先配置模型与任务，再明确释放消息权限。'],
+    connections: ['账号', 'ACCOUNT CONTROL', '你的账号，由你配置', '从一份账号配置开始，按步骤连接 QQ、准备模型并明确授权。'],
+    scenarios: ['权限', 'SCENARIOS & PERMISSIONS', '为这个账号设置任务与范围', '功能参数决定做什么，群与消息权限决定能读取和发送到哪里。'],
+    modules: ['模块', 'MODULE MANAGEMENT', '管理这个账号的运行模块', '可连接原生 NapCat；自动安装 NapCat 使用 Docker 方式。'],
+    settings: ['设置', 'APPLICATION SETTINGS', '让应用按你的习惯运行', '关闭窗口的行为可随时修改，所有账号配置保持独立。'],
+    records: ['日志', 'ACTIVITY & EVIDENCE', '', '']
   };
   let accounts = [];
   let platforms = [];
@@ -218,6 +218,10 @@
     $('#page-eyebrow').textContent = eyebrow;
     $('#page-title').textContent = title;
     $('#page-description').textContent = description;
+    // The records page intentionally has no title or description in this
+    // design baseline. Keep shared heading hooks for the other pages.
+    $('#page-title').classList.toggle('hidden', !title);
+    $('#page-description').classList.toggle('hidden', !description);
     for (const [selector, field] of [['#page-title', 'title'], ['#page-description', 'description'], ['#page-eyebrow', 'eyebrow']]) $(selector).dataset.uiKey = `page.${page}.${field}`;
     $$('.page-panel').forEach((panel) => panel.classList.toggle('hidden', panel.id !== `page-${page}`));
     $$('.nav-link').forEach((link) => {
