@@ -9,7 +9,7 @@
     overview: ['仪表盘', 'WORKSPACE OVERVIEW', '仪表盘', '多个账号独立运行；先配置模型与任务，再明确释放消息权限。'],
     connections: ['账号', 'ACCOUNT CONTROL', '你的账号，由你配置', '从一份账号配置开始，按步骤连接 QQ、准备模型并明确授权。'],
     scenarios: ['权限', 'SCENARIOS & PERMISSIONS', '为这个账号设置任务与范围', '功能参数决定做什么，群与消息权限决定能读取和发送到哪里。'],
-    modules: ['模块', 'MODULE MANAGEMENT', '管理这个账号的运行模块', '可连接原生 NapCat；自动安装 NapCat 使用 Docker 方式。'],
+    modules: ['模块', 'MODULE MANAGEMENT', '', ''],
     settings: ['设置', 'APPLICATION SETTINGS', '让应用按你的习惯运行', '关闭窗口的行为可随时修改，所有账号配置保持独立。'],
     records: ['日志', 'ACTIVITY & EVIDENCE', '', '']
   };
@@ -50,6 +50,7 @@
     { id: 'custom', label: '自定义兼容 API', url: 'https://api.example.com/v1', hosts: [] }
   ];
   const accountSetupSteps = new Map();
+  const accountContinueStages = new Map();
   const layoutAnimations = new WeakMap();
   let renderedFlowAccount = '';
   const reducedMotion = () => window.matchMedia('(prefers-reduced-motion: reduce)').matches;
@@ -84,7 +85,9 @@
     codexLoginStatus = editor.codexLoginStatus ?? null;
     if (populate) populateForm();
   }
-  function markDirty() {
+  function markDirty(editedElement = document.activeElement) {
+    const editedStage = editedElement?.closest?.('[data-flow-stage]')?.dataset.flowStage;
+    if (editedStage && editedStage !== 'verification') accountContinueStages.set(selectedAccountId, editedStage);
     dirty = true;
     editVersion += 1;
     rememberEditor();
@@ -309,7 +312,6 @@
     const appliedReleased = state?.applied?.permissions?.released === true;
     $('#account-permission-badge').textContent = selectedAccountId ? appliedReleased ? '已释放范围权限' : '只读 · 未释放发送' : '未选择账号';
     $('#account-permission-badge').className = `pill ${appliedReleased ? 'pill-green' : 'pill-neutral'}`;
-    $('#records-account-note').textContent = selectedAccountId ? `这里只展示「${accountName()}」的任务、汇总与收藏；切换账号不会改变正在执行任务的归属。` : '请先创建并选择账号。';
   }
   // Keep each header and the editor DOM stable while status polling updates its text.
   // The single editor moves between account bodies; drafts and secrets remain profile-scoped.
@@ -382,12 +384,13 @@
   function renderConfigBar() {
     const pending = Boolean(state?.pendingChanges || state?.secretsPendingChanges);
     $('#config-indicator').className = `config-indicator ${dirty || pending ? 'pending' : state ? 'clean' : ''}`;
-    $('#config-label').textContent = !state ? '请先创建或选择账号' : dirty ? '此账号有尚未保存的修改' : pending ? '此账号草稿已保存，等待应用' : '此账号参数已同步';
-    $('#config-detail').textContent = !state ? '每个账号有独立草稿和运行配置' : `${accountName()} · 草稿 ${state.revision ?? '—'} / 已应用 ${state.appliedRevision ?? '—'}${dirty ? ' · 输入仅在此页面' : state.secretsPendingChanges ? ' · 凭据待应用' : ''} · 应用参数后恢复只读`;
+    $('#config-label').textContent = !state ? '请先创建或选择账号' : dirty ? '此账号有尚未保存的修改' : pending ? '此账号已保存，等待应用' : '此账号参数已同步';
+    $('#config-detail').textContent = !state ? '每个账号分别管理已保存配置和运行参数' : `${accountName()} · 已保存版本 ${state.revision ?? '—'} / 已应用 ${state.appliedRevision ?? '—'}${dirty ? ' · 输入仅在此页面' : state.secretsPendingChanges ? ' · 凭据待应用' : ''} · 应用参数后恢复只读`;
     $('#discard-draft').disabled = !dirty;
     $('#save-draft').disabled = !state || !dirty;
     $('#apply-config').disabled = !state || (!dirty && !pending);
     $('#release-permissions').disabled = !state;
+    $('#reset-account-defaults').disabled = !state;
     $('#revoke-permissions').disabled = !state || state.applied?.permissions?.released !== true;
     $$('[data-action], [data-module-action], #setup-install, #add-group, #open-napcat, #export-config, #rollback-config, #preview-policy').forEach((button) => { button.disabled = !state; });
   }
@@ -491,7 +494,7 @@
     const send = applied?.groups?.filter((group) => group.send === true) ?? [];
     $('#permissions-status').textContent = !state ? '未选择账号' : released ? '后台已释放范围权限' : '后台只读 · 未释放发送';
     $('#permissions-status').className = `pill ${released ? 'pill-green' : 'pill-neutral'}`;
-    $('#permissions-applied-summary').textContent = !state ? '请先创建并选择账号。' : `${accountName()}：已应用 ${read.length} 个可读群，${send.length} 个待发送目标；${released ? '账号发送权限已释放' : '账号发送总开关关闭'}。私聊${applied?.permissions?.privateReplies && applied?.ownerQQ ? `仅指定 QQ ${applied.ownerQQ}` : '未授权'}。${state?.pendingChanges || dirty ? '下方还有草稿修改，尚未成为运行权限。' : ''}`;
+    $('#permissions-applied-summary').textContent = !state ? '请先创建并选择账号。' : `${accountName()}：已应用 ${read.length} 个可读群，${send.length} 个待发送目标；${released ? '账号发送权限已释放' : '账号发送总开关关闭'}。私聊${applied?.permissions?.privateReplies && applied?.ownerQQ ? `仅指定 QQ ${applied.ownerQQ}` : '未授权'}。${state?.pendingChanges || dirty ? '下方还有配置修改，尚未成为运行权限。' : ''}`;
   }
   function effectiveTriggers(group) {
     return Array.isArray(group.triggers) ? group.triggers : [group.trigger || 'mention'];
@@ -595,7 +598,7 @@
       if (builtin) actions = `<button class="button button-secondary button-small" data-go="${definition.id === 'deepseek' ? 'connections' : 'scenarios'}">${enabled ? '查看当前账号参数' : '为当前账号配置'} →</button>`;
       else if (definition.id === 'napcat') actions = '<button class="button button-secondary button-small" data-module-action="install" data-module="napcat">Docker 安装 / 检查</button><button class="button button-quiet button-small" data-module-action="start" data-module="napcat">启动</button><button class="button button-quiet button-small" data-module-action="stop" data-module="napcat">停止</button>';
       else actions = '<button class="button button-secondary button-small" data-module-action="install" data-module="codex">安装 / 检查</button><button class="button button-quiet button-small" data-action="codex-login">当前账号授权 →</button>';
-      return `<article class="module-card ${builtin ? 'builtin' : 'external'}"><div class="module-main"><div class="module-top"><span class="module-icon">${definition.icon}</span>${builtin ? `<span class="pill ${enabled ? 'pill-green' : 'pill-neutral'}">${enabled ? '此账号草稿已启用' : '内置 · 尚未启用'}</span>` : pill(actualStatus)}</div><h2>${escapeHTML(definition.name)}</h2><p>${escapeHTML(definition.description)}</p><div class="module-version">${builtin ? '启用功能仍受账号与消息权限约束' : module ? `版本 ${escapeHTML(module.version || '未提供')} · ${module.installed ? '已安装' : '未确认安装'}` : '等待此账号的模块检查结果'}</div></div><div class="module-actions">${actions}</div></article>`;
+      return `<article class="module-card ${builtin ? 'builtin' : 'external'}"><div class="module-main"><div class="module-top"><span class="module-icon">${definition.icon}</span>${builtin ? `<span class="pill ${enabled ? 'pill-green' : 'pill-neutral'}">${enabled ? '此账号配置已启用' : '内置 · 尚未启用'}</span>` : pill(actualStatus)}</div><h2>${escapeHTML(definition.name)}</h2><p>${escapeHTML(definition.description)}</p><div class="module-version">${builtin ? '启用功能仍受账号与消息权限约束' : module ? `版本 ${escapeHTML(module.version || '未提供')} · ${module.installed ? '已安装' : '未确认安装'}` : '等待此账号的模块检查结果'}</div></div><div class="module-actions">${actions}</div></article>`;
     }).join('');
   }
   function getJobs() {
@@ -627,6 +630,7 @@
     updateRecordHTML($('#all-jobs'), jobsHTML(jobs));
   }
   function updateRecordHTML(element, html) {
+    if (!element) return;
     if (element.dataset.renderedHTML === html) return;
     const open = $$('details[open][data-record-id]', element).map((details) => details.dataset.recordId);
     element.innerHTML = html;
@@ -644,6 +648,7 @@
     }).join('') : '<div class="empty-state"><strong>还没有通知汇总</strong>启用汇总并应用配置，然后在「场景与权限」中运行。</div>');
   }
   function renderFavorites() {
+    if (!$('#favorite-records')) return;
     const raw = state?.favorites;
     const favorites = Array.isArray(raw) ? raw : raw?.items ?? raw?.list ?? [];
     $('#favorite-records').innerHTML = favorites.length ? favorites.map((favorite) => `<article class="favorite-item"><div class="favorite-title">${escapeHTML(favorite.title ?? favorite.summary ?? favorite.name ?? `收藏 ${favorite.cid ?? favorite.id ?? ''}`)}</div><div class="favorite-body">${escapeHTML(favorite.text ?? favorite.content ?? favorite.summary ?? '')}</div><div class="job-meta">${escapeHTML(favorite.author ?? favorite.userId ?? '')} · 收藏时间 ${escapeHTML(formatTime(favorite.time ?? favorite.collectTime ?? favorite.createdAt))}${favorite.type !== undefined ? ` · 类型 ${escapeHTML(favorite.type)}` : ''} · 当前账号 ${escapeHTML(favorite.accountId ?? '未提供')} · 读取于 ${escapeHTML(formatTime(favorite.syncedAt))}</div></article>`).join('') : '<div class="empty-state"><strong>尚未读取收藏</strong>登录 QQ、启用收藏读取并应用配置后，点击「刷新收藏」。</div>';
@@ -658,6 +663,10 @@
   function renderPageContext() {
     const isCustomPage = Boolean(window.QQServiceBuilder?.getPage(currentPage));
     const isAccountPage = currentPage === 'connections' || currentPage === 'settings';
+    const context = $('.account-context');
+    if (currentPage === 'records') {
+      if (context.parentElement !== $('#records-context-card')) $('#records-context-slot').after(context);
+    } else if (context.previousElementSibling !== $('#global-account-slot')) $('#global-account-slot').after(context);
     $('.page-heading').classList.toggle('hidden', isAccountPage);
     $('.account-context').classList.toggle('hidden', isAccountPage || isCustomPage || currentPage === 'overview');
     const configBar = $('.config-bar');
@@ -666,7 +675,8 @@
     } else if (configBar.previousElementSibling !== $('#global-config-slot')) {
       $('#global-config-slot').after(configBar);
     }
-    configBar.classList.toggle('hidden', isCustomPage || currentPage === 'overview' || currentPage === 'settings' || (currentPage === 'connections' && (!expandedAccountId || !state)));
+    $('#reset-account-defaults').classList.toggle('hidden', currentPage !== 'modules');
+    configBar.classList.toggle('hidden', isCustomPage || currentPage === 'records' || currentPage === 'overview' || currentPage === 'settings' || (currentPage === 'connections' && (!expandedAccountId || !state)));
     $('#no-accounts').classList.toggle('hidden', accounts.length !== 0 || isAccountPage || isCustomPage);
     $('#runtime-badge').classList.toggle('hidden', currentPage === 'settings' || isCustomPage);
   }
@@ -687,6 +697,7 @@
     if (index < 0 || !accountId) return;
     const previous = setupSteps.findIndex(([id]) => id === accountSetupSteps.get(accountId));
     accountSetupSteps.set(accountId, setupSteps[Math.max(index, previous)][0]);
+    accountContinueStages.set(accountId, step);
     if (accountId !== selectedAccountId) return;
     renderSetupGuide({ animate: true });
     if (scroll) scrollToFlowStage(step);
@@ -818,6 +829,31 @@
     if (secretUpdates[provider.secret]) return ['密钥已输入，尚未保存与测试', 'pending'];
     return state?.secrets?.[provider.secret] ? ['密钥已保存，尚未通过实际模型测试', 'unknown'] : ['尚未填写 API Key', 'missing'];
   }
+  function renderContinueButtons(highest, animate) {
+    const activeStage = accountContinueStages.get(selectedAccountId) ?? setupSteps[highest]?.[0];
+    $$('[data-flow-stage]').forEach((section) => {
+      const stage = section.dataset.flowStage;
+      $$('.setup-stage-actions > button[data-setup-save], .setup-stage-actions > button[data-setup-apply], .setup-stage-actions > button[data-setup-step]:not(.button-quiet)', section).forEach((button) => {
+        const show = stage === activeStage;
+        button.classList.add('setup-continue-button');
+        if (button.dataset.continueActive === String(show)) return;
+        button.dataset.continueActive = String(show);
+        button.disabled = !show;
+        button.inert = !show;
+        button.setAttribute('aria-hidden', String(!show));
+        layoutAnimations.get(button)?.cancel(); layoutAnimations.delete(button);
+        if (show) button.classList.remove('hidden');
+        if (!animate || reducedMotion() || currentPage !== 'connections') { button.classList.toggle('hidden', !show); return; }
+        const animation = button.animate(show ? [{ opacity: 0, transform: 'translateY(5px)' }, { opacity: 1, transform: 'translateY(0)' }] : [{ opacity: 1 }, { opacity: 0 }], { duration: show ? 230 : 160, easing: 'ease-out' });
+        layoutAnimations.set(button, animation);
+        animation.finished.then(() => {
+          if (layoutAnimations.get(button) !== animation) return;
+          layoutAnimations.delete(button);
+          if (!show && button.dataset.continueActive === 'false') button.classList.add('hidden');
+        }).catch(() => {});
+      });
+    });
+  }
   function renderSetupGuide({ animate = false } = {}) {
     if (!state || !draft) return;
     const runtime = state.runtime ?? {};
@@ -842,6 +878,8 @@
     }
     const highest = setupSteps.findIndex(([id]) => id === accountSetupSteps.get(selectedAccountId));
     const sameAccount = renderedFlowAccount === selectedAccountId;
+    // Reveal the next action before measuring its expanding section.
+    renderContinueButtons(highest, animate && sameAccount);
     $$('[data-flow-stage]').forEach((wrapper, index) => {
       if (!sameAccount) { layoutAnimations.get(wrapper)?.cancel(); layoutAnimations.delete(wrapper); wrapper.classList.remove('layout-animating'); }
       const show = index <= highest;
@@ -869,7 +907,7 @@
     const issue = connection?.issue ?? runtime.issue;
     $('#setup-connection-result').innerHTML = verified ? checkRow('实际连接已建立', `NapCat 返回的 QQ ${actualQQ} 与配置一致。`, 'connected') : checkRow('QQ 连接尚未确认', issue?.message ?? runtime.lastError ?? '完成扫码后，保存并连接以确认身份。', runtime.lastError ? 'error' : 'disconnected');
     if (issue?.action && !verified) $('#setup-connection-result').insertAdjacentHTML('beforeend', `<p class="connection-fix">下一步：${escapeHTML(issue.action)}</p>`);
-    $('#setup-task-summary').innerHTML = [['chat','聊天与回复'],['summary','通知汇总'],['favorites','QQ 收藏整理']].map(([id,label]) => checkRow(label, applied[id]?.enabled ? `已应用 · ${providerLabel(applied[id].provider)}` : draft[id]?.enabled ? '草稿已启用，尚未应用' : '尚未启用，点击下方设置任务', applied[id]?.enabled ? 'ready' : 'disabled')).join('');
+    $('#setup-task-summary').innerHTML = [['chat','聊天与回复'],['summary','通知汇总'],['favorites','QQ 收藏整理']].map(([id,label]) => checkRow(label, applied[id]?.enabled ? `已应用 · ${providerLabel(applied[id].provider)}` : draft[id]?.enabled ? '配置已启用，尚未应用' : '尚未启用，点击下方设置任务', applied[id]?.enabled ? 'ready' : 'disabled')).join('');
     const permissionSummary = `${readTargets.length} 个已应用可读群，${(applied.groups ?? []).filter((group) => group.send).length} 个群选择发送。${released ? '账号已释放指定范围权限。' : '账号仍只读；选择范围并确认后，自动任务才会开始。'}${dirty || state.pendingChanges ? ' 仍有修改尚未应用。' : ''}`;
     $('#setup-permission-summary').textContent = permissionSummary;
     $('#setup-verification-checks').innerHTML = checkRow('QQ 登录与实际身份', verified ? `实际 QQ ${actualQQ} 与配置一致` : '尚未连接或身份未通过验证', verified ? 'passed' : 'pending') + checkRow('模型实际检查', modelsReady ? '至少一个所选模型已通过 API 测试或官方授权检查' : '尚无已通过实际检查的模型；请返回模型准备完成检查', modelsReady ? 'passed' : 'pending') + checkRow('任务参数', hasTask ? '至少一个功能已启用并应用' : '尚未应用启用的功能，请到账号功能参数选择', hasTask ? 'passed' : 'pending') + checkRow('选定范围与启动状态', permissionSummary, released ? 'passed' : 'pending');
@@ -936,7 +974,7 @@
     draft.permissions.privateReplies = false;
     draft.summary.sendToOwner = false;
     markDirty(); populateForm(); clearValidationErrors(); renderLiveState();
-    toast('已在草稿关闭私聊回复和私聊汇总投递。保存应用后，结果可在本地查看；群权限独立设置。', 'info');
+    toast('已关闭此账号配置中的私聊回复和私聊汇总投递。保存应用后，结果可在本地查看；群权限独立设置。', 'info');
   }
   async function initializeDesktopSettings() {
     const desktop = window.qqBridgeDesktop;
@@ -1033,8 +1071,24 @@
     const result = await accountApi('/config/save', { config, ...(Object.keys(submittedSecrets).length ? { secretUpdates: submittedSecrets } : {}) }, 'POST', id);
     if (!result.draft) throw new Error('后台未返回保存后的账号配置，请刷新确认。');
     acceptState(result, { accountId: id, replaceDraft: true, expectedEditVersion: sentVersion });
-    if (!forApply) toast(`「${accountName(id)}」${editors.get(id).editVersion === sentVersion ? '草稿已保存；运行参数与发送权限尚未改变。' : '已保存提交时的草稿，新增输入仍未保存。'}`);
+    if (!forApply) toast(`「${accountName(id)}」${editors.get(id).editVersion === sentVersion ? '配置已保存；运行参数与发送权限尚未改变。' : '已保存提交时的配置，新增输入仍未保存。'}`);
     return id;
+  }
+  async function resetAccountDefaults() {
+    const id = requireAccount();
+    rememberEditor();
+    const editor = editors.get(id);
+    const sentVersion = editor.editVersion;
+    const revision = editor.state.revision;
+    const config = clone(editor.draft);
+    const submittedSecrets = clone(editor.secretUpdates);
+    const confirmed = await openDialog(`还原「${accountName(id)}」功能参数`, '<p>将当前账号的聊天、通知汇总、收藏整理、群列表和消息权限设置还原为默认值，并保存为待应用配置。</p><p>账号身份、QQ 连接、模型参数和密钥会保留，包括本次尚未保存的修改。其他账号不受影响。</p><p>此次操作仅保存；当前运行参数与权限保持不变，需要你再点击“应用参数”后才生效。</p>', '还原并保存');
+    if (!confirmed) return;
+    if (!editors.has(id) || editors.get(id).editVersion !== sentVersion || editors.get(id).state.revision !== revision) throw new Error('确认期间此账号的配置发生了变化，请重新检查后再还原。');
+    const result = await accountApi('/config/reset-defaults', { revision, config, ...(Object.keys(submittedSecrets).length ? { secretUpdates: submittedSecrets } : {}) }, 'POST', id);
+    if (!result.draft) throw new Error('后台未返回还原后的配置，请刷新确认。');
+    acceptState(result, { accountId: id, replaceDraft: true, expectedEditVersion: sentVersion });
+    toast(`「${accountName(id)}」功能参数已还原并保存，等待应用；身份、连接和模型凭据已保留。`, 'info');
   }
   async function applyConfig(id = selectedAccountId) {
     requireAccount(id);
@@ -1115,7 +1169,7 @@
   }
   function addDraftGroups(id, entries) {
     const editor = editors.get(id);
-    if (!editor?.draft) throw new Error('此账号的草稿尚未加载。');
+    if (!editor?.draft) throw new Error('此账号的配置尚未加载。');
     editor.draft.groups ??= [];
     for (const entry of entries) {
       if (editor.draft.groups.some((group) => group.id === String(entry.id))) continue;
@@ -1179,14 +1233,15 @@
       const choices = groups.filter((group) => !configured.has(String(group.id)));
       if (!choices.length) return toast(groups.length ? '此账号已加入的群都已在配置中。' : '此账号未返回已加入群，请确认 QQ 已登录并已加入群。', 'info');
       const html = choices.map((group, index) => `<label class="check-field"><input type="checkbox" data-joined-group="${index}"><span>${escapeHTML(group.name || group.id)} · ${escapeHTML(group.id)}</span></label>`).join('');
-      if (!await openDialog(`「${accountName(id)}」已加入的群`, `<p>选择要允许读取的群。添加默认禁止发送；群用途和发送权限仍可在表格中修改。</p><div class="joined-group-list">${html}</div>`, '将选中群加入只读草稿')) return;
+      if (!await openDialog(`「${accountName(id)}」已加入的群`, `<p>选择要允许读取的群。添加默认禁止发送；群用途和发送权限仍可在表格中修改。</p><div class="joined-group-list">${html}</div>`, '将选中群加入只读配置')) return;
       const selected = $$('[data-joined-group]:checked', $('#dialog-content')).map((input) => choices[Number(input.dataset.joinedGroup)]);
       if (!selected.length) return;
       addDraftGroups(id, selected);
-      toast(`「${accountName(id)}」已将 ${selected.length} 个群加入只读草稿，保存应用后开始采集。`, 'info');
+      toast(`「${accountName(id)}」已将 ${selected.length} 个群加入只读配置，保存应用后开始采集。`, 'info');
     }
   };
   function selectRecordTab(tab) {
+    if (!$('.record-tab[data-record-tab="' + CSS.escape(String(tab)) + '"]')) tab = 'tasks';
     $$('.record-tab').forEach((button) => {
       const selected = button.dataset.recordTab === tab;
       button.classList.toggle('active', selected);
@@ -1240,13 +1295,13 @@
     if (input.dataset.config && draft) {
       const value = input.type === 'checkbox' ? input.checked : input.type === 'number' ? (input.value === '' ? null : Number(input.value)) : input.value;
       setPath(draft, input.dataset.config, value);
-      markDirty();
+      markDirty(input);
       renderPermissions();
       if (input.dataset.config.includes('.provider') || input.dataset.config.startsWith('models.')) { renderProviderOptions(); renderSetupGuide(); }
     } else if (input.dataset.secret && draft) {
       if (input.value.trim()) secretUpdates[input.dataset.secret] = input.value.trim();
       else delete secretUpdates[input.dataset.secret];
-      markDirty();
+      markDirty(input);
     } else if (input.dataset.groupTrigger && draft) {
       const index = Number(input.closest('[data-group-index]').dataset.groupIndex);
       const group = draft.groups[index];
@@ -1266,7 +1321,7 @@
   document.addEventListener('change', (event) => {
     if (event.target.closest('[data-builder-owned], #designer-builder-slot')) return;
     if (event.target.id === 'account-llm-source' && draft) {
-      chooseSingleLlm(draft, event.target.value); markDirty(); populateForm(); renderLiveState(); return;
+      chooseSingleLlm(draft, event.target.value); markDirty(event.target); populateForm(); renderLiveState(); return;
     }
     if (['mode', 'trigger'].includes(event.target.dataset.groupField)) renderGroups();
     if (event.target.dataset.config) { renderModules(); renderSetupGuide(); }
@@ -1353,6 +1408,7 @@
   $('#new-account-form').addEventListener('submit', (event) => { event.preventDefault(); withButton($('#submit-create-account'), createAccount); });
   $('#refresh-state').addEventListener('click', (event) => withButton(event.currentTarget, () => refreshState({ notify: true })));
   $('#save-draft').addEventListener('click', (event) => withButton(event.currentTarget, () => saveDraft()));
+  $('#reset-account-defaults').addEventListener('click', (event) => withButton(event.currentTarget, resetAccountDefaults));
   $('#apply-config').addEventListener('click', (event) => withButton(event.currentTarget, () => applyConfig()));
   $('#release-permissions').addEventListener('click', (event) => withButton(event.currentTarget, () => releasePermissions()));
   $('#revoke-permissions').addEventListener('click', (event) => withButton(event.currentTarget, async () => {
@@ -1361,19 +1417,19 @@
   }));
   $('#discard-draft').addEventListener('click', (event) => withButton(event.currentTarget, async () => {
     const id = requireAccount();
-    if (!await openDialog(`丢弃「${accountName(id)}」未保存修改`, '<p>仅恢复这个账号后台已保存的草稿，不改变运行权限，其他账号的输入会保留。</p>', '丢弃此账号未保存输入')) return;
+    if (!await openDialog(`丢弃「${accountName(id)}」未保存修改`, '<p>仅恢复这个账号后台已保存的配置，不改变运行权限，其他账号的输入会保留。</p>', '丢弃此账号未保存输入')) return;
     const next = await accountApi('/state', undefined, 'GET', id);
     acceptState(next, { replaceDraft: true, accountId: id });
-    toast(`「${accountName(id)}」已恢复已保存草稿。`);
+    toast(`「${accountName(id)}」已恢复已保存配置。`);
   }));
   $('#add-group').addEventListener('click', (event) => withButton(event.currentTarget, async () => {
     const id = requireAccount();
-    if (!await openDialog(`为「${accountName(id)}」添加选定群`, '<label class="field">群号<input id="new-group-id" inputmode="numeric" pattern="[1-9][0-9]{3,19}" placeholder="请输入数字群号" required></label><label class="field">群名称<input id="new-group-name" placeholder="方便识别的名称"></label><label class="field">群用途<select id="new-group-mode"><option value="work">工作通知群</option><option value="social">社交群</option></select></label><p>接入账号必须已加入该群。默认允许读取、禁止发送；添加群本身不会释放权限。</p>', '加入只读草稿')) return;
+    if (!await openDialog(`为「${accountName(id)}」添加选定群`, '<label class="field">群号<input id="new-group-id" inputmode="numeric" pattern="[1-9][0-9]{3,19}" placeholder="请输入数字群号" required></label><label class="field">群名称<input id="new-group-name" placeholder="方便识别的名称"></label><label class="field">群用途<select id="new-group-mode"><option value="work">工作通知群</option><option value="social">社交群</option></select></label><p>接入账号必须已加入该群。默认允许读取、禁止发送；添加群本身不会释放权限。</p>', '加入只读配置')) return;
     const groupId = $('#new-group-id').value.trim();
     if (!/^[1-9]\d{3,19}$/.test(groupId)) throw new Error('群号应为 4–20 位数字。');
-    if ((editors.get(id).draft.groups ?? []).some((group) => group.id === groupId)) throw new Error('这个群已在该账号的草稿中。');
+    if ((editors.get(id).draft.groups ?? []).some((group) => group.id === groupId)) throw new Error('这个群已在该账号的配置中。');
     addDraftGroups(id, [{ id: groupId, name: $('#new-group-name').value.trim(), mode: $('#new-group-mode').value }]);
-    toast(`「${accountName(id)}」已加入只读草稿；保存应用后开始采集。`, 'info');
+    toast(`「${accountName(id)}」已加入只读配置；保存应用后开始采集。`, 'info');
   }));
   $('#setup-install').addEventListener('click', (event) => withButton(event.currentTarget, async () => {
     const id = requireAccount();
@@ -1383,7 +1439,7 @@
     if (selectedAccountId === id) navigate('modules');
   }));
   $('#open-napcat').addEventListener('click', (event) => withButton(event.currentTarget, openNapcatGuide));
-  $('#export-config').addEventListener('click', (event) => withButton(event.currentTarget, async () => {
+  $('#export-config')?.addEventListener('click', (event) => withButton(event.currentTarget, async () => {
     const id = requireAccount();
     if (window.qqBridgeDesktop?.exportConfig) {
       const result = await window.qqBridgeDesktop.exportConfig(id);
@@ -1403,7 +1459,7 @@
     setTimeout(() => URL.revokeObjectURL(url), 1000);
     toast(`「${accountName(id)}」已导出脱敏配置，不含密钥和未保存输入。`);
   }));
-  $('#rollback-config').addEventListener('click', (event) => withButton(event.currentTarget, async () => {
+  $('#rollback-config')?.addEventListener('click', (event) => withButton(event.currentTarget, async () => {
     const id = requireAccount();
     if (!await openDialog(`回滚「${accountName(id)}」已应用参数`, '<p>只回滚此账号的运行配置，并恢复只读。当前账号未保存的输入会丢弃，其他账号不受影响。</p><p>已发送消息、历史记录及密钥不随普通配置回滚。</p>', '回滚此账号配置')) return;
     const result = await accountApi('/config/rollback', {}, 'POST', id);

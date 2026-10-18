@@ -151,8 +151,8 @@ async function selectParentUntil(predicate) {
   const recordsGeometry = await page.evaluate(() => {
     const heading = document.querySelector('.page-heading').getBoundingClientRect();
     const panel = document.querySelector('#page-records').getBoundingClientRect();
-    const context = document.querySelector('.config-bar').getBoundingClientRect();
-    return { headingHeight: heading.height, gap: panel.top - context.bottom };
+    const context = document.querySelector('.account-context').getBoundingClientRect();
+    return { headingHeight: heading.height, gap: context.top - panel.top };
   });
   assert.ok(recordsGeometry.headingHeight < 70, JSON.stringify(recordsGeometry));
   assert.ok(recordsGeometry.gap < 90, JSON.stringify(recordsGeometry));

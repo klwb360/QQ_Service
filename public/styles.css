@@ -82,3 +82,17 @@ html{scrollbar-width:none}html::-webkit-scrollbar{width:0;height:0}
 #legacy-model-warning{margin-top:15px}
 #frontend-editor-toggle{white-space:nowrap}
 @media(max-width:620px){.profile-name-controls{flex-wrap:wrap}.profile-name-controls input{flex-basis:100%}.profile-name-controls .button{min-height:32px}.account-card-main .account-name-line{gap:6px}.account-online-badge{font-size:8px}.topbar-actions #frontend-editor-toggle{font-size:10px;padding:5px}}
+
+/* Logs use one surface for account context, tabs and the selected record panel. */
+.records-context-card>.account-context{border:0;border-bottom:1px solid var(--line);border-radius:0;padding:0 0 19px;margin:0 0 18px;background:transparent;box-shadow:none}
+.records-context-card>.record-content{margin:0;padding:0;border:0;background:transparent;box-shadow:none}
+.records-context-card>.record-tabs{margin-bottom:22px}
+.records-context-card .record-content>.section-heading{margin-bottom:18px}
+#page-settings>.card{max-width:980px}
+#page-settings .settings-options{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));max-width:none;gap:14px;align-items:stretch}
+#page-settings .settings-options label{margin:0;padding:15px;min-width:0}
+#page-settings .section-heading{margin-bottom:17px}
+#page-settings .card-actions{margin-top:17px}
+.setup-stage-actions:has(>.setup-continue-button[data-continue-active="false"]):not(:has(>button:not(.hidden):not(.setup-continue-button))){margin-top:0;padding-top:0;border-top:0}
+.setup-continue-button[data-continue-active="false"]{pointer-events:none}
+@media(max-width:850px){#page-settings .settings-options{grid-template-columns:1fr}}

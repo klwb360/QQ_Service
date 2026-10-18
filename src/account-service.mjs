@@ -1,6 +1,6 @@
 import { randomUUID } from 'node:crypto';
 import { createStore } from './store.mjs';
-import { validateConfig, getModelConfig, isCredentialName, apiSecretName, isApiProviderId } from './config.mjs';
+import { DEFAULT_CONFIG, validateConfig, getModelConfig, isCredentialName, apiSecretName, isApiProviderId } from './config.mjs';
 import { createInstaller } from './installer.mjs';
 import { createRuntime } from './runtime.mjs';
 
@@ -94,7 +94,7 @@ export function createAccountService({ account, dataDir, csrfToken, installerFac
   const ensureIdle = () => { ensureOpen(); if (applying || activeJob) throw fail('该账号的配置或模块任务正在执行，请稍后重试。'); };
   const apply = async (mode = 'apply', revision) => {
     ensureIdle();
-    if (mode !== 'rollback' && revision !== store.getState().revision) throw fail('草稿版本已变化，请刷新后重试。');
+    if (mode !== 'rollback' && revision !== store.getState().revision) throw fail('配置版本已变化，请刷新后重试。');
     applying = true;
     let finishApply;
     applyFinished = new Promise(resolve => { finishApply = resolve; });
@@ -151,23 +151,56 @@ export function createAccountService({ account, dataDir, csrfToken, installerFac
     await runtime.reload(); log('已立即撤销该账号发送权限，旧任务已取消。');
     return state();
   };
+  const validateSecretUpdates = (updates = {}, config) => {
+    if (!updates || typeof updates !== 'object' || Array.isArray(updates)) throw fail('凭据更新格式无效。', 400);
+    for (const [name, value] of Object.entries(updates)) {
+      if (!isCredentialName(name) || (name.startsWith('apiKey:') && !(config.models.apis || []).some(model => apiSecretName(model.id) === name)) || typeof value !== 'string' || value.length > 2000 || /[\r\n]/.test(value)) throw fail('凭据字段无效。', 400);
+    }
+    return updates;
+  };
   const save = async body => {
     ensureOpen();
     if (applying) throw fail('配置正在应用，请稍后保存。');
     const config = validateConfig(body.config);
     config.permissions.released = false;
-    const updates = body.secretUpdates || {};
-    if (!updates || typeof updates !== 'object' || Array.isArray(updates)) throw fail('凭据更新格式无效。', 400);
-    for (const [name, value] of Object.entries(updates)) {
-      if (!isCredentialName(name) || (name.startsWith('apiKey:') && !(config.models.apis || []).some(model => apiSecretName(model.id) === name)) || typeof value !== 'string' || value.length > 2000 || /[\r\n]/.test(value)) throw fail('凭据字段无效。', 400);
-    }
+    const updates = validateSecretUpdates(body.secretUpdates || {}, config);
     store.stageSecrets(updates); store.saveDraft(config);
-    log('参数草稿已保存；应用后只读，发送需单独释放权限。');
+    log('参数已保存；应用后只读，发送需单独释放权限。');
+    return state();
+  };
+  const resetDefaults = async body => {
+    ensureIdle();
+    if (!body || typeof body !== 'object' || Array.isArray(body) || !Number.isSafeInteger(body.revision) || body.revision < 0) throw fail('请提供当前配置版本后重试。', 400);
+    const before = store.getState();
+    if (body.revision !== before.revision) throw fail('配置版本已变化，请刷新后再还原默认。');
+    // Validate the whole captured form, including fields being reset, before
+    // staging credentials. Unsaved identity, connection and model edits remain.
+    const config = validateConfig(body.config);
+    const updates = validateSecretUpdates(body.secretUpdates, config);
+    const selectedProviders = ['deepseek', 'codex', ...config.models.apis.map(model => model.id)]
+      .filter(provider => getModelConfig(config, provider).enabled);
+    const provider = selectedProviders.length === 1 ? selectedProviders[0] : DEFAULT_CONFIG.chat.provider;
+    for (const section of ['chat', 'summary', 'favorites']) config[section] = { ...structuredClone(DEFAULT_CONFIG[section]), provider };
+    config.groups = structuredClone(DEFAULT_CONFIG.groups);
+    config.permissions = structuredClone(DEFAULT_CONFIG.permissions);
+    const oldSecrets = store.getSecretSnapshot();
+    try {
+      store.stageSecrets(updates);
+      store.saveDraft(config);
+    } catch (error) {
+      // A failed save must not leave newly typed credentials staged by itself.
+      // Both underlying files use the store's atomic replacement path.
+      try { store.restoreState(before); }
+      finally { store.restoreSecrets(oldSecrets); }
+      throw error;
+    }
+    log('当前账号功能参数已还原默认并保存；应用后只读，发送需单独释放权限。');
     return state();
   };
   const invoke = async (route, body) => {
     ensureOpen();
     if (route === '/config/save') return { value: await save(body) };
+    if (route === '/config/reset-defaults') return { value: await resetDefaults(body) };
     if (route === '/config/apply') { await apply('apply', body.revision); return { value: await state() }; }
     if (route === '/config/rollback') { await apply('rollback'); return { value: await state() }; }
     if (route === '/permissions/release') { await apply('release', body.revision); return { value: await state() }; }

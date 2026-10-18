@@ -14,7 +14,10 @@
   const MAX_PARENT_DEPTH = 4;
   const BUILTIN_PAGES = Object.freeze(['overview', 'connections', 'scenarios', 'modules', 'records', 'settings']);
   const COMPONENT_TYPES = Object.freeze(['heading', 'text', 'button', 'select', 'input', 'textarea', 'switch', 'card', 'divider']);
-  const STYLE_KEYS = Object.freeze(['fontSize', 'color', 'backgroundColor', 'padding', 'margin', 'borderRadius', 'width', 'maxWidth', 'gap']);
+  const STYLE_KEYS = Object.freeze([
+    'fontSize', 'fontWeight', 'lineHeight', 'textAlign', 'color', 'backgroundColor',
+    'padding', 'margin', 'borderRadius', 'width', 'minWidth', 'maxWidth', 'height', 'minHeight', 'gap',
+  ]);
   const EMPTY_UI_DESIGN = Object.freeze({ version: 1, edits: Object.freeze([]) });
   const INVALID = '界面修改格式无效，请仅调整文字、显示状态和支持的样式。';
   const SELECTOR = /^\[data-ui-key="([a-zA-Z][a-zA-Z0-9_.:-]{0,119})"\]$/;
@@ -72,7 +75,20 @@
       if (!/^#(?:[\da-f]{3}|[\da-f]{6}|[\da-f]{8})$/i.test(value)) invalid();
       return value;
     }
-    if ((key === 'width' || key === 'maxWidth') && value === 'auto') return value;
+    if (key === 'fontWeight') {
+      if (!/^[1-9]00$/.test(value)) invalid();
+      return value;
+    }
+    if (key === 'textAlign') {
+      if (!['left', 'center', 'right', 'start', 'end'].includes(value)) invalid();
+      return value;
+    }
+    if (key === 'lineHeight') {
+      const match = /^(\d+(?:\.\d+)?|\.\d+)(px|rem|em)?$/.exec(value);
+      if (!match || Number(match[1]) > (match[2] === 'px' ? 200 : match[2] ? 10 : 5)) invalid();
+      return value;
+    }
+    if (['width', 'maxWidth', 'height'].includes(key) && value === 'auto') return value;
     const parts = value.split(/ +/);
     const maximum = ['padding', 'margin', 'borderRadius'].includes(key) ? 4 : key === 'gap' ? 2 : 1;
     if (parts.length > maximum || parts.some(part => !lengthValue(part))) invalid();

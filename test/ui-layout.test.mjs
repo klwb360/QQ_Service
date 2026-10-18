@@ -9,7 +9,7 @@ import { createRequire } from 'node:module';
 const require = createRequire(import.meta.url);
 const schema = require('../public/layout-schema.cjs');
 const native = require('../desktop/ui-design.cjs');
-const { BUILTIN_PAGES, COMPONENT_TYPES, MAX_UI_DESIGN_BYTES, validateUiDesign, validateLayout, emptyLayout } = schema;
+const { BUILTIN_PAGES, COMPONENT_TYPES, STYLE_KEYS, MAX_UI_DESIGN_BYTES, validateUiDesign, validateLayout, emptyLayout } = schema;
 const page = (id = 'custom-samplepage') => ({ id, label: '自建菜单', title: '工作台', description: '先编辑布局，再安排后台实现。', icon: '◇' });
 const block = (id = 'block-sampleblock', overrides = {}) => ({ id, type: 'text', page: 'overview', parent: null, label: '文字块', ...overrides });
 const document = (layout = emptyLayout()) => ({ version: 2, edits: [], layout });
@@ -24,6 +24,8 @@ test('同一份schema在原生和浏览器运行，内置菜单及空布局不�
   assert.deepEqual(COMPONENT_TYPES, ['heading', 'text', 'button', 'select', 'input', 'textarea', 'switch', 'card', 'divider']);
   assert.ok(Object.isFrozen(BUILTIN_PAGES));
   assert.ok(Object.isFrozen(COMPONENT_TYPES));
+  assert.ok(Object.isFrozen(STYLE_KEYS));
+  for (const key of ['height', 'minWidth', 'minHeight', 'fontWeight', 'lineHeight', 'textAlign']) assert.ok(STYLE_KEYS.includes(key));
   const empty = emptyLayout();
   empty.navigation.reverse();
   assert.deepEqual(emptyLayout().navigation, BUILTIN_PAGES);
@@ -32,6 +34,7 @@ test('同一份schema在原生和浏览器运行，内置菜单及空布局不�
   const browser = JSON.parse(vm.runInContext('JSON.stringify(QQServiceLayoutSchema.validateUiDesign({version:2,edits:[],layout:QQServiceLayoutSchema.emptyLayout()}))', context));
   assert.deepEqual(browser, document());
   assert.equal(vm.runInContext('Object.isFrozen(QQServiceLayoutSchema)', context), true);
+  assert.deepEqual(JSON.parse(vm.runInContext('JSON.stringify(QQServiceLayoutSchema.STYLE_KEYS)', context)), STYLE_KEYS);
 });
 
 test('v1保持原样兼容，v2必须包含布局，旧编辑可显式迁移并独立复制', () => {
@@ -73,6 +76,30 @@ test('声明式组件保留类型、嵌套卡片、静态选项和有限动作�
   assert.equal(copy.components[3].options[0].label, '第一个');
   assert.equal(copy.components[4].action.target, customPage.id);
   assert.deepEqual(validateLayout(layoutWith([block('block-emptyselect', { type: 'select', options: [] })])).components[0].options, []);
+});
+
+test('搭建按钮、文本和容器接受共享尺寸与排版参数，v2完整导出不丢失新样式', () => {
+  const styles = {
+    width: '80%', minWidth: '24px', maxWidth: '1000px', height: 'auto', minHeight: '40px',
+    fontSize: '18px', fontWeight: '700', lineHeight: '1.5', textAlign: 'center', padding: '1rem 2rem',
+  };
+  const components = ['button', 'text', 'card'].map((type, index) => block(`block-styletest${letters(index)}`, { type, styles: { ...styles } }));
+  const input = document(layoutWith(components));
+  const next = validateUiDesign(input);
+  assert.deepEqual(next, input);
+  components[0].styles.fontWeight = '100';
+  assert.equal(next.layout.components[0].styles.fontWeight, '700');
+  for (const value of ['0', '5', '200px', '10rem', '10em']) {
+    const layout = layoutWith([block('block-stylebound', { styles: { lineHeight: value } })]);
+    assert.deepEqual(validateLayout(layout), layout);
+  }
+  for (const styles of [
+    { height: '1001px' }, { height: '-20px' }, { minHeight: 'auto' }, { minWidth: 'calc(100% - 1px)' },
+    { fontWeight: 'bold' }, { fontWeight: '650' }, { fontWeight: 700 }, { lineHeight: '5.01' },
+    { lineHeight: '201px' }, { lineHeight: '11em' }, { lineHeight: '100%' }, { lineHeight: '1e2' },
+    { lineHeight: 'expression(alert(1))' }, { textAlign: 'left; color:red' }, { textAlign: 'inherit' },
+    { height: 'url(https://example.test/)' }, { minWidth: { toString() { throw new Error('must not execute'); } } },
+  ]) invalidDocument(document(layoutWith([block('block-invalidstyle', { styles })])));
 });
 
 test('菜单导航必须精确覆盖内置与自建菜单，组件和跳转引用真实菜单', () => {
@@ -150,6 +177,11 @@ test('验证访问器前先检查描述符，拒绝原型、符号、稀疏数�
   invalid(layoutWith([Object.assign(Object.create({ inherited: true }), block())]));
   invalid(layoutWith([JSON.parse('{"id":"block-protodemo","type":"text","page":"overview","parent":null,"label":"ok","__proto__":{"polluted":true}}')]));
   invalid(layoutWith([block('block-styledemo', { styles: JSON.parse('{"constructor":{"prototype":{"polluted":true}}}') })]));
+  const styles = {};
+  Object.defineProperty(styles, 'lineHeight', { enumerable: true, get() { accessed++; return '1.5'; } });
+  invalidDocument(document(layoutWith([block('block-stylegetter', { styles })])));
+  invalidDocument(document(layoutWith([block('block-styleproto', { styles: JSON.parse('{"height":"40px","__proto__":{"fontWeight":"700"}}') })])));
+  assert.equal(accessed, 0);
   assert.equal({}.polluted, undefined);
 });
 

@@ -5,7 +5,7 @@
   const schema = window.QQServiceLayoutSchema;
   const TYPE_NAMES = { heading: '标题', text: '文本', button: '按钮', select: '下拉栏', input: '输入框', textarea: '多行输入', switch: '开关', card: '卡片容器', divider: '分隔线' };
   const PAGE_NAMES = { overview: '仪表盘', connections: '账号', scenarios: '权限', modules: '模块', records: '日志', settings: '设置' };
-  const STYLE_NAMES = { fontSize: '字号', color: '文字颜色', backgroundColor: '背景颜色', padding: '内边距', margin: '外边距', borderRadius: '圆角', width: '宽度', maxWidth: '最大宽度', gap: '元素间距' };
+  const STYLE_NAMES = { fontSize: '字号', color: '文字颜色', backgroundColor: '背景颜色', padding: '内边距', margin: '外边距', borderRadius: '圆角', width: '宽度', maxWidth: '最大宽度', gap: '元素间距', height: '高度', minWidth: '最小宽度', minHeight: '最小高度', fontWeight: '字重', lineHeight: '行高', textAlign: '文字对齐' };
   const MIME = 'application/x-qq-service-builder';
   const clone = value => JSON.parse(JSON.stringify(value));
   let activeInstance = null;
@@ -211,8 +211,13 @@
     componentEditor.append(field('跳转页面', 'builder-component-action-target', 'select').label, field('待实现功能说明', 'builder-component-action-note', 'textarea', 500).label);
     const stylePanel = element('details'); stylePanel.append(element('summary', '', '样式'));
     const styleGrid = element('div', 'designer-style-grid');
-    for (const key of schema.STYLE_KEYS) styleGrid.append(field(STYLE_NAMES[key], `builder-component-style-${key}`, 'input', 100).label);
-    stylePanel.append(styleGrid, element('p', 'designer-note', '尺寸示例：16px、1rem、100%；颜色使用 #RRGGBB。留空恢复默认。')); componentEditor.append(stylePanel);
+    for (const key of schema.STYLE_KEYS) {
+      const select = ['fontWeight', 'textAlign'].includes(key);
+      const item = field(STYLE_NAMES[key], `builder-component-style-${key}`, select ? 'select' : 'input', 100);
+      if (select) populate(item.control, [['', '本版默认'], ...(key === 'fontWeight' ? Array.from({ length: 9 }, (_, index) => [String((index + 1) * 100), String((index + 1) * 100)]) : [['left', '左对齐'], ['center', '居中'], ['right', '右对齐'], ['start', '跟随文字起始'], ['end', '跟随文字末尾']])]);
+      styleGrid.append(item.label);
+    }
+    stylePanel.append(styleGrid, element('p', 'designer-note', '尺寸示例：16px、1rem、100%；行高可用 1.5 或 24px；颜色使用 #RRGGBB。留空恢复默认。')); componentEditor.append(stylePanel);
     componentEditor.append(button('应用组件设置', 'builder-save-component', saveComponent, 'designer-primary'));
     const componentActions = element('div', 'designer-actions');
     componentActions.append(button('复制', 'builder-duplicate-component', duplicateComponent), button('删除', 'builder-delete-component', deleteComponent), button('上移 ↑', 'builder-move-up', () => reorderComponent(-1)), button('下移 ↓', 'builder-move-down', () => reorderComponent(1)));
@@ -473,20 +478,27 @@
       for (const [node, key] of entry.appliedStyles) node.style[key] = '';
       entry.appliedStyles = [];
       const assignStyle = (node, key, value) => { node.style[key] = value; entry.appliedStyles.push([node, key]); };
+      const typography = ['fontSize', 'fontWeight', 'lineHeight', 'textAlign'];
+      const visualControl = ['button', 'input', 'textarea', 'select'].includes(item.type);
       for (const [key, value] of Object.entries(item.styles || {})) {
         let target = entry.wrapper;
         if (key === 'gap') target = entry.children || entry.surface;
+        else if (typography.includes(key)) target = entry.surface;
+        else if (['height', 'minHeight'].includes(key)) target = visualControl ? entry.control : entry.surface;
+        else if (key === 'minWidth' && item.type === 'button') target = entry.control;
         else if (['backgroundColor', 'padding', 'borderRadius'].includes(key)) {
-          target = ['button', 'input', 'textarea', 'select'].includes(item.type) ? entry.control : ['card', 'switch'].includes(item.type) ? entry.surface : entry.wrapper;
+          target = visualControl ? entry.control : ['card', 'switch'].includes(item.type) ? entry.surface : entry.wrapper;
         }
         assignStyle(target, key, value);
       }
       if (item.type === 'button' && (item.styles?.width || item.styles?.maxWidth)) assignStyle(entry.control, 'width', '100%');
-      // Presentation size/color are inherited by the visible surface, rather
-      // than being swallowed by its default typography declarations.
-      for (const node of [entry.text, entry.label, entry.control].filter(Boolean)) node.style.fontSize = item.styles?.fontSize ? 'inherit' : '';
-      if (entry.control && ['input', 'textarea', 'select', 'switch'].includes(item.type)) entry.control.parentElement.style.fontSize = item.styles?.fontSize ? 'inherit' : '';
-      if (entry.control) entry.control.style.color = item.styles?.color ? 'inherit' : '';
+      // Default component typography must not swallow author-selected size,
+      // weight, alignment or line spacing on the actual visible control/text.
+      for (const property of typography) if (item.styles?.[property]) {
+        for (const node of [entry.text, entry.label, entry.control].filter(Boolean)) assignStyle(node, property, 'inherit');
+        if (entry.control && ['input', 'textarea', 'select', 'switch'].includes(item.type)) assignStyle(entry.control.parentElement, property, 'inherit');
+      }
+      if (entry.control && item.styles?.color) assignStyle(entry.control, 'color', 'inherit');
     }
     function ensurePageRoot(id) {
       if (pageRoots.has(id)) return pageRoots.get(id);

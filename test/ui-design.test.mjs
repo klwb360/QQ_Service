@@ -26,6 +26,45 @@ test('界面修改保留文字、按钮样式与下拉项标签，不保留调�
   assert.equal(next.edits[0].optionLabels[0].label, '请选择');
 });
 
+test('原有元素可保存尺寸和文字排版参数，边界值保持有限且返回独立样式', () => {
+  const styles = {
+    height: 'auto', minWidth: '0', minHeight: '1000px', fontWeight: '600', lineHeight: '1.5', textAlign: 'center',
+  };
+  const next = validateUiDesign(withEdit({ styles }));
+  assert.deepEqual(next.edits[0].styles, styles);
+  styles.fontWeight = '900';
+  assert.equal(next.edits[0].styles.fontWeight, '600');
+  for (const value of ['100', '200', '300', '400', '500', '600', '700', '800', '900']) {
+    assert.equal(validateUiDesign(withEdit({ styles: { fontWeight: value } })).edits[0].styles.fontWeight, value);
+  }
+  for (const value of ['0', '.5', '1', '5', '0px', '200px', '.5rem', '10rem', '10em']) {
+    assert.equal(validateUiDesign(withEdit({ styles: { lineHeight: value } })).edits[0].styles.lineHeight, value);
+  }
+  for (const value of ['left', 'center', 'right', 'start', 'end']) {
+    assert.equal(validateUiDesign(withEdit({ styles: { textAlign: value } })).edits[0].styles.textAlign, value);
+  }
+  for (const key of ['height', 'minWidth', 'minHeight']) {
+    for (const value of ['0', '1000px', '100%', '100vh', '100vw', '100rem', '100em']) {
+      assert.equal(validateUiDesign(withEdit({ styles: { [key]: value } })).edits[0].styles[key], value);
+    }
+  }
+});
+
+test('新增尺寸和排版仅接受有限CSS值，不允许表达式、额外指令或隐式类型转换', () => {
+  for (const styles of [
+    { height: '1001px' }, { height: '101vh' }, { height: 'calc(100% - 1px)' }, { minWidth: '-1px' },
+    { minWidth: 'auto' }, { minHeight: 'auto' }, { minHeight: 'fit-content' }, { height: '0;display:none' },
+    { fontWeight: 'normal' }, { fontWeight: 'bold' }, { fontWeight: '0500' }, { fontWeight: '550' },
+    { fontWeight: '1000' }, { fontWeight: 600 }, { lineHeight: '-1' }, { lineHeight: '5.001' },
+    { lineHeight: '200.1px' }, { lineHeight: '10.01em' }, { lineHeight: '11rem' }, { lineHeight: '100%' },
+    { lineHeight: '1e0' }, { lineHeight: 'Infinity' }, { lineHeight: 'NaN' }, { lineHeight: 'normal' },
+    { lineHeight: 'url(file:///private)' }, { lineHeight: 'var(--private)' }, { lineHeight: '1 2' },
+    { lineHeight: ' 1.5' }, { lineHeight: '1.5 ' }, { lineHeight: '1.5!important' }, { lineHeight: 1.5 },
+    { textAlign: 'justify' }, { textAlign: 'CENTER' }, { textAlign: 'left;position:fixed' },
+    { textAlign: new String('left') }, { fontWeight: { toString() { throw new Error('must not execute'); } } },
+  ]) invalid(withEdit({ styles }));
+});
+
 test('界面修改拒绝任意路径、任意选择器、账号标识与原生或实时状态目标', () => {
   for (const value of [null, [], {}, { version: 2, edits: [] }, { ...patch(), path: '../elsewhere.json' }, { ...patch(), apiKey: 'private' }]) invalid(value);
   for (const selector of [
@@ -70,6 +109,11 @@ test('界面修改拒绝原型污染、访问器以及稀疏数组，验证不�
   const edit = { selector: '[data-ui-key="ui-demo"]' };
   Object.defineProperty(edit, 'text', { enumerable: true, get() { accessed = true; return 'bad'; } });
   invalid({ version: 1, edits: [edit] });
+  const styles = {};
+  Object.defineProperty(styles, 'fontWeight', { enumerable: true, get() { accessed = true; return '600'; } });
+  invalid(withEdit({ styles }));
+  invalid(withEdit({ styles: JSON.parse('{"constructor":{"prototype":{"polluted":true}},"height":"10px"}') }));
+  invalid(withEdit({ styles: JSON.parse('{"height":"10px","__proto__":{"fontWeight":"600"}}') }));
   assert.equal(accessed, false);
   assert.equal({}.polluted, undefined);
 });

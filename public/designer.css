@@ -5,7 +5,7 @@
 .form-grid > [data-ui-reflow-tail="true"] { grid-column: span var(--ui-reflow-span) !important; }
 body[data-ui-design-mode="edit"] [data-ui-key] { cursor: crosshair !important; }
 body[data-ui-design-mode="edit"] #frontend-editor-toggle, body[data-ui-design-mode="edit"] #window-controls * { cursor: pointer !important; }
-#designer-root { position: fixed; z-index: 2147483600; top: 76px; right: 18px; bottom: 18px; width: 354px; max-width: calc(100vw - 30px); display: flex; flex-direction: column; color: #253850; font: 13px/1.5 system-ui, "Microsoft YaHei", sans-serif; background: #fff; border: 1px solid #cbdadf; border-radius: 16px; box-shadow: 0 16px 54px #173e5d30; isolation: isolate; }
+#designer-root { box-sizing: border-box; position: fixed; z-index: 2147483600; top: 76px; right: 18px; bottom: 18px; width: 354px; max-width: calc(100vw - 30px); display: flex; flex-direction: column; color: #253850; font: 13px/1.5 system-ui, "Microsoft YaHei", sans-serif; background: #fff; border: 1px solid #cbdadf; border-radius: 16px; box-shadow: 0 16px 54px #173e5d30; isolation: isolate; }
 #designer-root[hidden], #designer-root [hidden], .designer-outline[hidden] { display: none !important; }
 #designer-root *, #designer-root *::before, #designer-root *::after { box-sizing: border-box; }
 #designer-root button, #designer-root input, #designer-root select, #designer-root textarea { -webkit-app-region: no-drag; font: inherit; letter-spacing: normal; }
@@ -13,20 +13,21 @@ body[data-ui-design-mode="edit"] #frontend-editor-toggle, body[data-ui-design-mo
 #designer-root button:hover { background: #e8f3f3; border-color: #7fbab5; }
 #designer-root button:focus-visible, #designer-root input:focus-visible, #designer-root select:focus-visible, #designer-root textarea:focus-visible { outline: 2px solid #16968c; outline-offset: 2px; }
 #designer-root button:disabled { opacity: .45; cursor: default; }
-#designer-root .designer-heading { display: flex; align-items: center; justify-content: space-between; gap: 12px; padding: 15px 16px 10px; }
+#designer-root .designer-heading { touch-action: none; cursor: move; -webkit-app-region: no-drag; flex-shrink: 0; display: flex; align-items: center; justify-content: space-between; gap: 12px; padding: 15px 16px 10px; }
+#designer-root .designer-heading:focus-visible { outline: 2px solid #16968c; outline-offset: -3px; border-radius: 14px 14px 0 0; }
 #designer-root .designer-heading strong { font-size: 17px; }
 #designer-root small { display: block; color: #788c9b; font-size: 11px; }
 #designer-root #designer-close { font-size: 22px; line-height: 1; padding: 0; width: 30px; border: 0; background: transparent; }
-#designer-root .designer-mode-switch { display: flex; gap: 5px; margin: 0 14px 10px; }
+#designer-root .designer-mode-switch { flex-shrink: 0; display: flex; gap: 5px; margin: 0 14px 10px; }
 #designer-root .designer-mode-switch button { flex: 1; }
-#designer-root .designer-inspector-switch { display: flex; gap: 5px; margin: 0 14px 10px; }
+#designer-root .designer-inspector-switch { flex-shrink: 0; display: flex; gap: 5px; margin: 0 14px 10px; }
 #designer-root .designer-inspector-switch button { flex: 1; font-size: 12px; }
 #designer-root .designer-inspector-switch button[aria-selected="true"] { background: #e9f6f3; border-color: #80bdb1; color: #176e67; }
 #designer-root[data-inspector-view="builder"] #designer-existing-inspector,
 #designer-root[data-inspector-view="existing"] #designer-builder-slot { display: none !important; }
 #designer-root .designer-mode-switch button[aria-pressed="true"], #designer-root .designer-primary { color: #fff; background: #087f84; border-color: #087f84; }
-#designer-root > .designer-field { margin: 0 14px 10px; }
-#designer-root .designer-scroll { overflow-y: auto; overflow-x: hidden; padding: 0 15px 14px; scrollbar-width: thin; }
+#designer-root > .designer-field { flex-shrink: 0; margin: 0 14px 10px; }
+#designer-root .designer-scroll { flex: 1; min-height: 0; overscroll-behavior: contain; overflow-y: auto; overflow-x: hidden; padding: 0 15px 14px; scrollbar-width: thin; }
 #designer-root .designer-selection { padding: 10px 11px; background: #edf7f6; border-radius: 9px; margin-bottom: 10px; overflow-wrap: anywhere; }
 #designer-root .designer-selection strong { display: block; font-size: 13px; }
 #designer-root .designer-selection small { margin-top: 3px; }
@@ -48,10 +49,24 @@ body[data-ui-design-mode="edit"] #frontend-editor-toggle, body[data-ui-design-mo
 #designer-root .designer-actions { display: flex; flex-wrap: wrap; gap: 6px; margin: 9px 0; }
 #designer-root .designer-actions button { flex: 1 0 auto; font-size: 12px; }
 #designer-root .designer-error { color: #b44938; background: #fff2ee; border: 1px solid #efc6bd; padding: 8px; border-radius: 7px; font-size: 12px; overflow-wrap: anywhere; }
-#designer-root .designer-save-status { border-top: 1px solid #e4ecef; padding: 9px 14px; color: #6e8790; font-size: 11px; }
+#designer-root .designer-save-status { flex-shrink: 0; border-top: 1px solid #e4ecef; padding: 9px 14px; color: #6e8790; font-size: 11px; }
 #designer-root .designer-restore { display: block; width: 100%; text-align: left; margin-top: 6px; overflow-wrap: anywhere; }
 #designer-root.designer-docked-left { left: 18px; right: auto; }
 .designer-outline { position: fixed; z-index: 2147483500; pointer-events: none; border-radius: 5px; box-sizing: border-box; }
 .designer-outline-selection { border: 2px solid #078a83; box-shadow: 0 0 0 3px #078a8320; }
 .designer-outline-hover { border: 1px dashed #4aa4ad; background: #65c5c50b; }
 @media (max-width: 650px) { #designer-root { top: 66px; bottom: 8px; right: 8px; width: 315px; } }
+
+/* The editor floats independently from application navigation and title bars. */
+html.designer-changing-geometry, html.designer-changing-geometry * { user-select: none !important; }
+#designer-root.designer-adjusting { transition: none !important; }
+#designer-root .designer-resize-handle { position: absolute; z-index: 2; touch-action: none; -webkit-app-region: no-drag; }
+#designer-root .designer-resize-handle:focus-visible { outline: 2px solid #16968c; outline-offset: -2px; background: #16968c18; border-radius: 5px; }
+#designer-root .designer-resize-e { top: 22px; right: -5px; bottom: 15px; width: 10px; cursor: ew-resize; }
+#designer-root .designer-resize-w { top: 22px; left: -5px; bottom: 15px; width: 10px; cursor: ew-resize; }
+#designer-root .designer-resize-s { left: 18px; bottom: -5px; right: 18px; height: 10px; cursor: ns-resize; }
+#designer-root .designer-resize-se, #designer-root .designer-resize-sw { bottom: -5px; width: 22px; height: 22px; }
+#designer-root .designer-resize-se { right: -5px; cursor: nwse-resize; }
+#designer-root .designer-resize-sw { left: -5px; cursor: nesw-resize; }
+#designer-root .designer-resize-se::after { content: ''; position: absolute; right: 9px; bottom: 9px; width: 7px; height: 7px; border-right: 2px solid #8ca9ad; border-bottom: 2px solid #8ca9ad; }
+@media (prefers-reduced-motion: reduce) { #designer-root, #designer-root * { scroll-behavior: auto; transition: none; } }
