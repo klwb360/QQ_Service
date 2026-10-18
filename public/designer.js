@@ -30,6 +30,7 @@
   let root;
   let selectionOutline;
   let hoverOutline;
+  let builder;
   const $ = id => document.getElementById(id);
   const clone = value => JSON.parse(JSON.stringify(value));
   const selectorFor = key => `[data-ui-key="${key}"]`;
@@ -50,7 +51,7 @@
   }
 
   function protectedElement(element) {
-    return !(element instanceof Element) || Boolean(element.closest(PROTECTED)) || Boolean(element.querySelector('#window-controls, #frontend-editor-toggle'));
+    return !(element instanceof Element) || Boolean(element.closest(`${PROTECTED}, [data-builder-owned]`)) || Boolean(element.querySelector('#window-controls, #frontend-editor-toggle'));
   }
 
   function keyAllowed(key) {
@@ -215,10 +216,13 @@
   }
 
   function validateDesign(value) {
-    if (!value || Object.getPrototypeOf(value) !== Object.prototype || value.version !== VERSION || !Array.isArray(value.edits) || value.edits.length > 400 || Object.keys(value).some(key => !['version', 'edits'].includes(key))) throw new Error('请选择有效的 QQ_Service 界面配置 JSON（version: 1）。');
-    if (new TextEncoder().encode(JSON.stringify(value)).byteLength > 512 * 1024) throw new Error('界面配置超过 512 KiB。');
+    const checked = window.QQServiceLayoutSchema.validateUiDesign(value);
+    for (const page of checked.layout?.pages || []) for (const field of ['title', 'description', 'eyebrow']) {
+      const key = `page.${page.id}.${field}`;
+      if (!registry.has(key)) registry.set(key, { text: true, options: new Set(), name: `${page.label} · ${field}` });
+    }
     const seen = new Set();
-    const edits = value.edits.map(entry => {
+    const edits = checked.edits.map(entry => {
       if (!entry || Object.getPrototypeOf(entry) !== Object.prototype || Object.keys(entry).some(key => !['selector', 'text', 'hidden', 'styles', 'optionLabels'].includes(key))) throw new Error('配置包含不支持的修改字段。');
       const match = /^\[data-ui-key="([a-zA-Z][a-zA-Z0-9_.:-]{0,119})"\]$/.exec(entry.selector);
       const key = match?.[1];
@@ -247,10 +251,11 @@
       }
       return clone(entry);
     });
-    return { version: VERSION, edits: normalizeBaselineEdits(edits) };
+    return { ...checked, edits: normalizeBaselineEdits(edits) };
   }
 
   function applyDesign() {
+    builder?.render(documentState);
     annotateContainers();
     registerExplicitTargets();
     const byKey = new Map(documentState.edits.map(entry => [entry.selector, entry]));
@@ -290,6 +295,7 @@
       }
     }
     compactLayout();
+    syncPageSelection();
     updateOutline();
   }
 
@@ -405,7 +411,22 @@
 
   function selectKey(key) {
     if (!keyAllowed(key) || !registry.has(key) || retiredKeys.has(key)) return;
+    setInspectorView('existing');
     selectedKey = key; showError(); refreshInspector();
+  }
+
+  function setInspectorView(view) {
+    const existing = view === 'existing';
+    root.dataset.inspectorView = existing ? 'existing' : 'builder';
+    $('designer-view-existing').setAttribute('aria-selected', String(existing));
+    $('designer-view-builder').setAttribute('aria-selected', String(!existing));
+    if (existing) {
+      builder?.clearSelection();
+      $('designer-existing-inspector').hidden = false;
+    } else {
+      selectedKey = null;
+      refreshInspector();
+    }
   }
 
   function refreshSelectionPath() {
@@ -495,6 +516,7 @@
     mode = nextMode;
     root.hidden = mode === 'closed'; root.dataset.mode = mode;
     document.body.dataset.uiDesignMode = mode;
+    builder?.setMode(mode);
     $('frontend-editor-toggle')?.setAttribute('aria-pressed', String(mode !== 'closed'));
     $('designer-edit-mode').setAttribute('aria-pressed', String(mode === 'edit'));
     $('designer-preview-mode').setAttribute('aria-pressed', String(mode === 'preview'));
@@ -504,21 +526,37 @@
   }
 
   function syncPageSelection() {
-    const page = document.querySelector('.nav-link.active[data-page]')?.dataset.page;
-    if (page && $('designer-page').value !== page) $('designer-page').value = page;
+    const select = $('designer-page');
+    if (!select) return;
+    const navigation = documentState.layout?.navigation || window.QQServiceLayoutSchema.BUILTIN_PAGES;
+    const options = navigation.map(id => {
+      const link = document.querySelector(`.nav-link[data-page="${id}"]`);
+      const custom = documentState.layout?.pages.find(page => page.id === id);
+      const label = custom?.label || [...(link?.childNodes || [])].filter(node => node.nodeType === Node.TEXT_NODE).map(node => node.textContent).join('').trim() || id;
+      return { id, label, disabled: !link || link.classList.contains('hidden') };
+    });
+    const fingerprint = JSON.stringify(options);
+    if (select.dataset.pages !== fingerprint) {
+      select.replaceChildren(...options.map(item => { const option = document.createElement('option'); option.value = item.id; option.textContent = item.label; option.disabled = item.disabled; return option; }));
+      select.dataset.pages = fingerprint;
+    }
+    const page = window.QQServiceNavigation?.currentPage() || document.querySelector('.nav-link.active[data-page]')?.dataset.page;
+    if (page && select.value !== page) select.value = page;
   }
 
   function createUI() {
     root = document.createElement('aside'); root.id = 'designer-root'; root.hidden = true; root.setAttribute('aria-label', '界面可视化编辑器');
+    root.dataset.inspectorView = 'builder';
     // This is a fixed local template. User text is always assigned with textContent/value.
-    root.innerHTML = `<div class="designer-heading"><div><strong>界面编辑 · 进阶版</strong><small>仅调整本机展示 · 不修改账号权限</small></div><button type="button" id="designer-close" aria-label="退出界面编辑">×</button></div>
+    root.innerHTML = `<div class="designer-heading"><div><strong>界面搭建版</strong><small>仅调整本机展示 · 不修改账号权限</small></div><button type="button" id="designer-close" aria-label="退出界面编辑">×</button></div>
       <div class="designer-mode-switch"><button type="button" id="designer-edit-mode" aria-pressed="true">选择并编辑</button><button type="button" id="designer-preview-mode" aria-pressed="false">预览并操作</button></div>
+      <div class="designer-inspector-switch" role="tablist" aria-label="编辑内容"><button type="button" id="designer-view-builder" role="tab" aria-selected="true">搭建菜单与组件</button><button type="button" id="designer-view-existing" role="tab" aria-selected="false">编辑已有元素</button></div>
       <label class="designer-field">切换页面<select id="designer-page"><option value="overview">仪表盘</option><option value="connections">账号</option><option value="scenarios">权限</option><option value="modules">模块</option><option value="records">日志</option><option value="settings">设置</option></select></label>
-      <div class="designer-scroll"><div class="designer-selection"><strong id="designer-target-label"></strong><small id="designer-target-key"></small><button type="button" id="designer-select-parent" disabled>选择父级容器 ↑</button><nav id="designer-breadcrumb" aria-label="所选元素层级" hidden></nav></div><p class="designer-note">点击文字、按钮或下拉栏；选择父级可调整整张卡片、表单项或按钮组。隐藏或清空内容后，空容器自动收起，网格自动补位。</p><p id="designer-error" class="designer-error" role="alert" hidden></p>
+      <div class="designer-scroll"><p id="designer-error" class="designer-error" role="alert" hidden></p><div id="designer-builder-slot"></div><div id="designer-existing-inspector"><div class="designer-selection"><strong id="designer-target-label"></strong><small id="designer-target-key"></small><button type="button" id="designer-select-parent" disabled>选择父级容器 ↑</button><nav id="designer-breadcrumb" aria-label="所选元素层级" hidden></nav></div><p class="designer-note">点击文字、按钮或下拉栏；选择父级可调整整张卡片、表单项或按钮组。隐藏或清空内容后，空容器自动收起，网格自动补位。</p>
       <fieldset id="designer-fields"><label class="designer-field">显示文字<textarea id="designer-text" rows="2" maxlength="500" placeholder="这个元素不支持修改文字"></textarea></label><p class="designer-note" id="designer-text-note"></p>
       <div id="designer-option-fields" hidden><label class="designer-field">下拉选项<select id="designer-option-value"></select></label><label class="designer-field">选项显示名称<input id="designer-option-label" maxlength="120"></label><p class="designer-note">只改显示名称，不改变选项值和模型行为。</p></div><p id="designer-option-note" class="designer-note" hidden>账号、群及自定义接口的选项包含业务资料，仅开放下拉栏外观。</p>
-      <details class="designer-style-panel" open><summary>样式</summary><div id="designer-style-fields" class="designer-style-grid"></div><p class="designer-note">留空恢复本版默认；颜色用 #RRGGBB；尺寸例：16px、1rem、100%。</p></details><label class="designer-checkbox"><input id="designer-hidden" type="checkbox">隐藏此元素并让布局补位</label><div class="designer-actions"><button type="button" id="designer-apply" class="designer-primary">应用到元素</button><button type="button" id="designer-reset-element">还原此元素</button></div></fieldset>
-      <details class="designer-hidden-panel"><summary id="designer-hidden-count">已隐藏元素（0）</summary><div id="designer-hidden-list"></div></details><div class="designer-actions"><button type="button" id="designer-undo">撤销</button><button type="button" id="designer-redo">重做</button><button type="button" id="designer-reset-all">恢复本版默认</button></div><div class="designer-actions"><button type="button" id="designer-export">导出 JSON</button><button type="button" id="designer-import-button">导入 JSON</button><button type="button" id="designer-dock">面板移到左侧</button></div><input id="designer-import" type="file" accept="application/json,.json" hidden><p class="designer-note">本版默认已包含你确认的界面调整。下一轮完成后，导出 JSON 发给开发者，方便继续实现相关功能。导出只含展示修改，不含输入值、密钥、QQ 号或消息；不会修改后端行为。Esc 退出编辑并保留展示。</p></div><div class="designer-save-status" id="designer-save-status" role="status">正在读取本机设置…</div>`;
+      <details class="designer-style-panel" open><summary>样式</summary><div id="designer-style-fields" class="designer-style-grid"></div><p class="designer-note">留空恢复本版默认；颜色用 #RRGGBB；尺寸例：16px、1rem、100%。</p></details><label class="designer-checkbox"><input id="designer-hidden" type="checkbox">隐藏此元素并让布局补位</label><div class="designer-actions"><button type="button" id="designer-apply" class="designer-primary">应用到元素</button><button type="button" id="designer-reset-element">还原此元素</button></div></fieldset></div>
+      <details class="designer-hidden-panel"><summary id="designer-hidden-count">已隐藏元素（0）</summary><div id="designer-hidden-list"></div></details><div class="designer-actions"><button type="button" id="designer-undo">撤销</button><button type="button" id="designer-redo">重做</button><button type="button" id="designer-reset-all">恢复本版默认</button></div><div class="designer-actions"><button type="button" id="designer-export">导出 JSON</button><button type="button" id="designer-import-button">导入 JSON</button><button type="button" id="designer-dock">面板移到左侧</button></div><input id="designer-import" type="file" accept="application/json,.json" hidden><p class="designer-note">本版默认已包含你确认的界面调整。下一轮完成后，导出 JSON 发给开发者，方便继续实现相关功能。导出包含菜单、组件、展示修改和待接入动作说明，不包含输入值、密钥、QQ 号或消息。Esc 退出编辑并保留展示。</p></div><div class="designer-save-status" id="designer-save-status" role="status">正在读取本机设置…</div>`;
     document.body.append(root);
     const styleFields = $('designer-style-fields');
     STYLE_KEYS.forEach((key, index) => { const label = document.createElement('label'); label.className = 'designer-field'; label.textContent = STYLE_NAMES[index]; const input = document.createElement('input'); input.id = `designer-style-${key}`; input.maxLength = 80; input.autocomplete = 'off'; label.append(input); styleFields.append(label); });
@@ -526,6 +564,8 @@
   }
 
   function bindEvents() {
+    $('designer-view-builder').addEventListener('click', () => setInspectorView('builder'));
+    $('designer-view-existing').addEventListener('click', () => setInspectorView('existing'));
     $('frontend-editor-toggle')?.addEventListener('click', () => { if (!ready) { root.hidden = false; return; } setMode(mode === 'closed' ? 'edit' : 'closed'); });
     $('designer-close').addEventListener('click', () => setMode('closed'));
     $('designer-edit-mode').addEventListener('click', () => setMode('edit'));
@@ -534,7 +574,7 @@
     $('designer-page').addEventListener('change', event => { const nav = document.querySelector(`.nav-link[data-page="${event.target.value}"]`); if (!nav || nav.classList.contains('hidden')) { showError('当前运行模式尚未提供这个页面。'); return; } internalNavigation = true; try { nav.click(); } finally { internalNavigation = false; } });
     $('designer-option-value').addEventListener('change', updateOptionField);
     $('designer-apply').addEventListener('click', () => { try { editSelected(edit => { const element = targetElement(); const baseline = currentBaseline(element); if (baseline.text !== null) { const text = $('designer-text').value; if (text !== baseline.text) edit.text = text; else delete edit.text; } const styles = {}; for (const key of STYLE_KEYS) { const value = $(`designer-style-${key}`).value.trim(); if (value) styles[key] = value; } if (Object.keys(styles).length) edit.styles = styles; else delete edit.styles; if ($('designer-hidden').checked) edit.hidden = true; else delete edit.hidden; if (!$('designer-option-fields').hidden) { const value = $('designer-option-value').value; const label = $('designer-option-label').value; const options = (edit.optionLabels || []).filter(option => option.value !== value); if (label !== baseline.options.get(value)) options.push({ value, label }); if (options.length) edit.optionLabels = options; else delete edit.optionLabels; } }); } catch (error) { showError(error.message); } });
-    $('designer-reset-element').addEventListener('click', () => commit({ version: VERSION, edits: documentState.edits.filter(edit => edit.selector !== selectorFor(selectedKey)) }));
+    $('designer-reset-element').addEventListener('click', () => commit({ ...clone(documentState), edits: documentState.edits.filter(edit => edit.selector !== selectorFor(selectedKey)) }));
     $('designer-reset-all').addEventListener('click', () => commit({ version: VERSION, edits: [] }));
     $('designer-undo').addEventListener('click', () => { if (!undoStack.length) return; redoStack.push(clone(documentState)); documentState = undoStack.pop(); showError(); applyDesign(); refreshInspector(); persist(); });
     $('designer-redo').addEventListener('click', () => { if (!redoStack.length) return; undoStack.push(clone(documentState)); documentState = redoStack.pop(); showError(); applyDesign(); refreshInspector(); persist(); });
@@ -544,6 +584,7 @@
     $('designer-export').addEventListener('click', async () => { try { const exported = validateDesign(documentState); if (window.qqBridgeDesktop?.exportUiDesign) { const result = await window.qqBridgeDesktop.exportUiDesign(exported); if (result && !result.canceled && result.ok === false) throw new Error('未能导出配置文件。'); if (!result?.canceled) $('designer-save-status').textContent = '界面配置已导出'; } else { const blob = new Blob([JSON.stringify(exported, null, 2)], { type: 'application/json' }); const url = URL.createObjectURL(blob); const anchor = document.createElement('a'); anchor.href = url; anchor.download = 'QQ_Service-ui-design.json'; anchor.click(); setTimeout(() => URL.revokeObjectURL(url), 1000); } showError(); } catch (error) { showError(`导出失败：${error.message}`); } });
     const intercept = event => {
       if (mode !== 'edit' || internalNavigation || ownUI(event.target)) return;
+      if (builder?.handleEditEvent(event)) return;
       if (event.type === 'keydown' && ['Escape', 'Tab'].includes(event.key)) return;
       if (event.type === 'keydown' && !['Enter', ' ', 'Spacebar'].includes(event.key) && !event.target.matches?.('input, textarea, select')) return;
       event.preventDefault(); event.stopImmediatePropagation();
@@ -554,6 +595,7 @@
     document.addEventListener('pointermove', event => { if (mode === 'edit' && !ownUI(event.target)) outlineAt(hoverOutline, resolveTarget(event.target)); else hoverOutline.hidden = true; }, true);
     const scheduleRefresh = () => { if (observerQueued) return; observerQueued = true; requestAnimationFrame(() => { observerQueued = false; applyDesign(); syncPageSelection(); }); };
     window.addEventListener('resize', scheduleRefresh);
+    document.addEventListener('qq-service-page-change', syncPageSelection);
     document.addEventListener('scroll', updateOutline, true);
     const observer = new MutationObserver(mutations => { if (!mutations.every(mutation => ownUI(mutation.target))) scheduleRefresh(); });
     observer.observe(document.body, { subtree: true, childList: true, characterData: true, attributes: true, attributeFilter: ['data-ui-key', 'data-ui-option-key', 'class', 'hidden'] });
@@ -570,6 +612,16 @@
       if (saved) documentState = validateDesign(saved);
       $('designer-save-status').textContent = '已读取本机界面设置';
     } catch (error) { showError(`读取界面设置失败：${error.message}。可用“恢复本版默认”重新保存。`); $('designer-save-status').textContent = '界面设置未载入'; }
+    builder = window.QQServiceBuilder.create({
+      mount: $('designer-builder-slot'),
+      getDocument: () => clone(documentState),
+      commitDocument: commit,
+      getMode: () => mode,
+      navigate: page => window.QQServiceNavigation.go(page),
+      getCurrentPage: () => window.QQServiceNavigation.currentPage(),
+      clearNativeSelection: () => setInspectorView('builder'),
+      showError,
+    });
     ready = true; applyDesign(); refreshInspector();
     window.QQServiceDesigner = Object.freeze({
       enter: () => setMode('edit'), exit: () => setMode('closed'), setMode,
@@ -577,6 +629,8 @@
       importDocument: async value => { commit(value); await saveChain; },
       reset: async () => { commit({ version: VERSION, edits: [] }); await saveChain; },
     });
+    const pending = window.QQServiceNavigation.pendingPage();
+    if (pending) window.QQServiceNavigation.go(window.QQServiceBuilder.getPage(pending) ? pending : 'overview');
   }
   initialize().catch(error => { console.error('界面编辑器初始化失败', error); });
 })();

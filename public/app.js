@@ -26,6 +26,7 @@
   let secretUpdates = {};
   let refreshPromise = null;
   let currentPage = 'overview';
+  let pendingBuilderPage = /^custom-[a-z]{6,24}$/.test(location.hash.slice(1)) ? location.hash.slice(1) : '';
   let currentScenarioTab = 'tasks';
   let dialogResolve = null;
   let consecutiveFailures = 0;
@@ -210,10 +211,15 @@
     return refreshPromise;
   }
   function navigate(page) {
-    if (!pageInfo[page]) page = 'overview';
+    const requested = page;
+    const custom = window.QQServiceBuilder?.getPage(page);
+    if (!Object.hasOwn(pageInfo, page) && !custom) page = 'overview';
+    if (custom || Object.hasOwn(pageInfo, requested)) pendingBuilderPage = '';
     closeGroupTriggerPicker();
     currentPage = page;
-    const [caption, eyebrow, title, description] = pageInfo[page];
+    const [caption, eyebrow, title, description] = custom
+      ? [custom.label, 'CUSTOM PAGE', custom.title, custom.description]
+      : pageInfo[page];
     $('#page-caption').textContent = caption;
     $('#page-eyebrow').textContent = eyebrow;
     $('#page-title').textContent = title;
@@ -233,6 +239,7 @@
     renderPageContext();
     renderRuntime();
     window.scrollTo({ top: 0, behavior: 'auto' });
+    document.dispatchEvent(new CustomEvent('qq-service-page-change', { detail: { page } }));
   }
   function selectScenarioTab(tab) {
     closeGroupTriggerPicker();
@@ -461,6 +468,7 @@
     const auth = state?.codexAuth?.loggedIn !== null && state?.codexAuth?.loggedIn !== undefined ? state.codexAuth : codexLoginStatus;
     $('#runtime-badge').textContent = currentPage === 'overview' ? `${accounts.length} 个账号 · ${accounts.filter((account) => account.runtime?.connected === true || account.runtime?.connectionState === 'connected').length} 个已连接` : selectedAccountId ? `${accountName()} · ${label}` : '尚无账号';
     $('#runtime-badge').className = `heading-status ${color === 'green' ? 'connected' : color === 'red' ? 'error' : ''}`;
+    $('#runtime-badge').classList.toggle('hidden', currentPage === 'settings' || Boolean(window.QQServiceBuilder?.getPage(currentPage)));
     $('#account-codex-status').textContent = auth?.message || (auth?.loggedIn === true ? '此账号的官方 Codex 已授权' : auth?.loggedIn === false ? '此账号尚未登录 Codex' : '此账号授权状态等待检查');
     $('#runtime-status').innerHTML = checkRow('QQ 实际连接', actualAccount ? `后台确认 QQ ${actualAccount}` : `尚未确认实际登录 QQ${configuredAccount ? `；配置 QQ ${configuredAccount}` : ''}`, qqStatus)
       + checkRow('消息发送权限', released ? `已释放 · ${writable} 个满足任务条件的发送群 · 私聊${state?.applied?.permissions?.privateReplies ? '已授权指定接收 QQ' : '未授权'}` : '只读：不会因连接 QQ 或登录模型而发送消息', released ? 'ready' : 'disabled')
@@ -648,18 +656,19 @@
     if (atBottom) element.scrollTop = element.scrollHeight;
   }
   function renderPageContext() {
+    const isCustomPage = Boolean(window.QQServiceBuilder?.getPage(currentPage));
     const isAccountPage = currentPage === 'connections' || currentPage === 'settings';
     $('.page-heading').classList.toggle('hidden', isAccountPage);
-    $('.account-context').classList.toggle('hidden', isAccountPage || currentPage === 'overview');
+    $('.account-context').classList.toggle('hidden', isAccountPage || isCustomPage || currentPage === 'overview');
     const configBar = $('.config-bar');
     if (currentPage === 'connections') {
       if (configBar.parentElement !== $('#account-workspace')) $('#account-workspace').append(configBar);
     } else if (configBar.previousElementSibling !== $('#global-config-slot')) {
       $('#global-config-slot').after(configBar);
     }
-    configBar.classList.toggle('hidden', currentPage === 'overview' || currentPage === 'settings' || (currentPage === 'connections' && (!expandedAccountId || !state)));
-    $('#no-accounts').classList.toggle('hidden', accounts.length !== 0 || isAccountPage);
-    $('#runtime-badge').classList.toggle('hidden', currentPage === 'settings');
+    configBar.classList.toggle('hidden', isCustomPage || currentPage === 'overview' || currentPage === 'settings' || (currentPage === 'connections' && (!expandedAccountId || !state)));
+    $('#no-accounts').classList.toggle('hidden', accounts.length !== 0 || isAccountPage || isCustomPage);
+    $('#runtime-badge').classList.toggle('hidden', currentPage === 'settings' || isCustomPage);
   }
   function scrollToFlowStage(step) {
     if (currentPage !== 'connections' || expandedAccountId !== selectedAccountId) return;
@@ -1225,6 +1234,7 @@
   }, true);
   window.addEventListener('resize', positionGroupTriggerPicker);
   document.addEventListener('input', (event) => {
+    if (event.target.closest('[data-builder-owned], #designer-builder-slot')) return;
     const input = event.target;
     if (input.id === 'account-profile-name') { if (selectedAccountId) { const editor = editors.get(selectedAccountId); if (editor) editor.profileName = input.value; } return; }
     if (input.dataset.config && draft) {
@@ -1254,6 +1264,7 @@
     }
   });
   document.addEventListener('change', (event) => {
+    if (event.target.closest('[data-builder-owned], #designer-builder-slot')) return;
     if (event.target.id === 'account-llm-source' && draft) {
       chooseSingleLlm(draft, event.target.value); markDirty(); populateForm(); renderLiveState(); return;
     }
@@ -1262,6 +1273,7 @@
     if (event.target.id === 'summary-group') rememberEditor();
   });
   document.addEventListener('click', (event) => {
+    if (event.target.closest('[data-builder-owned], #designer-builder-slot, [data-builder-nav]')) return;
     const summary = event.target.closest('.group-trigger-picker > summary');
     if (summary) {
       event.preventDefault();
@@ -1419,6 +1431,11 @@
     if (![...editors.values()].some((editor) => editor.dirty)) return;
     event.preventDefault();
     event.returnValue = '';
+  });
+  window.QQServiceNavigation = Object.freeze({
+    go: navigate,
+    currentPage: () => currentPage,
+    pendingPage: () => pendingBuilderPage,
   });
   window.addEventListener('hashchange', () => navigate(location.hash.slice(1)));
   if (window.qqBridgeDesktop?.isDesktop) {

@@ -13,7 +13,7 @@
   "scripts": {
     "start": "node src/server.mjs",
     "test": "node --test",
-    "check": "node --check src/server.mjs && node --check src/accounts.mjs && node --check src/account-service.mjs && node --check src/config.mjs && node --check src/runtime.mjs && node --check src/group-events.mjs && node --check src/providers.mjs && node --check src/store.mjs && node --check public/app.js && node --check public/designer.js && node --check desktop/main.cjs && node --check desktop/preload.cjs && node --check desktop/settings.cjs && node --check desktop/ui-design.cjs && node --check scripts/prepare-windows.mjs && node --check scripts/verify-packaged.cjs",
+    "check": "node --check src/server.mjs && node --check src/accounts.mjs && node --check src/account-service.mjs && node --check src/config.mjs && node --check src/runtime.mjs && node --check src/group-events.mjs && node --check src/providers.mjs && node --check src/store.mjs && node --check public/app.js && node --check public/designer.js && node --check desktop/main.cjs && node --check desktop/preload.cjs && node --check desktop/settings.cjs && node --check desktop/ui-design.cjs && node --check scripts/prepare-windows.mjs && node --check scripts/verify-packaged.cjs && node --check public/layout-schema.cjs && node --check public/builder.js",
     "desktop": "electron .",
     "prepare:windows": "node scripts/prepare-windows.mjs",
     "build:exe": "npm run prepare:windows && electron-builder --win portable --x64 --publish never",
