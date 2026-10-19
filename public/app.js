@@ -33,8 +33,8 @@
   let codexLoginStatus = null;
   let expandedAccountId = '';
   const setupSteps = [
-    ['identity', '账号与来源'], ['models', '模型准备'], ['connection', 'QQ 连接'],
-    ['scenarios', '账号任务'], ['permissions', '范围与授权'], ['verification', '验证效果']
+    ['identity', '账号与 AI'], ['connection', '连接 QQ'],
+    ['permissions', '任务与权限'], ['verification', '启动账号']
   ];
   const groupTriggerOptions = [
     ['mention', '@ 接入账号'], ['prefix', '命令前缀'], ['casual', '低频主动插话'],
@@ -376,7 +376,7 @@
       }
       const open = account.id === targetId;
       const header = entry.firstElementChild;
-      const headerHTML = `<span class="account-avatar">Q</span><span class="account-card-main"><strong class="account-name-line"><span data-ui-protected>${escapeHTML(account.name || 'QQ 账号')}</span>${accountOnlineBadge(online)}</strong><small data-ui-protected>QQ ${escapeHTML(account.qqNumber || '待填写')} · ${connected ? '登录身份已验证' : '接入尚未完成'}${note}</small></span><span data-ui-protected class="pill ${released ? 'pill-green' : 'pill-neutral'}">${released ? '已授权指定范围' : '默认只读'}</span><span class="account-entry-chevron" aria-hidden="true">⌄</span>`;
+      const headerHTML = `<span class="account-avatar">Q</span><span class="account-card-main"><strong class="account-name-line"><span data-ui-protected>${escapeHTML(account.name || 'QQ 账号')}</span>${accountOnlineBadge(online)}</strong><small data-ui-protected>QQ ${escapeHTML(account.qqNumber || '待填写')}${note}</small></span><span data-ui-protected class="pill ${released ? 'pill-green' : 'pill-neutral'}">${released ? '已启动' : '只读'}</span><span class="account-entry-chevron" aria-hidden="true">⌄</span>`;
       if (header.innerHTML !== headerHTML) header.innerHTML = headerHTML;
       header.classList.toggle('expanded', open); header.setAttribute('aria-expanded', String(open));
       entry.classList.toggle('expanded', open);
@@ -394,6 +394,8 @@
     $('#config-indicator').className = `config-indicator ${dirty || pending ? 'pending' : state ? 'clean' : ''}`;
     $('#config-label').textContent = !state ? '请先创建或选择账号' : dirty ? '此账号有尚未保存的修改' : pending ? '此账号已保存，等待应用' : '此账号参数已同步';
     $('#config-detail').textContent = !state ? '每个账号分别管理已保存配置和运行参数' : `${accountName()} · 已保存版本 ${state.revision ?? '—'} / 已应用 ${state.appliedRevision ?? '—'}${dirty ? ' · 输入仅在此页面' : state.secretsPendingChanges ? ' · 凭据待应用' : ''} · 应用参数后恢复只读`;
+    if (currentPage === 'connections') $('#config-label').textContent = dirty ? '有未保存的修改' : pending ? '已保存，等待应用' : '已保存';
+    renderPageContext();
     $('#discard-draft').disabled = !dirty;
     $('#save-draft').disabled = !state || !dirty;
     $('#apply-config').disabled = !state || (!dirty && !pending);
@@ -405,7 +407,7 @@
   function renderSecrets() {
     [['deepseekApiKey', '#deepseek-secret-state'], ['napcatToken', '#napcat-secret-state']].forEach(([name, selector]) => {
       const saved = Boolean(state?.secrets?.[name]);
-      $(selector).textContent = saved ? '此账号已有凭据 · 留空保留' : '此账号尚未配置';
+      $(selector).textContent = saved ? '已保存，留空保留' : '未设置';
       $(selector).classList.toggle('missing', !saved);
     });
   }
@@ -678,13 +680,14 @@
     $('.page-heading').classList.toggle('hidden', isAccountPage);
     $('.account-context').classList.toggle('hidden', isAccountPage || isCustomPage || currentPage === 'overview');
     const configBar = $('.config-bar');
-    if (currentPage === 'connections') {
-      if (configBar.parentElement !== $('#account-workspace')) $('#account-workspace').append(configBar);
-    } else if (configBar.previousElementSibling !== $('#global-config-slot')) {
-      $('#global-config-slot').after(configBar);
-    }
+    const saveFooter = $('#account-save-footer');
+    // Account actions live directly at the end of its menu, without a separate card.
+    const source = currentPage === 'connections' ? configBar : saveFooter;
+    const destination = currentPage === 'connections' ? saveFooter : configBar;
+    while (source.firstChild) destination.append(source.firstChild);
     $('#reset-account-defaults').classList.toggle('hidden', currentPage !== 'modules');
-    configBar.classList.toggle('hidden', isCustomPage || currentPage === 'records' || currentPage === 'overview' || currentPage === 'settings' || (currentPage === 'connections' && (!expandedAccountId || !state)));
+    configBar.classList.toggle('hidden', isCustomPage || isAccountPage || currentPage === 'records' || currentPage === 'overview');
+    saveFooter.classList.toggle('hidden', currentPage !== 'connections' || !expandedAccountId || !state || (!dirty && !state.pendingChanges && !state.secretsPendingChanges));
     $('#no-accounts').classList.toggle('hidden', accounts.length !== 0 || isAccountPage || isCustomPage);
     $('#runtime-badge').classList.toggle('hidden', currentPage === 'settings' || isCustomPage);
   }
@@ -700,8 +703,11 @@
       if (bounds.top < topInset || bounds.top > window.innerHeight * .72) window.scrollBy({ top: bounds.top - topInset, behavior: reducedMotion() ? 'auto' : 'smooth' });
     });
   }
+  // Backend setup codes from earlier releases still route to the merged sections.
+  function normalizeSetupStep(step) { return ({ models: 'identity', scenarios: 'permissions' })[step] ?? step; }
   function flowVersion(accountId = selectedAccountId) { return accountFlowVersions.get(accountId) ?? 0; }
   function setSetupStep(step, { scroll = true, accountId = selectedAccountId, expectedFlowVersion, focus = false } = {}) {
+    step = normalizeSetupStep(step);
     const index = setupSteps.findIndex(([id]) => id === step);
     if (index < 0 || !accountId) return;
     // Navigation is deliberately independent of readiness. A status refresh or
@@ -781,7 +787,7 @@
     for (const vendor of llmVendors) {
       const matching = entries.filter((entry) => vendorForApi(entry) === vendor.id);
       const first = matching[0];
-      options.push({ value: first?.id ?? `vendor:${vendor.id}`, label: first ? `${vendor.label} · ${first.label}` : vendor.label, key: vendor.id });
+      options.push({ value: first?.id ?? `vendor:${vendor.id}`, label: first && first.label !== vendor.label ? `${vendor.label} · ${first.label}` : vendor.label, key: vendor.id });
       if (first) used.add(first.id);
     }
     for (const entry of entries) if (!used.has(entry.id)) options.push({ value: entry.id, label: `已保存 · ${entry.label}` });
@@ -811,7 +817,11 @@
     const structure = `${selectedAccountId}:${entries.map((entry) => entry.id).join(',')}`;
     if (customApiStructure !== structure) {
       customApiStructure = structure;
-      $('#custom-api-cards').innerHTML = entries.map((entry, index) => `<section class="card custom-api-card hidden" data-api-card="${escapeHTML(entry.id)}" data-api-id="${escapeHTML(entry.id)}" data-ui-key="account.apiForm"><div class="section-heading"><div><h2 data-ui-protected>${escapeHTML(entry.label || '兼容 API')}</h2><p data-ui-key="account.apiFormNote">密钥属于当前账号。切换来源会保留此配置，留空会保留已保存密钥。</p></div></div><div class="form-grid"><label class="field">接口名称<input data-ui-protected data-config="models.apis.${index}.label" value="${escapeHTML(entry.label)}" maxlength="80" placeholder="例如：OpenAI 工作助手"></label><label class="field">模型名称<input data-ui-protected data-config="models.apis.${index}.model" value="${escapeHTML(entry.model)}" spellcheck="false" placeholder="以服务商文档中的模型 ID 为准"></label><label class="field field-wide">API 地址<input data-ui-protected data-config="models.apis.${index}.baseUrl" value="${escapeHTML(entry.baseUrl)}" placeholder="https://api.example.com/v1" spellcheck="false"><small>需要兼容 OpenAI Chat Completions 的 HTTPS 接口；不是服务商聊天网页。</small></label><label class="field field-wide">API Key <small class="api-secret-note" data-ui-protected></small><input data-ui-protected type="password" data-secret="apiKey:${escapeHTML(entry.id)}" autocomplete="new-password" value="${escapeHTML(secretUpdates[`apiKey:${entry.id}`] || '')}" placeholder="粘贴此服务商 API Key"></label><label class="field">最大输出 Token<input data-ui-protected type="number" min="128" max="131072" data-config="models.apis.${index}.maxTokens" value="${escapeHTML(entry.maxTokens ?? 1024)}"></label><label class="field">Temperature<input data-ui-protected type="number" min="0" max="2" step="0.1" data-config="models.apis.${index}.temperature" value="${escapeHTML(entry.temperature ?? 0.7)}"></label></div><div class="api-vendor-guide" data-api-guide></div><div class="card-actions"><button class="button button-secondary" data-setup-model-test="${escapeHTML(entry.id)}" data-ui-key="account.testApi"><span>保存并测试此 API · 可能产生费用</span></button></div></section>`).join('');
+      $('#custom-api-cards').innerHTML = entries.map((entry, index) => `<section class="account-model-form custom-api-card hidden" data-api-card="${escapeHTML(entry.id)}" data-api-id="${escapeHTML(entry.id)}" data-ui-key="account.apiForm">
+        <div class="form-grid"><label class="field field-wide">API Key <small class="api-secret-note" data-ui-protected></small><input data-ui-protected type="password" data-secret="apiKey:${escapeHTML(entry.id)}" autocomplete="new-password" value="${escapeHTML(secretUpdates[`apiKey:${entry.id}`] || '')}" placeholder="粘贴 API Key"></label><label class="field field-wide">模型名称<input data-ui-protected data-config="models.apis.${index}.model" value="${escapeHTML(entry.model)}" spellcheck="false" placeholder="填写服务商提供的模型 ID"></label></div>
+        <div class="account-model-tools"><button class="button button-secondary button-small" data-setup-model-test="${escapeHTML(entry.id)}" data-ui-key="account.testApi">测试连接</button><div class="api-vendor-guide" data-api-guide></div></div>
+        <details class="account-advanced" ${vendorForApi(entry) === 'custom' ? 'open' : ''}><summary>接口与高级设置</summary><div class="form-grid"><label class="field field-wide">API 地址<input data-ui-protected data-config="models.apis.${index}.baseUrl" value="${escapeHTML(entry.baseUrl)}" placeholder="https://api.example.com/v1" spellcheck="false"></label><label class="field field-wide">接口名称<input data-ui-protected data-config="models.apis.${index}.label" value="${escapeHTML(entry.label)}" maxlength="80"></label><label class="field">最大输出 Token<input data-ui-protected type="number" min="128" max="131072" data-config="models.apis.${index}.maxTokens" value="${escapeHTML(entry.maxTokens ?? 1024)}"></label><label class="field">Temperature<input data-ui-protected type="number" min="0" max="2" step="0.1" data-config="models.apis.${index}.temperature" value="${escapeHTML(entry.temperature ?? .7)}"></label></div></details>
+      </section>`).join('');
     }
     $$('[data-api-card]').forEach((card) => card.classList.toggle('hidden', card.dataset.apiCard !== active));
   }
@@ -868,7 +878,7 @@
       for (const button of $$(':scope > button', row)) {
         const consumed = button.hasAttribute('data-setup-skip') && skipped?.has(stage);
         const show = stage === activeStage && !consumed;
-        const primary = button.matches('[data-setup-save], [data-setup-apply], [data-setup-step]:not(.button-quiet)');
+        const primary = button.matches('[data-setup-save], [data-setup-apply], [data-setup-connect], [data-setup-start], [data-setup-step]:not(.button-quiet)');
         button.classList.toggle('setup-continue-button', primary);
         button.dataset.continueActive = String(show);
         button.disabled = !show;
@@ -901,7 +911,7 @@
     if (!accountSetupSteps.has(selectedAccountId)) {
       // Reopened profiles reveal their actual configured sections; no test or permission is inferred.
       const last = released ? 'verification' : hasTask || (draft.groups ?? []).length ? 'permissions' : verified ? 'scenarios' : draft.qq?.enabled || applied.qq?.enabled ? 'connection' : providers.length ? 'models' : 'identity';
-      accountSetupSteps.set(selectedAccountId, last);
+      accountSetupSteps.set(selectedAccountId, normalizeSetupStep(last));
     }
     const highest = setupSteps.findIndex(([id]) => id === accountSetupSteps.get(selectedAccountId));
     const sameAccount = renderedFlowAccount === selectedAccountId;
@@ -912,28 +922,26 @@
       setFlowDisclosure(wrapper, index <= highest, { animate: sameAccount && animate, force: !sameAccount, duration: 300 });
     });
     renderedFlowAccount = selectedAccountId;
+    renderPageContext();
     for (const entry of draft.models.apis ?? []) {
       const card = $(`[data-api-card="${CSS.escape(entry.id)}"]`);
       if (!card) continue;
-      $('h2', card).textContent = `兼容 API · ${entry.label || '自定义模型'}`;
       const guide = apiVendorGuide(entry.baseUrl);
-      $('[data-api-guide]', card).innerHTML = guide ? `<a href="${guide[1]}" target="_blank" rel="noopener noreferrer">查看 ${guide[0]} 密钥与模型说明 ↗</a><small>具体模型、可用地区与额度以服务商后台为准。</small>` : '<small>请按服务商官方文档填写兼容接口地址和模型 ID。</small>';
-      $('.api-secret-note', card).textContent = secretUpdates[`apiKey:${entry.id}`] ? '密钥已输入，尚未保存' : state.secrets?.[`apiKey:${entry.id}`] ? '此账号已保存密钥，留空保留' : '尚未配置密钥';
+      $('[data-api-guide]', card).innerHTML = guide ? `<a href="${guide[1]}" target="_blank" rel="noopener noreferrer">${guide[0]} 接口说明 ↗</a>` : '<small>请按服务商官方文档填写兼容接口地址和模型 ID。</small>';
+      $('.api-secret-note', card).textContent = secretUpdates[`apiKey:${entry.id}`] ? '密钥已输入，尚未保存' : state.secrets?.[`apiKey:${entry.id}`] ? '已保存，留空保留' : '未设置';
     }
-    $('#setup-selected-models').textContent = providers.length > 1 ? '旧配置尚未归一：请选择一个模型后明确保存，原有运行模型不会自动更改。' : selectedProvider ? `当前选择：${selectedProvider.label}。账号任务统一使用此模型；其他已保存接口与密钥会保留。` : '尚未选择模型；可先连接 QQ，稍后再配置。';
-    $('#setup-model-empty').classList.toggle('hidden', providers.length !== 0);
     $('#deepseek-model-card').classList.toggle('hidden', selectedProvider?.id !== 'deepseek');
     $('#codex-model-card').classList.toggle('hidden', selectedProvider?.id !== 'codex');
-    $('#setup-model-status').innerHTML = (selectedProvider ? [selectedProvider] : []).map((provider) => { const [description, status] = modelEvidence(provider); return checkRow(provider.label, description, status); }).join('');
-    $('#setup-connection-badge').textContent = verified ? `QQ ${actualQQ} · 身份已验证` : '尚未验证 QQ 身份';
-    $('#setup-connection-badge').className = `pill ${verified ? 'pill-green' : 'pill-neutral'}`;
     const issue = connection?.issue ?? runtime.issue;
-    $('#setup-connection-result').innerHTML = verified ? checkRow('实际连接已建立', `NapCat 返回的 QQ ${actualQQ} 与配置一致。`, 'connected') : checkRow('QQ 连接尚未确认', issue?.message ?? runtime.lastError ?? '完成扫码后，保存并连接以确认身份。', runtime.lastError ? 'error' : 'disconnected');
+    $('#setup-connection-result').innerHTML = verified ? `<p class="account-connection-ok">✓ QQ ${escapeHTML(actualQQ)} 已连接</p>` : `<p class="account-connection-pending">${escapeHTML(issue?.message ?? runtime.lastError ?? '在 NapCat 登录后，点击「连接并继续」。')}</p>`;
     if (issue?.action && !verified) $('#setup-connection-result').insertAdjacentHTML('beforeend', `<p class="connection-fix">下一步：${escapeHTML(issue.action)}</p>`);
-    $('#setup-task-summary').innerHTML = [['chat','聊天与回复'],['summary','通知汇总'],['favorites','QQ 收藏整理']].map(([id,label]) => checkRow(label, applied[id]?.enabled ? `已应用 · ${providerLabel(applied[id].provider)}` : draft[id]?.enabled ? '配置已启用，尚未应用' : '尚未启用，点击下方设置任务', applied[id]?.enabled ? 'ready' : 'disabled')).join('');
-    const permissionSummary = `${readTargets.length} 个已应用可读群，${(applied.groups ?? []).filter((group) => group.send).length} 个群选择发送。${released ? '账号已释放指定范围权限。' : '账号仍只读；选择范围并确认后，自动任务才会开始。'}${dirty || state.pendingChanges ? ' 仍有修改尚未应用。' : ''}`;
-    $('#setup-permission-summary').textContent = permissionSummary;
-    $('#setup-verification-checks').innerHTML = checkRow('QQ 登录与实际身份', verified ? `实际 QQ ${actualQQ} 与配置一致` : '尚未连接或身份未通过验证', verified ? 'passed' : 'pending') + checkRow('模型实际检查', modelsReady ? '至少一个所选模型已通过 API 测试或官方授权检查' : '尚无已通过实际检查的模型；请返回模型准备完成检查', modelsReady ? 'passed' : 'pending') + checkRow('任务参数', hasTask ? '至少一个功能已启用并应用' : '尚未应用启用的功能，请到账号功能参数选择', hasTask ? 'passed' : 'pending') + checkRow('选定范围与启动状态', permissionSummary, released ? 'passed' : 'pending');
+    const selectedTasks = [['chat','聊天回复'],['summary','通知汇总'],['favorites','收藏整理']].filter(([id]) => draft[id]?.enabled).map(([,label]) => label);
+    $('#setup-task-summary').textContent = selectedTasks.join('、') || '聊天回复、通知汇总、收藏整理';
+    const draftReads = (draft.groups ?? []).filter(group => group.read).length;
+    const draftSends = (draft.groups ?? []).filter(group => group.send).length;
+    $('#setup-permission-summary').textContent = draftReads || draftSends ? `${draftReads} 个可读群 · ${draftSends} 个可发送群` : '设置可读取和回复的群';
+    const permissionSummary = `${readTargets.length} 个可读群 · ${(applied.groups ?? []).filter(group => group.send).length} 个可发送群`;
+    $('#setup-verification-checks').innerHTML = checkRow('QQ 连接', verified ? `QQ ${actualQQ}` : '请先连接 QQ', verified ? 'passed' : 'pending') + checkRow('AI', modelsReady ? selectedProvider.label : selectedProvider ? `${selectedProvider.label} · 尚未测试或登录` : '请先选择 AI', modelsReady ? 'passed' : 'pending') + checkRow('任务与权限', hasTask ? `${permissionSummary} · ${released ? '已启动' : '启动前保持只读'}` : '请先选择要启用的功能', hasTask ? released ? 'running' : 'ready' : 'pending');
     const writable = (applied.groups ?? []).find((group) => group.read && group.send);
     const testText = !verified ? '当前应先完成 QQ 连接：确认 NapCat 已扫码并启用正向 WebSocket 服务，再验证实际 QQ 身份。' : !hasTask ? 'QQ 已连接。请先启用一个功能：聊天、通知汇总或收藏整理，并保存应用。' : !released ? '任务已配置。下一步在“选定群与消息权限”选择群、设定读取 / 发送，再确认“启动此账号”。' : applied.chat?.enabled && writable ? `现在可在群 ${writable.name || writable.id} 中，用其他群成员账号${effectiveTriggers(writable).includes('prefix') ? `发送“${writable.prefix || '/ai'} 你好”` : effectiveTriggers(writable).includes('casual') && !effectiveTriggers(writable).includes('mention') ? '发一条普通消息（概率参与可能不会立即回复，首次验证推荐改为 @ 触发）' : `@ QQ ${actualQQ} 并发送“你好”`}。查看下方接收、模型和发送计数，再核对群中回复。` : applied.summary?.enabled ? '现在可在“账号功能参数”中，选择已应用的可读工作群并运行一次通知汇总。需先在群中产生可读消息。未授权私聊发送时，结果在任务与记录中查看。' : applied.favorites?.enabled ? '现在可在“账号功能参数”中点击“读取此账号收藏”，然后整理已读取收藏。结果可在任务与记录中核对。' : '此账号已启动。请按已授权的触发条件发送测试消息，并查看任务与记录。';
     $('#setup-test-guide').textContent = testText;
@@ -977,7 +985,7 @@
     const details = Array.isArray(error?.details) && error.details.length ? error.details : [errorMessage(error)];
     const messages = [...new Set(details)];
     const sameRecipient = error.code === 'PRIVATE_RECIPIENT_SAME' || issues.some((issue) => issue.path === 'ownerQQ') && String(draft?.ownerQQ ?? '') === String(draft?.botQQ ?? '');
-    const nextStep = error.nextStep || (issues.find((issue) => issue.path?.startsWith('qq') || issue.path === 'botQQ' || issue.path === 'napcatToken' || issue.path === 'secrets.napcatToken') ? 'connection' : issues.find((issue) => issue.path?.startsWith('models') || issue.path?.startsWith('apiKey')) ? 'models' : sameRecipient ? 'permissions' : null);
+    const nextStep = normalizeSetupStep(error.nextStep || (issues.find((issue) => issue.path?.startsWith('qq') || issue.path === 'botQQ' || issue.path === 'napcatToken' || issue.path === 'secrets.napcatToken') ? 'connection' : issues.find((issue) => issue.path?.startsWith('models') || issue.path?.startsWith('apiKey')) ? 'models' : sameRecipient ? 'permissions' : null));
     const html = `<strong>${escapeHTML(errorMessage(error))}</strong><ul>${messages.map((message) => `<li>${escapeHTML(message)}</li>`).join('')}</ul>${[...new Set([error.action,...issues.map((issue) => issue.action)].filter(Boolean))].map((action) => `<p>下一步：${escapeHTML(action)}</p>`).join('')}${sameRecipient ? '<p>只想处理群消息或在仪表盘看结果，无需填写另一个 QQ。</p><button class="button button-secondary button-small" data-repair-private>关闭可选私聊投递，仅使用群与本地结果</button>' : ''}${nextStep ? `<button class="button button-quiet button-small" data-error-step="${nextStep}">前往对应配置 →</button>` : ''}`;
     for (const selector of currentPage === 'connections' && !$('#new-account-form').classList.contains('hidden') ? ['#create-account-error'] : ['#setup-error','#scenario-validation-errors']) { $(selector).innerHTML = html; $(selector).classList.remove('hidden'); }
     if (currentPage === 'connections' && $('#new-account-form').classList.contains('hidden') && setupSteps.some(([id]) => id === nextStep)) setSetupStep(nextStep);
@@ -987,6 +995,7 @@
       if (customSecret) secretPath = `apiKey:${draft?.models?.apis?.[Number(customSecret[1])]?.id}`;
       const input = $(`[data-config="${CSS.escape(issue.path || '')}"], [data-secret="${CSS.escape(secretPath || '')}"]`);
       if (!input) continue;
+      for (let ancestor = input.parentElement; ancestor; ancestor = ancestor.parentElement) { if (ancestor.tagName === 'DETAILS') ancestor.open = true; }
       input.setAttribute('aria-invalid','true');
       const message = document.createElement('small'); message.className = 'field-error'; message.textContent = issue.message;
       input.closest('.field')?.append(message);
@@ -1166,7 +1175,7 @@
     const qqNumber = $('#new-account-qq').value.trim();
     const name = $('#new-account-name').value.trim() || `QQ ${qqNumber}`;
     if (!/^[1-9]\d{3,19}$/.test(qqNumber)) throw new Error('QQ 号应为 4–20 位数字。');
-    const source = $('#new-account-llm-source').value;
+    const source = ''; // AI is selected once, inside the new account.
     const result = await api('/api/accounts', { name, platform: 'qq', qqNumber });
     if (!result.account?.id || !result.state?.draft) throw new Error('后台未返回创建后的账号配置，请刷新账号目录确认。');
     rememberEditor();
@@ -1410,7 +1419,7 @@
       const id = requireAccount(); const startedFlowVersion = flowVersion(id);
       setPath(draft, 'qq.enabled', true); markDirty(); populateForm();
       await applyConfig(id, { advanceSetup: false }); await mutate('/runtime/connect', {}, '连接检查已返回，请核对下方实际 QQ 身份。', id);
-      if (editors.get(id)?.state?.setup?.connection?.verified) setSetupStep('scenarios', { accountId: id, expectedFlowVersion: startedFlowVersion });
+      if (editors.get(id)?.state?.setup?.connection?.verified) setSetupStep('permissions', { accountId: id, expectedFlowVersion: startedFlowVersion });
     });
     if (button.hasAttribute('data-setup-start')) return withButton(button, async () => { const id = requireAccount(); await releasePermissions(id); });
     if (button.hasAttribute('data-setup-refresh')) return withButton(button, () => refreshState({ notify: true }));

@@ -136,6 +136,7 @@ async function setStyle(scope, key, value) {
 }
 async function screenshot(name) { await page.screenshot({ path: `/tmp/qq-service-next-${name}.png`, fullPage:false }); }
 async function assertPanelBounded() {
+  await page.waitForFunction(() => { const r = document.querySelector('#designer-root').getBoundingClientRect(); return r.left >= -1 && r.top >= -1 && r.right <= innerWidth + 1 && r.bottom <= innerHeight + 1; });
   const value = await page.evaluate(() => {
     const r = document.querySelector('#designer-root').getBoundingClientRect();
     return { left:r.left, top:r.top, right:r.right, bottom:r.bottom, width:innerWidth, height:innerHeight };
@@ -250,14 +251,14 @@ async function assertPanelBounded() {
   assert.equal(await oldContinue.getAttribute('data-continue-active'),'true');
   await page.evaluate(()=>{const original=Element.prototype.animate;window.qaAnimationFrames=[];Element.prototype.animate=function(frames,options){window.qaAnimationFrames.push({key:this.dataset.uiKey,actions:this.dataset.flowActions,frames,options});return original.call(this,frames,options);};});
   await oldContinue.click();
-  await until(async()=>await page.locator('[data-flow-stage="models"] .setup-continue-button').getAttribute('data-continue-active')==='true','下一阶段继续按钮未启用');
+  await until(async()=>await page.locator('[data-flow-stage="connection"] .setup-continue-button').getAttribute('data-continue-active')==='true','下一阶段继续按钮未启用');
   assert.equal(await oldContinue.isDisabled(),true);
   await until(async()=>!(await oldContinue.isVisible()),'上一继续按钮未淡出');
   assert.equal(await page.locator('.setup-continue-button[data-continue-active="true"]').count(),1);
   assert.ok(await page.evaluate(()=>window.qaAnimationFrames.some(entry=>entry.actions==='identity'&&entry.frames.at(-1).height==='0px')),'上一阶段整组按钮未执行收回动画');
   await page.locator('[data-config="botQQ"]').fill('12345004');
   assert.equal(await oldContinue.getAttribute('data-continue-active'),'false');
-  await page.locator('[data-flow-actions="models"] [data-setup-back="identity"]').click();
+  await page.locator('[data-flow-actions="connection"] [data-setup-back="identity"]').click();
   await until(async()=>await oldContinue.getAttribute('data-continue-active')==='true','返回后上一阶段继续按钮未启用');
   assert.equal(await oldContinue.getAttribute('data-continue-active'),'true');
   assert.equal(await oldContinue.isEnabled(),true);

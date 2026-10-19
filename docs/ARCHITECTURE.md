@@ -10,7 +10,7 @@ NapCat 是 QQ 连接组件，负责实际登录和消息接口；DeepSeek/Codex 
 
 | 功能 | 主要代码 | 实现方式 |
 | --- | --- | --- |
-| 多账号界面 | [public/index.html](../public/index.html)、[public/app.js](../public/app.js) | 首次仅创建入口，账号展开后显示六步引导；保留任务参数和群/私聊权限子菜单；按账号保留编辑状态 |
+| 多账号界面 | [public/index.html](../public/index.html)、[public/app.js](../public/app.js) | 首次仅创建入口，账号展开后显示四部分配置；保留任务参数和群/私聊权限子菜单；按账号保留编辑状态 |
 | EXE 与托盘 | [desktop/main.cjs](../desktop/main.cjs)、[desktop/preload.cjs](../desktop/preload.cjs) | 自绘标题栏、窗口控制与关闭偏好、单实例、原生导出、Node 子进程和全部后台生命周期 |
 | 账号目录 | [src/accounts.mjs](../src/accounts.mjs) | 稳定账号 ID、资料目录和可用/规划平台注册信息 |
 | 账号及 API | [src/server.mjs](../src/server.mjs)、[src/account-service.mjs](../src/account-service.mjs) | 本地请求隔离、账号 ID 路由、各账号异步任务与显式权限释放事务 |
@@ -47,9 +47,9 @@ flowchart LR
 
 ## 配置引导与实际完成状态
 
-账号控制初始只显示创建入口，展开单个账号后按身份、模型、QQ 连接、功能、权限、验证六步组织参数。引导读取该账号实际配置和运行状态，不把安装完成、填写 QQ、保存 Key 或登录 Codex 当成 QQ 已登录。已经完成 NapCat 登录和模型配置的用户，可直接处理尚缺的功能、群或启动授权，无需重复安装。
+账号控制初始只显示创建入口，展开单个账号后按「账号与 AI、连接 QQ、任务与权限、启动账号」四部分组织参数。保留每个账号的主下拉栏与单选 AI 下拉框；高级模型参数、NapCat 帮助和诊断默认折叠。保存状态及操作放在账号菜单末尾，不再另设状态卡。引导读取该账号实际配置和运行状态，不把安装完成、填写 QQ、保存 Key 或登录 Codex 当成 QQ 已登录。已经完成 NapCat 登录和模型配置的用户，可直接处理尚缺的功能、群或启动授权，无需重复安装。
 
-`GET /api/accounts/:id/setup/status` 返回步骤与阻塞项，同样的 `setup` 数据放入账号 `/state`。连接检查核对实际 OneBot 身份；模型测试是明确发起的真实请求，按配置与凭据指纹记录，通过后若更改模型或 Key 则失效。检查结果不能替代真实群消息/发送验收。
+前端将兼容的 `models`、`scenarios` 步骤分别映射到 `identity`、`permissions`，后端状态接口保持兼容。`GET /api/accounts/:id/setup/status` 返回步骤与阻塞项，同样的 `setup` 数据放入账号 `/state`。连接检查核对实际 OneBot 身份；模型测试是明确发起的真实请求，按配置与凭据指纹记录，通过后若更改模型或 Key 则失效。检查结果不能替代真实群消息/发送验收。
 
 最后“启动此账号”使用既有显式权限释放事务，不新建旁路授权。可选的群发送验证只在已授权可读可发群发送固定诊断文字，不调用 AI；它同样经过场景、账号和目标权限检查。不会为诊断自动扩大群范围。
 

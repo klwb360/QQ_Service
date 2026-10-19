@@ -117,9 +117,9 @@ async function assertBaseline() {
   assert.equal(await page.locator('.connection-route-tabs').count(), 0);
   assert.equal((await page.locator('.nav-link[data-page="overview"]').innerText()).replace(/^▦\s*/, '').trim(), '仪表盘');
   for (const [name, label] of Object.entries({ connections: '账号', scenarios: '权限', modules: '模块', records: '日志', settings: '设置' })) assert.equal((await page.locator(`.nav-link[data-page="${name}"]`).innerText()).slice(1).trim(), label);
-  assert.equal((await page.locator('.connection-settings h3').innerText()).trim(), 'NapCat 的连接信息');
-  assert.equal(await page.locator('#connection-native-guide .connection-instructions li strong').count(), 3);
-  for (const selector of ['[data-config="qq.wsUrl"]', '[data-secret="napcatToken"]', '[data-setup-connect]', '#setup-connection-badge']) assert.equal(await page.locator(selector).count(), 1, `业务连接控件消失: ${selector}`);
+  assert.equal(await page.locator('[data-flow-stage]').count(), 4);
+  assert.equal(await page.locator('#connection-native-guide a').count(), 1);
+  for (const selector of ['[data-config="qq.wsUrl"]', '[data-secret="napcatToken"]', '[data-setup-connect]', '#setup-connection-result']) assert.equal(await page.locator(selector).count(), 1, `业务连接控件消失: ${selector}`);
 }
 
 async function selectedElement() {
@@ -177,7 +177,7 @@ async function selectParentUntil(predicate) {
   });
   await enter();
   for (const selector of ['[data-setup-connect]', '[data-setup-model-test="deepseek"]', '[data-setup-start]']) {
-    await page.locator(selector).click();
+    await page.locator(selector).dispatchEvent('click');
     assert.equal(await page.locator('#app-dialog').evaluate(dialog => dialog.open), false);
   }
   await page.locator('#account-llm-source').click();
@@ -262,19 +262,18 @@ async function selectParentUntil(predicate) {
   pass('动态模型选项及总览卡片重建后仍保留文字和样式，业务值及真实账号统计不被覆盖');
 
   await closeEditor();
-  await page.locator('#create-account-entry').click();
   await enter();
-  const sourceValues = await page.locator('#new-account-llm-source option').evaluateAll(options => options.map(option => option.value));
-  await page.locator('#new-account-llm-source').click();
+  const sourceValues = await page.locator('#account-llm-source option').evaluateAll(options => options.map(option => option.value));
+  await page.locator('#account-llm-source').click();
   await page.locator('#designer-option-value').selectOption('deepseek');
   await page.locator('#designer-option-label').fill('QA 自定义模型名称');
   await page.locator('#designer-apply').click();
-  assert.equal(await page.locator('#new-account-llm-source option[value="deepseek"]').innerText(), 'QA 自定义模型名称');
-  assert.equal(await page.locator('#new-account-llm-source').inputValue(), '');
-  assert.deepEqual(await page.locator('#new-account-llm-source option').evaluateAll(options => options.map(option => option.value)), sourceValues);
+  assert.equal(await page.locator('#account-llm-source option[value="deepseek"]').innerText(), 'QA 自定义模型名称');
+  assert.equal(await page.locator('#account-llm-source').inputValue(), 'deepseek');
+  assert.deepEqual(await page.locator('#account-llm-source option').evaluateAll(options => options.map(option => option.value)), sourceValues);
   await closeEditor();
-  await page.locator('#new-account-llm-source').selectOption('deepseek');
-  assert.equal(await page.locator('#new-account-llm-source').inputValue(), 'deepseek');
+  await page.locator('#account-llm-source').selectOption('deepseek');
+  assert.equal(await page.locator('#account-llm-source').inputValue(), 'deepseek');
   await enter();
   pass('模型下拉可修改选项显示文字，底层value集合及选中值在编辑时不变，正常预览仍能选用模型');
 
@@ -287,7 +286,7 @@ async function selectParentUntil(predicate) {
   await page.locator('#designer-import').setInputFiles({ name: 'qa-design.json', mimeType: 'application/json', buffer: Buffer.from(JSON.stringify(exported)) });
   await until(async () => JSON.stringify(await documentValue()) === JSON.stringify(exported), '有效界面JSON导入未恢复修改');
   assert.equal((await page.locator('#refresh-state').innerText()).trim(), 'QA 自定义刷新');
-  assert.equal(await page.locator('#new-account-llm-source option[value="deepseek"]').innerText(), 'QA 自定义模型名称');
+  assert.equal(await page.locator('#account-llm-source option[value="deepseek"]').innerText(), 'QA 自定义模型名称');
   await assertBaseline();
   pass('全部恢复保留新默认界面，可通过实际文件导入重新应用后续纯展示修改');
 
@@ -325,7 +324,7 @@ async function selectParentUntil(predicate) {
   const secondUrl = await launch(); assert.notEqual(new URL(firstUrl).port,new URL(secondUrl).port);
   assert.equal((await page.locator('#refresh-state').innerText()).trim(),'QA 自定义刷新');
   assert.equal(await page.locator('[data-ui-key="overview.statLabel.accounts"]').innerText(),'QA 所有账号');
-  assert.equal(await page.locator('#account-llm-source option[value="deepseek"]').innerText(),'QA 当前账号模型');
+  assert.equal(await page.locator('#account-llm-source option[value="deepseek"]').innerText(),'QA 自定义模型名称');
   assert.deepEqual(await page.evaluate(()=>window.qqBridgeDesktop.getUiDesign()),exported);
   pass('完全退出后换随机端口重新启动，原生界面修改仍保存且自动恢复');
   await assertBaseline();
