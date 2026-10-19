@@ -248,21 +248,24 @@ async function assertPanelBounded() {
   if(await flowHeader.getAttribute('aria-expanded')!=='true')await flowHeader.click();
   const oldContinue=page.locator('[data-flow-stage="identity"] .setup-continue-button');
   assert.equal(await oldContinue.getAttribute('data-continue-active'),'true');
-  await page.evaluate(()=>{const original=Element.prototype.animate;window.qaAnimationFrames=[];Element.prototype.animate=function(frames,options){window.qaAnimationFrames.push({key:this.dataset.uiKey,frames,options});return original.call(this,frames,options);};});
+  await page.evaluate(()=>{const original=Element.prototype.animate;window.qaAnimationFrames=[];Element.prototype.animate=function(frames,options){window.qaAnimationFrames.push({key:this.dataset.uiKey,actions:this.dataset.flowActions,frames,options});return original.call(this,frames,options);};});
   await oldContinue.click();
   await until(async()=>await page.locator('[data-flow-stage="models"] .setup-continue-button').getAttribute('data-continue-active')==='true','下一阶段继续按钮未启用');
   assert.equal(await oldContinue.isDisabled(),true);
   await until(async()=>!(await oldContinue.isVisible()),'上一继续按钮未淡出');
   assert.equal(await page.locator('.setup-continue-button[data-continue-active="true"]').count(),1);
-  assert.ok(await page.evaluate(()=>window.qaAnimationFrames.some(entry=>entry.key==='ui-auto-kptxkfj'&&entry.frames.at(-1).opacity===0)),'旧按钮未执行渐隐动画');
+  assert.ok(await page.evaluate(()=>window.qaAnimationFrames.some(entry=>entry.actions==='identity'&&entry.frames.at(-1).height==='0px')),'上一阶段整组按钮未执行收回动画');
   await page.locator('[data-config="botQQ"]').fill('12345004');
+  assert.equal(await oldContinue.getAttribute('data-continue-active'),'false');
+  await page.locator('[data-flow-actions="models"] [data-setup-back="identity"]').click();
+  await until(async()=>await oldContinue.getAttribute('data-continue-active')==='true','返回后上一阶段继续按钮未启用');
   assert.equal(await oldContinue.getAttribute('data-continue-active'),'true');
   assert.equal(await oldContinue.isEnabled(),true);
   await flowHeader.click();
   await until(async()=>await page.locator(`#account-body-${secondAccount.id}`).evaluate(node=>node.getBoundingClientRect().height)<1,'账号收起后仍占位');
   await flowHeader.click();
   await until(async()=>await page.locator('#account-workspace').isVisible(),'账号未重新展开');
-  pass('配置逐步展开时旧继续按钮渐隐并禁用，下一阶段仅一个可用按钮；修改较早配置可重新继续，账号收起与展开衔接正常');
+  pass('配置逐步展开时整组按钮随旧阶段收回并禁用，下一阶段仅一个可用继续按钮；明确返回后可重新继续，账号收起与展开衔接正常');
   await navigate('modules');await switchAccount(account.id);
 
   const posts=[];

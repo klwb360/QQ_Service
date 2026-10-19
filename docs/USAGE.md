@@ -16,6 +16,8 @@
 
 填写账号与模型来源后，点击 **保存并继续**；之后沿表单下方的继续按钮完成连接、任务和范围设置。已有配置会展开与当前进度相关的部分；展开仅表示可以继续编辑，不代表模型或真实 QQ 连接已验证成功。连接部分还可展开 **环境与连接诊断** 查看问题。
 
+点击 **返回上一步**，后续部分会动画收起，底部操作回到上一段，已输入内容不丢失。**稍后准备／稍后再写** 只改变展开位置，不保存配置或启动账号；使用后该步骤的稍后按钮消失。账号重新展开时，子菜单也使用动画衔接。
+
 填写希望接入的 QQ 号，再从模型来源下拉栏选择一个 API 服务或 ChatGPT 订阅。QQ 号指**实际准备登录、交给此应用处理消息的账号**，不要求使用“小号”，也不要求同时填写另一个“本人 QQ”。新配置默认只读，没有选定群，也不会自动运行模型或发送消息。
 
 ## 2. 配置模型凭据
@@ -53,6 +55,8 @@ Codex 使用本人订阅当前可用的模型与额度。ChatGPT 网页历史、
 注意两种 Token：WebUI Token 用来打开 NapCat 管理页，OneBot Token 用来让 QQ_Service 连接消息接口，不能混填。只有 OneBot 正向 WebSocket 服务可供当前连接方式使用，反向 WebSocket 不是同一配置。
 
 已经安装 Docker Desktop 的用户也可选择应用内 Docker 安装。其前提是 [Docker Desktop](https://docs.docker.com/desktop/setup/install/windows-install/) 已运行、使用 Linux 容器后端；WSL 2、BIOS 和重启需按 Docker 提示处理。应用内安装/启动/停止 NapCat 管理的是 Docker 容器，**尚不提供原生 Windows NapCat 一键安装**。只使用 Codex 不需要 Docker。
+
+模块页保留 NapCat、Codex、DeepSeek、通知汇总和收藏五张卡片，分别从卡片进入安装、授权或配置。顶部不再提供安装勾选项或批量安装入口。
 
 Docker 使用官方 `mlikiowa/napcat-docker:v4.18.37`，首次安装记录镜像摘要，此后按摘要启动。多账号需要各自的 NapCat 实例、实际 QQ 登录资料、端口和 Token；不能让两个账号配置指向同一 OneBot 接口。原生 NapCat 由本人启动和停止，QQ_Service 不管理其进程。Docker 容器也可能在应用退出后继续运行。
 

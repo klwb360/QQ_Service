@@ -93,6 +93,6 @@ html{scrollbar-width:none}html::-webkit-scrollbar{width:0;height:0}
 #page-settings .settings-options label{margin:0;padding:15px;min-width:0}
 #page-settings .section-heading{margin-bottom:17px}
 #page-settings .card-actions{margin-top:17px}
-.setup-stage-actions:has(>.setup-continue-button[data-continue-active="false"]):not(:has(>button:not(.hidden):not(.setup-continue-button))){margin-top:0;padding-top:0;border-top:0}
+.setup-stage-actions.layout-animating{overflow:hidden}
 .setup-continue-button[data-continue-active="false"]{pointer-events:none}
 @media(max-width:850px){#page-settings .settings-options{grid-template-columns:1fr}}

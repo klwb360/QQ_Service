@@ -50,7 +50,8 @@
     { id: 'custom', label: '自定义兼容 API', url: 'https://api.example.com/v1', hosts: [] }
   ];
   const accountSetupSteps = new Map();
-  const accountContinueStages = new Map();
+  const accountFlowVersions = new Map();
+  const accountSkippedStages = new Map();
   const layoutAnimations = new WeakMap();
   let renderedFlowAccount = '';
   const reducedMotion = () => window.matchMedia('(prefers-reduced-motion: reduce)').matches;
@@ -86,8 +87,6 @@
     if (populate) populateForm();
   }
   function markDirty(editedElement = document.activeElement) {
-    const editedStage = editedElement?.closest?.('[data-flow-stage]')?.dataset.flowStage;
-    if (editedStage && editedStage !== 'verification') accountContinueStages.set(selectedAccountId, editedStage);
     dirty = true;
     editVersion += 1;
     rememberEditor();
@@ -321,7 +320,7 @@
     if (reducedMotion() || currentPage !== 'connections' || Math.abs(to - from) < 1) {
       onFinish?.(); return;
     }
-    const animation = element.animate([{ height: `${from}px`, opacity: from === 0 ? .5 : 1 }, { height: `${to}px`, opacity: to === 0 ? .5 : 1 }], { duration, easing: 'cubic-bezier(.2,.7,.2,1)' });
+    const animation = element.animate([{ height: `${from}px`, opacity: from === 0 ? 0 : 1 }, { height: `${to}px`, opacity: to === 0 ? 0 : 1 }], { duration, easing: 'cubic-bezier(.2,.7,.2,1)' });
     layoutAnimations.set(element, animation);
     element.classList.add('layout-animating');
     animation.finished.then(() => {
@@ -338,6 +337,15 @@
     body.style.height = open ? 'auto' : '0px';
     const after = open ? body.scrollHeight : 0;
     animateLayout(body, before, after);
+    // Reopening an account also reveals its existing child menu, rather than
+    // snapping already configured sections back into view.
+    $$('.setup-flow-content', body).forEach((content, index) => {
+      layoutAnimations.get(content)?.cancel(); layoutAnimations.delete(content);
+      if (!open || content.parentElement.inert || reducedMotion() || currentPage !== 'connections') return;
+      const animation = content.animate([{ opacity: 0, transform: 'translateY(-5px)' }, { opacity: 1, transform: 'translateY(0)' }], { duration: 240, delay: Math.min(index, 5) * 22, easing: 'ease-out', fill: 'backwards' });
+      layoutAnimations.set(content, animation);
+      animation.finished.then(() => { if (layoutAnimations.get(content) === animation) layoutAnimations.delete(content); }).catch(() => {});
+    });
   }
   function renderAccountAccordions(cards) {
     const directory = $('#account-cards');
@@ -392,7 +400,7 @@
     $('#release-permissions').disabled = !state;
     $('#reset-account-defaults').disabled = !state;
     $('#revoke-permissions').disabled = !state || state.applied?.permissions?.released !== true;
-    $$('[data-action], [data-module-action], #setup-install, #add-group, #open-napcat, #export-config, #rollback-config, #preview-policy').forEach((button) => { button.disabled = !state; });
+    $$('[data-action], [data-module-action], #add-group, #open-napcat, #export-config, #rollback-config, #preview-policy').forEach((button) => { button.disabled = !state; });
   }
   function renderSecrets() {
     [['deepseekApiKey', '#deepseek-secret-state'], ['napcatToken', '#napcat-secret-state']].forEach(([name, selector]) => {
@@ -692,15 +700,22 @@
       if (bounds.top < topInset || bounds.top > window.innerHeight * .72) window.scrollBy({ top: bounds.top - topInset, behavior: reducedMotion() ? 'auto' : 'smooth' });
     });
   }
-  function setSetupStep(step, { scroll = true, accountId = selectedAccountId } = {}) {
+  function flowVersion(accountId = selectedAccountId) { return accountFlowVersions.get(accountId) ?? 0; }
+  function setSetupStep(step, { scroll = true, accountId = selectedAccountId, expectedFlowVersion, focus = false } = {}) {
     const index = setupSteps.findIndex(([id]) => id === step);
     if (index < 0 || !accountId) return;
-    const previous = setupSteps.findIndex(([id]) => id === accountSetupSteps.get(accountId));
-    accountSetupSteps.set(accountId, setupSteps[Math.max(index, previous)][0]);
-    accountContinueStages.set(accountId, step);
+    // Navigation is deliberately independent of readiness. A status refresh or
+    // late save/connect result must not reopen sections the user just closed.
+    if (expectedFlowVersion !== undefined && flowVersion(accountId) !== expectedFlowVersion) return;
+    accountSetupSteps.set(accountId, step);
+    accountFlowVersions.set(accountId, flowVersion(accountId) + 1);
     if (accountId !== selectedAccountId) return;
     renderSetupGuide({ animate: true });
     if (scroll) scrollToFlowStage(step);
+    if (focus) requestAnimationFrame(() => {
+      if (selectedAccountId !== accountId || accountSetupSteps.get(accountId) !== step) return;
+      $(`[data-flow-stage="${step}"] .setup-stage-actions > button:not(.hidden):not(:disabled)`)?.focus({ preventScroll: true });
+    });
   }
   function apiVendorGuide(baseUrl) {
     const links = {
@@ -829,29 +844,41 @@
     if (secretUpdates[provider.secret]) return ['密钥已输入，尚未保存与测试', 'pending'];
     return state?.secrets?.[provider.secret] ? ['密钥已保存，尚未通过实际模型测试', 'unknown'] : ['尚未填写 API Key', 'missing'];
   }
-  function renderContinueButtons(highest, animate) {
-    const activeStage = accountContinueStages.get(selectedAccountId) ?? setupSteps[highest]?.[0];
+  function setFlowDisclosure(element, open, { animate = false, force = false, duration = 280 } = {}) {
+    if (!force && element.dataset.flowOpen === String(open)) return;
+    const before = element.classList.contains('hidden') ? 0 : element.getBoundingClientRect().height;
+    layoutAnimations.get(element)?.cancel(); layoutAnimations.delete(element);
+    element.classList.remove('layout-animating');
+    element.dataset.flowOpen = String(open);
+    element.inert = !open;
+    element.setAttribute('aria-hidden', String(!open));
+    if (open) element.classList.remove('hidden');
+    const finish = () => { if (element.dataset.flowOpen === String(open)) element.classList.toggle('hidden', !open); };
+    if (!animate || reducedMotion() || currentPage !== 'connections') { finish(); return; }
+    animateLayout(element, before, open ? element.scrollHeight : 0, { onFinish: finish, duration });
+  }
+  function renderContinueButtons(highest, animate, force = false) {
+    const activeStage = setupSteps[highest]?.[0];
+    const skipped = accountSkippedStages.get(selectedAccountId);
     $$('[data-flow-stage]').forEach((section) => {
       const stage = section.dataset.flowStage;
-      $$('.setup-stage-actions > button[data-setup-save], .setup-stage-actions > button[data-setup-apply], .setup-stage-actions > button[data-setup-step]:not(.button-quiet)', section).forEach((button) => {
-        const show = stage === activeStage;
-        button.classList.add('setup-continue-button');
-        if (button.dataset.continueActive === String(show)) return;
+      const row = $('.setup-stage-actions', section);
+      if (!row) return;
+      row.dataset.flowActions = stage;
+      for (const button of $$(':scope > button', row)) {
+        const consumed = button.hasAttribute('data-setup-skip') && skipped?.has(stage);
+        const show = stage === activeStage && !consumed;
+        const primary = button.matches('[data-setup-save], [data-setup-apply], [data-setup-step]:not(.button-quiet)');
+        button.classList.toggle('setup-continue-button', primary);
         button.dataset.continueActive = String(show);
         button.disabled = !show;
         button.inert = !show;
         button.setAttribute('aria-hidden', String(!show));
-        layoutAnimations.get(button)?.cancel(); layoutAnimations.delete(button);
-        if (show) button.classList.remove('hidden');
-        if (!animate || reducedMotion() || currentPage !== 'connections') { button.classList.toggle('hidden', !show); return; }
-        const animation = button.animate(show ? [{ opacity: 0, transform: 'translateY(5px)' }, { opacity: 1, transform: 'translateY(0)' }] : [{ opacity: 1 }, { opacity: 0 }], { duration: show ? 230 : 160, easing: 'ease-out' });
-        layoutAnimations.set(button, animation);
-        animation.finished.then(() => {
-          if (layoutAnimations.get(button) !== animation) return;
-          layoutAnimations.delete(button);
-          if (!show && button.dataset.continueActive === 'false') button.classList.add('hidden');
-        }).catch(() => {});
-      });
+        // The whole footer fades with its stage. A consumed skip control stays
+        // removed even when the user returns to this stage later in the session.
+        button.classList.toggle('hidden', Boolean(consumed));
+      }
+      setFlowDisclosure(row, stage === activeStage, { animate, force, duration: 230 });
     });
   }
   function renderSetupGuide({ animate = false } = {}) {
@@ -878,15 +905,11 @@
     }
     const highest = setupSteps.findIndex(([id]) => id === accountSetupSteps.get(selectedAccountId));
     const sameAccount = renderedFlowAccount === selectedAccountId;
+    $('#account-workspace').dataset.flowActive = setupSteps[highest][0];
     // Reveal the next action before measuring its expanding section.
-    renderContinueButtons(highest, animate && sameAccount);
+    renderContinueButtons(highest, animate && sameAccount, !sameAccount);
     $$('[data-flow-stage]').forEach((wrapper, index) => {
-      if (!sameAccount) { layoutAnimations.get(wrapper)?.cancel(); layoutAnimations.delete(wrapper); wrapper.classList.remove('layout-animating'); }
-      const show = index <= highest;
-      const wasHidden = wrapper.classList.contains('hidden');
-      wrapper.classList.toggle('hidden', !show);
-      wrapper.inert = !show;
-      if (show && wasHidden && sameAccount && animate) animateLayout(wrapper, 0, wrapper.scrollHeight, { duration: 300 });
+      setFlowDisclosure(wrapper, index <= highest, { animate: sameAccount && animate, force: !sameAccount, duration: 300 });
     });
     renderedFlowAccount = selectedAccountId;
     for (const entry of draft.models.apis ?? []) {
@@ -939,7 +962,7 @@
   async function testSetupModel(provider) {
     const id = requireAccount();
     if (!await openDialog(`测试 ${providerLabel(provider)}`, '<p>将保存并应用这个账号当前参数，再向所选模型发送一次小型请求。可能消耗 API 费用或订阅额度。</p><p>应用后账号恢复只读，测试不向 QQ 发送消息。</p>', '保存并测试')) return;
-    await applyConfig(id);
+    await applyConfig(id, { advanceSetup: false });
     const result = await mutate('/test/model', { provider }, undefined, id);
     await openDialog('模型实际测试结果', `<pre class="result-box">${escapeHTML(JSON.stringify(result, null, 2))}</pre><p>模型测试成功仍需单独完成 QQ 连接及群权限设置。</p>`, '知道了');
     renderSetupGuide();
@@ -1046,8 +1069,15 @@
   });
   async function withButton(button, action) {
     if (button?.classList.contains('is-loading')) return;
+    const flowContext = button?.closest('[data-flow-stage]') ? { accountId: selectedAccountId, version: flowVersion() } : null;
     button?.classList.add('is-loading');
-    try { clearValidationErrors(); await action(); } catch (error) { renderValidationErrors(error); toast(errorMessage(error), 'error'); }
+    try { clearValidationErrors(); await action(); } catch (error) {
+      // A request still reports its failure, but never redirects or annotates a
+      // different account/stage after the user has moved elsewhere.
+      const currentFlow = !flowContext || selectedAccountId === flowContext.accountId && flowVersion() === flowContext.version;
+      if (currentFlow) renderValidationErrors(error);
+      toast(`${!currentFlow ? `「${accountName(flowContext.accountId)}」` : ''}${errorMessage(error)}`, 'error');
+    }
     finally { button?.classList.remove('is-loading'); }
   }
   async function mutate(path, body, message, id = selectedAccountId) {
@@ -1090,8 +1120,9 @@
     acceptState(result, { accountId: id, replaceDraft: true, expectedEditVersion: sentVersion });
     toast(`「${accountName(id)}」功能参数已还原并保存，等待应用；身份、连接和模型凭据已保留。`, 'info');
   }
-  async function applyConfig(id = selectedAccountId) {
+  async function applyConfig(id = selectedAccountId, { advanceSetup = true } = {}) {
     requireAccount(id);
+    const startedFlowVersion = flowVersion(id);
     if (id === selectedAccountId) rememberEditor();
     const needsModelSync = taskModelNeedsSync(editors.get(id).draft);
     if (editors.get(id).dirty || needsModelSync) await saveDraft({ forApply: true, accountId: id });
@@ -1099,11 +1130,12 @@
     const revision = editors.get(id).state.revision;
     const result = await accountApi('/config/apply', { revision }, 'POST', id);
     acceptState(result, { accountId: id });
-    if (['chat', 'summary', 'favorites'].some((name) => result.applied?.[name]?.enabled)) setSetupStep('permissions', { accountId: id, scroll: false });
+    if (advanceSetup && ['chat', 'summary', 'favorites'].some((name) => result.applied?.[name]?.enabled)) setSetupStep('permissions', { accountId: id, scroll: false, expectedFlowVersion: startedFlowVersion });
     toast(`「${accountName(id)}」参数已应用，发送权限恢复只读。需要发送时，请到「选定群与消息权限」检查并释放。`, 'info');
   }
   async function releasePermissions(accountId = selectedAccountId) {
     const id = requireAccount(accountId);
+    const startedFlowVersion = flowVersion(id);
     if (id === selectedAccountId) rememberEditor();
     const snapshot = clone(editors.get(id).draft);
     const confirmedModel = assertLlmChoice(snapshot);
@@ -1118,7 +1150,7 @@
     const revision = editors.get(id).state.revision;
     const result = await accountApi('/permissions/release', { revision }, 'POST', id);
     acceptState(result, { accountId: id });
-    setSetupStep('verification', { accountId: id, scroll: false });
+    setSetupStep('verification', { accountId: id, scroll: false, expectedFlowVersion: startedFlowVersion });
     toast(`「${accountName(id)}」账号已启动，后台仅按已授权范围执行。请进入验证效果，核对真实结果。`, 'info');
     return true;
   }
@@ -1355,16 +1387,32 @@
       if (destination === 'groups') requestAnimationFrame(() => { const card = $('.group-table').closest('.card'); card.tabIndex = -1; card.focus({ preventScroll: true }); card.scrollIntoView({ behavior: reducedMotion() ? 'auto' : 'smooth', block: 'start' }); });
       return;
     }
+    if (button.dataset.setupBack) return setSetupStep(button.dataset.setupBack, { focus: true });
+    if (button.dataset.setupSkip) {
+      const stage = button.closest('[data-flow-stage]')?.dataset.flowStage;
+      if (!selectedAccountId || !stage) return;
+      const skipped = accountSkippedStages.get(selectedAccountId) ?? new Set();
+      skipped.add(stage); accountSkippedStages.set(selectedAccountId, skipped);
+      return setSetupStep(button.dataset.setupSkip, { focus: true });
+    }
     if (button.dataset.setupStep) return setSetupStep(button.dataset.setupStep);
-    if (button.dataset.setupSave) return withButton(button, async () => { const id = requireAccount(); await saveDraft({ accountId: id }); setSetupStep(button.dataset.setupSave, { accountId: id }); });
-    if (button.dataset.setupApply) return withButton(button, async () => { const id = requireAccount(); await applyConfig(id); setSetupStep(button.dataset.setupApply, { accountId: id }); });
-    if (button.hasAttribute('data-setup-connect')) return withButton(button, async () => {
-      const id = requireAccount();
-      setPath(draft, 'qq.enabled', true); markDirty(); populateForm();
-      await applyConfig(id); await mutate('/runtime/connect', {}, '连接检查已返回，请核对下方实际 QQ 身份。', id);
-      if (editors.get(id)?.state?.setup?.connection?.verified) setSetupStep('scenarios', { accountId: id });
+    if (button.dataset.setupSave) return withButton(button, async () => {
+      const id = requireAccount(); const startedFlowVersion = flowVersion(id);
+      await saveDraft({ accountId: id });
+      setSetupStep(button.dataset.setupSave, { accountId: id, expectedFlowVersion: startedFlowVersion });
     });
-    if (button.hasAttribute('data-setup-start')) return withButton(button, async () => { const id = requireAccount(); const started = await releasePermissions(id); if (started) setSetupStep('verification', { accountId: id }); });
+    if (button.dataset.setupApply) return withButton(button, async () => {
+      const id = requireAccount(); const startedFlowVersion = flowVersion(id);
+      await applyConfig(id, { advanceSetup: false });
+      setSetupStep(button.dataset.setupApply, { accountId: id, expectedFlowVersion: startedFlowVersion });
+    });
+    if (button.hasAttribute('data-setup-connect')) return withButton(button, async () => {
+      const id = requireAccount(); const startedFlowVersion = flowVersion(id);
+      setPath(draft, 'qq.enabled', true); markDirty(); populateForm();
+      await applyConfig(id, { advanceSetup: false }); await mutate('/runtime/connect', {}, '连接检查已返回，请核对下方实际 QQ 身份。', id);
+      if (editors.get(id)?.state?.setup?.connection?.verified) setSetupStep('scenarios', { accountId: id, expectedFlowVersion: startedFlowVersion });
+    });
+    if (button.hasAttribute('data-setup-start')) return withButton(button, async () => { const id = requireAccount(); await releasePermissions(id); });
     if (button.hasAttribute('data-setup-refresh')) return withButton(button, () => refreshState({ notify: true }));
     if (button.dataset.setupModelTest) return withButton(button, () => testSetupModel(button.dataset.setupModelTest));
     if (button.dataset.connectionRoute) return selectConnectionRoute(button.dataset.connectionRoute);
@@ -1430,13 +1478,6 @@
     if ((editors.get(id).draft.groups ?? []).some((group) => group.id === groupId)) throw new Error('这个群已在该账号的配置中。');
     addDraftGroups(id, [{ id: groupId, name: $('#new-group-name').value.trim(), mode: $('#new-group-mode').value }]);
     toast(`「${accountName(id)}」已加入只读配置；保存应用后开始采集。`, 'info');
-  }));
-  $('#setup-install').addEventListener('click', (event) => withButton(event.currentTarget, async () => {
-    const id = requireAccount();
-    const modules = ['napcat', 'codex'].filter((moduleId) => $(`#setup-${moduleId}`).checked);
-    if (!modules.length) throw new Error('请至少选择一个模块。已有原生 NapCat 时无需勾选 NapCat。');
-    await mutate('/setup/install', { modules }, '安装任务已提交。NapCat 选项使用 Docker；安装不会自动登录或释放权限。', id);
-    if (selectedAccountId === id) navigate('modules');
   }));
   $('#open-napcat').addEventListener('click', (event) => withButton(event.currentTarget, openNapcatGuide));
   $('#export-config')?.addEventListener('click', (event) => withButton(event.currentTarget, async () => {
