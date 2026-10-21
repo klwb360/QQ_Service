@@ -108,7 +108,12 @@ process.on('SIGTERM', () => { terminating = true; if (childClosed) process.exit(
 fs.writeFileSync(${JSON.stringify(marker)}, JSON.stringify({ parent: process.pid, child: child.pid }));
 setInterval(() => {}, 1000);
 `, { mode: 0o700 });
-  const fixture = startBackend(path.join(fixtureDir, 'data'), { PATH: `${binDir}${path.delimiter}${process.env.PATH}` });
+  const dataDir = path.join(fixtureDir, 'data');
+  fs.mkdirSync(dataDir);
+  // This fixture specifically verifies Docker command-tree cleanup. New users
+  // default to native mode, which deliberately performs no Docker checks.
+  fs.writeFileSync(path.join(dataDir, 'napcat-settings.json'), JSON.stringify({ schemaVersion: 1, mode: 'docker', executablePath: '', revision: 0 }));
+  const fixture = startBackend(dataDir, { PATH: `${binDir}${path.delimiter}${process.env.PATH}` });
   let pids;
   try {
     await fixture.ready;

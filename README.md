@@ -1,6 +1,6 @@
 # QQ_Service
 
-**在自己的 Windows 电脑上，按步骤连接 QQ，配置多个 AI 和个人 GPT 订阅。**
+**在自己的 Windows 电脑上，按步骤连接 QQ，选择 AI 模型或个人 GPT 订阅。**
 
 [![Windows build](https://github.com/klwb360/QQ_Service/actions/workflows/windows.yml/badge.svg?branch=main)](https://github.com/klwb360/QQ_Service/actions/workflows/windows.yml)
 [![Release](https://img.shields.io/github/v/release/klwb360/QQ_Service)](https://github.com/klwb360/QQ_Service/releases/latest)
@@ -8,9 +8,16 @@
 
 [下载 Windows EXE](https://github.com/klwb360/QQ_Service/releases/latest) · [使用指南](docs/USAGE.md) · [无需 Docker 接入 QQ](docs/NATIVE_NAPCAT_WINDOWS.md) · [功能实现与架构](docs/ARCHITECTURE.md) · [开发指南](docs/DEVELOPMENT.md) · [验证记录](docs/VALIDATION.md)
 
-QQ_Service 是支持多个 QQ 账号同时在线的本地助手。「账号控制」从一个创建入口开始，每个账号展开后按步骤完成模型、QQ 登录、功能与权限配置，并显示当前卡在哪一步、接下来该做什么。支持 DeepSeek、多组 OpenAI 兼容 API，以及通过官方 Codex CLI 使用本人 ChatGPT 订阅。**新账号默认只读；填入 QQ 号、API Key 或登录 Codex 都不会自动运行场景或获得发送权限。**
+QQ_Service 是支持多个 QQ 账号同时在线的本地助手。「账号控制」集中管理创建与配置：每个账号是一条可展开的菜单，从账号信息开始逐段向下完成模型、QQ 登录、功能与权限配置，已填写的内容保留在上方。总览只显示关键统计、运行状态和最近任务，统计卡片可点击进入对应页面。支持 DeepSeek、多组 OpenAI 兼容 API，以及通过官方 Codex CLI 使用本人 ChatGPT 订阅。**新账号默认只读；填入 QQ 号、API Key 或登录 Codex 都不会自动运行场景或获得发送权限。**
 
-![QQ_Service 展开账号后的六步配置引导](docs/assets/account-control.png)
+![QQ_Service 展开账号后的连续配置面板](docs/assets/account-control.png)
+
+<details>
+<summary>查看简化后的总览</summary>
+
+![QQ_Service 关键统计、运行状态与最近任务](docs/assets/overview-simplified.png)
+
+</details>
 
 <details>
 <summary>首次使用：只有创建账号入口</summary>
@@ -33,21 +40,28 @@ QQ_Service 是支持多个 QQ 账号同时在线的本地助手。「账号控�
 
 </details>
 
+<details>
+<summary>查看全局 NapCat 接入设置</summary>
+
+![全局选择本地安装或 Docker](docs/assets/settings-napcat.png)
+
+</details>
+
 *界面截图不包含真实账号、凭据或群消息。Windows EXE 提供独立窗口与托盘。*
 
 ## 下载与快速开始
 
-文档版本：**v0.4.1**，适用于 **Windows 10/11 x64**。下载文件以对应 Release 的实际发布资产为准。
+当前版本：**v0.5.0**，适用于 **Windows 10/11 x64**。
 
 | 下载 | 说明 |
 | --- | --- |
-| [QQ_Service-0.4.1-Windows-x64.exe](https://github.com/klwb360/QQ_Service/releases/download/v0.4.1/QQ_Service-0.4.1-Windows-x64.exe) | 便携应用，自带 Node.js 和 npm，双击启动 |
-| [SHA256 校验文件](https://github.com/klwb360/QQ_Service/releases/download/v0.4.1/QQ_Service-0.4.1-Windows-x64.exe.sha256) | 用于核对下载文件 |
+| [QQ_Service-0.5.0-Windows-x64.exe](https://github.com/klwb360/QQ_Service/releases/download/v0.5.0/QQ_Service-0.5.0-Windows-x64.exe) | 便携应用，自带 Node.js 和 npm，双击启动 |
+| [SHA256 校验文件](https://github.com/klwb360/QQ_Service/releases/download/v0.5.0/QQ_Service-0.5.0-Windows-x64.exe.sha256) | 用于核对下载文件 |
 | [最新发布与更新说明](https://github.com/klwb360/QQ_Service/releases/latest) | 查看已发布版本和更新记录 |
 
-1. **创建账号配置**：首次进入「账号控制」只显示创建入口。输入希望接入的 QQ 号，可同时选择 API Key 和 ChatGPT 订阅。每个账号有自己的展开面板、参数与数据，可以同时运行。
-2. **准备模型**：填写 DeepSeek Key，按需添加多组兼容 API 的名称、地址、模型和 Key；或安装 Codex CLI 并完成官方 ChatGPT 授权。为聊天、通知和收藏分别选择模型，多模型可在同一账号使用。
-3. **实际登录 QQ**：NapCat 是 QQ 登录与消息接口组件。按 [Windows 原生指南](docs/NATIVE_NAPCAT_WINDOWS.md) 部署并扫码登录，无需 Docker；已有 Docker 的用户也可使用应用内安装。填入 QQ 号不是登录，连接检查必须显示实际登录身份一致。
+1. **创建账号配置**：创建入口只在「账号控制」显示。输入希望接入的 QQ 号，从下拉栏选择一个 API 厂商或 ChatGPT 订阅。每个账号的栏头与展开内容连为同一菜单，可点击栏头展开或收起，参数与数据分别保存，多个账号可以同时运行。完成一部分并继续后，下一部分带动画向下展开，之前的表单保持可见，无需切换顶部步骤标签。
+2. **准备模型**：选择 DeepSeek、兼容 API 厂商并填写模型与 Key，或安装 Codex CLI 完成官方 ChatGPT 授权；当前账号的任务使用所选模型。
+3. **实际登录 QQ**：NapCat 是 QQ 登录与消息接口组件。先在「设置」全局选择本地安装或 Docker。本地方式按 [原生指南](docs/NATIVE_NAPCAT_WINDOWS.md) 安装并选择启动文件；Docker 方式在「模块」安装。回到「连接 QQ」点击 **打开 NapCat → 打开登录页 → 连接并继续**，核对实际登录账号。
 4. **选择账号功能**：按需启用聊天回复、工作通知汇总或收藏整理，设置触发方式、模型和计划。暂不使用的功能可以关闭。
 5. **选择群并启动**：到「选定群与消息权限」读取实际已加入群，明确读取、发送范围，确认后点击 **启动此账号**，显式授予已配置权限。只在面板看通知无需另一个 QQ 号，也不需要私聊发送权限。
 6. **验证一次完整流程**：先确认 QQ 连接和身份，再检查模型；让选定群产生一条新消息，确认记录，最后按授权范围测试汇总或回复。面板将缺少的参数、连接或授权列为待办，见 [首次连接验证](docs/USAGE.md#6-验证一次完整流程)。
@@ -61,9 +75,9 @@ EXE 当前未签名。详细操作、私聊命令与备份见 [使用指南](doc
 | 多账号控制 | 本地账号目录保存稳定 ID；每账号独立配置、凭据、SQLite、QQ 连接、任务队列和 Codex 登录目录 |
 | 权限配置 | 账号功能参数与群/私聊权限分开；默认只读，独立释放/撤销入口，自动场景和发送由后台分别核对 |
 | Windows 应用 | Electron 自绘标题栏和窗口按钮，管理单实例与托盘；附带 Node.js 运行本地后台 |
-| 一键安装 | 每账号执行固定安装动作：Docker 安装 NapCat，npm 安装官方 Codex CLI；原生 NapCat 可手动接入 |
+| 一键安装 | NapCat 接入方式全局设置；本地安装后选择启动文件，或按账号安装 Docker 容器；Codex 经 npm 安装 |
 | 群聊回复 | 获准读取及发送的群可组合勾选 @、前缀、低频插话及群事件触发，调用所选 API 模型；带冷却时间 |
-| 多 AI 配置 | 提供 DeepSeek、OpenAI、百炼、智谱、Kimi、硅基流动及自定义兼容 API 选项；聊天、通知、收藏分别选择模型 |
+| 多 AI 配置 | 提供 DeepSeek、OpenAI、百炼、智谱、Kimi、硅基流动及自定义兼容 API 选项；每个账号从下拉栏选择一个模型来源，已保存的其他接口参数可保留 |
 | GPT 个人订阅 | 使用本人已登录的官方 Codex CLI，处理本人私聊及明确发起或授权的个人整理任务 |
 | 通知汇总 | 当前账号的可读工作群消息存入 SQLite，手动或定时交给所选模型解释；默认保存在本地，可授权私聊发送 |
 | 收藏整理 | 读取当前登录账号的收藏列表摘要，使用独立选择的整理模型，保存收藏 ID 和原摘要 |

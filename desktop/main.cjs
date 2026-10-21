@@ -478,6 +478,16 @@ function setupWindowHandlers() {
     trusted(event);
     return desktopSettings.get();
   });
+  ipcMain.handle('qqbridge:napcat-choose-executable', async event => {
+    trusted(event);
+    const selection = await dialog.showOpenDialog(window, {
+      title: '选择 NapCat 启动文件',
+      properties: ['openFile'],
+      filters: [{ name: 'NapCat 启动文件', extensions: ['bat', 'cmd', 'exe'] }],
+    });
+    trusted(event);
+    return selection.canceled ? { canceled: true } : { canceled: false, path: selection.filePaths[0] };
+  });
   ipcMain.handle('qqbridge:desktop-settings-update', async (event, value) => {
     trusted(event);
     try {
