@@ -115,6 +115,7 @@ Codex 通过官方 `login --device-auth` 登录，每个账号独立 `CODEX_HOME
 
 ```text
 accounts.json                  账号目录与稳定 ID
+napcat-settings.json           全局安装方式、启动文件和独立版本号
 accounts/<ID>/config.json      新账号草稿、应用与上一版本
 accounts/<ID>/vault.json       新账号加密凭据
 accounts/<ID>/vault.key        该账号加密密钥
@@ -126,7 +127,11 @@ accounts/<ID>/codex-workspace/ 独立文字任务工作目录
 
 每账号自己的 `module-state.json` 记录安装结果。Docker 容器名由项目目录稳定标识生成，并核对项目标签；登录卷、OneBot Token、WebUI Token 和端口各自独立，不接管同名的非本项目容器。NapCat 官方镜像固定版本，首次安装记录 RepoDigest 后按摘要启动；进程使用固定 argv 与 `shell: false`。
 
-原生 NapCat 不依赖 Docker，运行时直接连接其本机 OneBot；应用安装按钮仍只管理 Docker。原生多账号实例和 QQ 登录资料由用户按上游说明准备、启动及备份，见 [原生指南](NATIVE_NAPCAT_WINDOWS.md)。
+`src/napcat-settings.mjs` 保存所有账号共用的安装方式与启动文件。设置可在零账号时保存，使用独立版本校验，并在任一账号安装或应用参数期间拒绝切换；切换本身不启动程序、不应用业务参数、不释放权限。已有 Docker 安装优先迁移为 Docker。
+
+原生方式不调用 Docker/WSL 检查。`src/napcat-native.mjs` 仅启动用户明确选择的本机 `.exe/.bat/.cmd`：固定参数、路径校验及受限环境，不猜测登录参数、不覆盖第三方配置；成功只表示已打开，不宣称 QQ 在线。原生多账号由上游管理工具或独立实例分别登录，再连接各自 OneBot/WebUI 端口，见 [原生指南](NATIVE_NAPCAT_WINDOWS.md)。
+
+`/api/napcat/settings` 是应用级设置接口；`/api/accounts/:id/napcat/open` 通过全局设置版本校验后进入该账号任务队列。QQ 连接地址、Token、登录身份与发送权限仍属于各账号。
 
 AES-GCM 避免配置与导出出现明文凭据，密钥同目录，因此不隔离拥有同一操作系统目录访问权的用户。Codex 认证文件由官方 CLI 管理，仪表盘不读取。日志与任务带明确账号标识，并对所有账号的凭据脱敏。
 

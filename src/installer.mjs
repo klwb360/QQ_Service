@@ -4,6 +4,7 @@ import { existsSync, mkdirSync } from 'node:fs';
 import { mkdir, readFile, readdir, rename, writeFile } from 'node:fs/promises';
 import net from 'node:net';
 import path from 'node:path';
+import { nativeNapcatStatus, openNativeNapcat, NATIVE_NAPCAT_INSTALL_URL } from './napcat-native.mjs';
 
 const NAPCAT_IMAGE = 'mlikiowa/napcat-docker:v4.18.37';
 const NAPCAT_VERSION = '4.18.37';
@@ -199,7 +200,7 @@ async function ensurePortFree(port) {
   });
 }
 
-export function createInstaller({ dataDir, profileId, legacy = false, getConfig, getSecret, setSecret, log = () => {} }) {
+export function createInstaller({ dataDir, profileId, legacy = false, getConfig, getNapcatSettings = () => ({ mode: 'docker', executablePath: '', revision: 0 }), getSecret, setSecret, log = () => {} }) {
   const root = path.resolve(dataDir);
   const recordFile = path.join(root, 'module-state.json');
   const napcatDir = path.join(root, 'modules', 'napcat');
@@ -305,20 +306,27 @@ export function createInstaller({ dataDir, profileId, legacy = false, getConfig,
   }
 
   async function environment() {
-    const checks = { platform: process.platform, arch: process.arch, node: { version: process.version, supported: Number(process.versions.node.split('.')[0]) >= 24 }, docker: await dockerCheck() };
+    const settings = getNapcatSettings();
+    const native = settings.mode === 'native';
+    const checks = { platform: process.platform, arch: process.arch, node: { version: process.version, supported: Number(process.versions.node.split('.')[0]) >= 24 } };
+    if (native) {
+      const status = nativeNapcatStatus(settings);
+      checks.napcat = { available: status.installed, status: status.state, message: status.message };
+      checks.setupGuide = '按官方说明安装 Windows 版 NapCat，在全局设置中选择启动文件。多个 QQ 需在 NapCat 中分别登录，并配置各自的连接端口。';
+    } else checks.docker = await dockerCheck();
     try {
       const npm = npmInvocation();
       const result = await run(npm.command, [...npm.args, '--version'], { timeout: 15_000 });
       checks.npm = { available: true, version: result.output };
     } catch (error) { checks.npm = { available: false, message: error.message }; }
-    if (process.platform === 'win32') {
+    if (!native && process.platform === 'win32') {
       try {
         const result = await run('wsl.exe', ['--version'], { timeout: 15_000, allowFailure: true });
         checks.wsl = { available: result.code === 0, message: result.output.slice(0, 1200) };
       } catch (error) { checks.wsl = { available: false, message: error.message }; }
       checks.setupGuide = '仅使用应用内安装和管理 NapCat 时需要 Docker Desktop（Linux 容器）；Windows 原生 NapCat 可直接通过 OneBot 连接，无需 Docker。首次启用 WSL 2 可能需要管理员操作及重启；BIOS 硬件虚拟化需在电脑设置中开启。';
     }
-    checks.dockerInstallUrl = 'https://docs.docker.com/desktop/setup/install/windows-install/';
+    if (!native) checks.dockerInstallUrl = 'https://docs.docker.com/desktop/setup/install/windows-install/';
     return checks;
   }
 
@@ -458,7 +466,10 @@ export function createInstaller({ dataDir, profileId, legacy = false, getConfig,
   async function install(id, onLog) {
     if (!MODULES.some((item) => item.id === id)) throw problem('未知模块。', 400);
     return exclusive(id, async () => {
-      if (id === 'napcat') return installNapcat(onLog);
+      if (id === 'napcat') {
+        if (getNapcatSettings().mode === 'native') throw problem(`当前选择本地安装。请按官方说明安装 NapCat，并在全局设置中选择启动文件：${NATIVE_NAPCAT_INSTALL_URL}`, 409);
+        return installNapcat(onLog);
+      }
       if (id === 'codex') return installCodex(onLog);
       await saveModule(id, { installed: true, version: 'builtin', installedAt: new Date().toISOString() });
       emit(onLog, '该功能已经内置，可在功能配置中启用。');
@@ -468,6 +479,12 @@ export function createInstaller({ dataDir, profileId, legacy = false, getConfig,
 
   async function startNapcat(onLog) {
     return exclusive('napcat', async () => {
+      const settings = getNapcatSettings();
+      if (settings.mode === 'native') {
+        const result = await openNativeNapcat(settings.executablePath);
+        emit(onLog, result.message);
+        return result;
+      }
       await requireDocker();
       const state = await records();
       const module = state.modules.napcat;
@@ -509,6 +526,7 @@ export function createInstaller({ dataDir, profileId, legacy = false, getConfig,
 
   async function stopNapcat(onLog) {
     return exclusive('napcat', async () => {
+      if (getNapcatSettings().mode === 'native') throw problem('本地 NapCat 由其窗口或管理工具控制，请在那里停止对应账号。', 409);
       await requireDocker();
       const container = await inspectContainer();
       if (!container) return { running: false, message: '本项目 NapCat 容器尚未创建。' };
@@ -546,6 +564,7 @@ export function createInstaller({ dataDir, profileId, legacy = false, getConfig,
   // Called only by the local authenticated dashboard state/guide endpoint.
   // Never include this credential in ordinary module status, exports, or logs.
   async function napcatGuide() {
+    if (getNapcatSettings().mode === 'native') return { url: getConfig().qq?.webUiUrl || '', initialWebUiToken: '', message: '打开所选 NapCat 程序，在其管理页面登录或选择对应 QQ。多个账号需使用各自的连接端口。' };
     const file = path.join(napcatConfig, 'webui.json');
     if (!existsSync(file)) return { url: '', initialWebUiToken: '', message: '请先安装 NapCat。' };
     const config = await readJson(file);
@@ -554,10 +573,12 @@ export function createInstaller({ dataDir, profileId, legacy = false, getConfig,
   }
 
   async function status() {
+    const settings = getNapcatSettings();
+    const native = settings.mode === 'native';
     const state = await records();
     let container;
     let containerError;
-    if (state.modules.napcat?.installed) {
+    if (!native && state.modules.napcat?.installed) {
       try {
         const docker = await dockerCheck();
         if (docker.running && docker.linuxContainers) container = await inspectContainer();
@@ -566,6 +587,10 @@ export function createInstaller({ dataDir, profileId, legacy = false, getConfig,
     }
     const config = getConfig();
     return MODULES.map((item) => {
+      if (item.id === 'napcat' && native) {
+        const status = nativeNapcatStatus(settings);
+        return { ...item, ...status, description: '打开全局设置中选择的本地 NapCat 程序；账号实例与登录由 NapCat 管理。', enabled: Boolean(config.qq?.enabled), ...(operations.has('napcat') ? { state: 'busy' } : {}) };
+      }
       const saved = state.modules[item.id];
       const builtin = item.kind === 'builtin';
       const installed = builtin || Boolean(saved?.installed && (item.id !== 'codex' || existsSync(codexCli)));

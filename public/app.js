@@ -26,7 +26,9 @@
   let secretUpdates = {};
   let refreshPromise = null;
   let currentPage = 'overview';
-  let pendingBuilderPage = /^custom-[a-z]{6,24}$/.test(location.hash.slice(1)) ? location.hash.slice(1) : '';
+  let savedNapcatSettings = null;
+  let pendingNapcatSettings = null;
+  let napcatSettingsError = '';
   let currentScenarioTab = 'tasks';
   let dialogResolve = null;
   let consecutiveFailures = 0;
@@ -174,7 +176,11 @@
     accounts = directory.accounts;
     platforms = directory.platforms ?? [];
     directoryToken = directory.csrfToken;
+    acceptNapcatSettings(directory.napcatSettings ?? await api('/api/napcat/settings', undefined, 'GET'));
     renderAccountDirectory();
+    renderNapcatSettings();
+    renderModules();
+    renderConfigBar();
     return directory;
   }
   async function selectAccount(id) {
@@ -213,15 +219,10 @@
     return refreshPromise;
   }
   function navigate(page) {
-    const requested = page;
-    const custom = window.QQServiceBuilder?.getPage(page);
-    if (!Object.hasOwn(pageInfo, page) && !custom) page = 'overview';
-    if (custom || Object.hasOwn(pageInfo, requested)) pendingBuilderPage = '';
+    if (!Object.hasOwn(pageInfo, page)) page = 'overview';
     closeGroupTriggerPicker();
     currentPage = page;
-    const [caption, eyebrow, title, description] = custom
-      ? [custom.label, 'CUSTOM PAGE', custom.title, custom.description]
-      : pageInfo[page];
+    const [caption, eyebrow, title, description] = pageInfo[page];
     $('#page-caption').textContent = caption;
     $('#page-eyebrow').textContent = eyebrow;
     $('#page-title').textContent = title;
@@ -230,7 +231,6 @@
     // design baseline. Keep shared heading hooks for the other pages.
     $('#page-title').classList.toggle('hidden', !title);
     $('#page-description').classList.toggle('hidden', !description);
-    for (const [selector, field] of [['#page-title', 'title'], ['#page-description', 'description'], ['#page-eyebrow', 'eyebrow']]) $(selector).dataset.uiKey = `page.${page}.${field}`;
     $$('.page-panel').forEach((panel) => panel.classList.toggle('hidden', panel.id !== `page-${page}`));
     $$('.nav-link').forEach((link) => {
       link.classList.toggle('active', link.dataset.page === page);
@@ -284,7 +284,7 @@
     return actual && expected && actual === expected && configured === expected && !localConnectionChanged ? { status: 'online', label: '在线' } : { status: 'unverified', label: '待验证' };
   }
   function accountOnlineBadge(online) {
-    return `<span class="account-online-badge account-online-${online.status}" data-account-online="${online.status}" data-ui-protected><span aria-hidden="true"></span>${online.label}</span>`;
+    return `<span class="account-online-badge account-online-${online.status}" data-account-online="${online.status}"><span aria-hidden="true"></span>${online.label}</span>`;
   }
   function renderAccountDirectory() {
     const selector = $('#account-selector');
@@ -302,7 +302,7 @@
       const editor = editors.get(account.id);
       return { account, online, connected, released, note: editor?.dirty ? ' · 有未保存修改' : account.pendingChanges ? ' · 参数待应用' : '' };
     });
-    const overviewHTML = cards.length ? cards.map(({ account, online, connected, released, note }) => `<button class="account-card ${account.id === selectedAccountId ? 'selected' : ''}" data-select-account="${escapeHTML(account.id)}" data-ui-text-protected><span class="account-avatar">Q</span><span class="account-card-main"><strong class="account-name-line"><span data-ui-protected>${escapeHTML(account.name || 'QQ 账号')}</span>${accountOnlineBadge(online)}</strong><small data-ui-protected>QQ ${escapeHTML(account.qqNumber || '待填写')} · ${connected ? '身份已验证' : '未确认连接'}${note}</small></span><span data-ui-protected class="pill ${released ? 'pill-green' : 'pill-neutral'}">${released ? '已释放范围权限' : '只读'}</span></button>`).join('') : empty;
+    const overviewHTML = cards.length ? cards.map(({ account, online, connected, released, note }) => `<button class="account-card ${account.id === selectedAccountId ? 'selected' : ''}" data-select-account="${escapeHTML(account.id)}"><span class="account-avatar">Q</span><span class="account-card-main"><strong class="account-name-line"><span>${escapeHTML(account.name || 'QQ 账号')}</span>${accountOnlineBadge(online)}</strong><small>QQ ${escapeHTML(account.qqNumber || '待填写')} · ${connected ? '身份已验证' : '未确认连接'}${note}</small></span><span class="pill ${released ? 'pill-green' : 'pill-neutral'}">${released ? '已释放范围权限' : '只读'}</span></button>`).join('') : empty;
     renderAccountAccordions(cards);
     updateRecordHTML($('#overview-accounts'), overviewHTML);
     $('#page-connections').classList.toggle('directory-empty', accounts.length === 0);
@@ -363,10 +363,9 @@
       let entry = [...directory.children].find((element) => element.dataset.accountId === account.id);
       if (!entry) {
         entry = document.createElement('article');
-        entry.className = 'account-accordion'; entry.dataset.accountId = account.id; entry.dataset.uiKey = 'account.menuCard';
+        entry.className = 'account-accordion'; entry.dataset.accountId = account.id;
         const header = document.createElement('button'); header.type = 'button';
         header.className = 'account-card account-entry'; header.dataset.openAccount = account.id;
-        header.dataset.uiKey = 'account.menuHeader'; header.setAttribute('data-ui-text-protected', '');
         header.id = `account-header-${account.id}`; header.setAttribute('aria-controls', `account-body-${account.id}`);
         const body = document.createElement('div'); body.className = 'account-accordion-body';
         body.id = `account-body-${account.id}`; body.setAttribute('role', 'region');
@@ -376,7 +375,7 @@
       }
       const open = account.id === targetId;
       const header = entry.firstElementChild;
-      const headerHTML = `<span class="account-avatar">Q</span><span class="account-card-main"><strong class="account-name-line"><span data-ui-protected>${escapeHTML(account.name || 'QQ 账号')}</span>${accountOnlineBadge(online)}</strong><small data-ui-protected>QQ ${escapeHTML(account.qqNumber || '待填写')}${note}</small></span><span data-ui-protected class="pill ${released ? 'pill-green' : 'pill-neutral'}">${released ? '已启动' : '只读'}</span><span class="account-entry-chevron" aria-hidden="true">⌄</span>`;
+      const headerHTML = `<span class="account-avatar">Q</span><span class="account-card-main"><strong class="account-name-line"><span>${escapeHTML(account.name || 'QQ 账号')}</span>${accountOnlineBadge(online)}</strong><small>QQ ${escapeHTML(account.qqNumber || '待填写')}${note}</small></span><span class="pill ${released ? 'pill-green' : 'pill-neutral'}">${released ? '已启动' : '只读'}</span><span class="account-entry-chevron" aria-hidden="true">⌄</span>`;
       if (header.innerHTML !== headerHTML) header.innerHTML = headerHTML;
       header.classList.toggle('expanded', open); header.setAttribute('aria-expanded', String(open));
       entry.classList.toggle('expanded', open);
@@ -402,7 +401,8 @@
     $('#release-permissions').disabled = !state;
     $('#reset-account-defaults').disabled = !state;
     $('#revoke-permissions').disabled = !state || state.applied?.permissions?.released !== true;
-    $$('[data-action], [data-module-action], #add-group, #open-napcat, #export-config, #rollback-config, #preview-policy').forEach((button) => { button.disabled = !state; });
+    $$('[data-action], [data-module-action], #add-group, #open-napcat, #napcat-login-token, #export-config, #rollback-config, #preview-policy').forEach((button) => { button.disabled = !state; });
+    $$('[data-open-napcat-program]').forEach(button => { button.disabled = !state || Boolean(pendingNapcatSettings) || getJobs().some(job => job.status === 'running'); });
   }
   function renderSecrets() {
     [['deepseekApiKey', '#deepseek-secret-state'], ['napcatToken', '#napcat-secret-state']].forEach(([name, selector]) => {
@@ -425,7 +425,8 @@
       waiting_login: ['等待登录', 'orange'], warning: ['需检查', 'orange'], check: ['需检查', 'orange'], busy: ['操作中', 'orange'],
       error: ['失败', 'red'], failed: ['失败', 'red'], missing: ['未安装', 'orange'], not_installed: ['未安装', 'orange'],
       disconnected: ['未连接', 'neutral'], stopped: ['已停止', 'neutral'], disabled: ['未启用', 'neutral'],
-      unknown: ['待检查', 'neutral'], idle: ['待运行', 'neutral'], cancelled: ['已取消', 'neutral']
+      unknown: ['待检查', 'neutral'], idle: ['待运行', 'neutral'], cancelled: ['已取消', 'neutral'],
+      configured: ['已选启动文件', 'neutral'], not_configured: ['待选择启动文件', 'orange']
     };
     return table[raw] ?? [String(value ?? '待检查'), 'neutral'];
   }
@@ -457,7 +458,7 @@
     else if (environment && typeof environment === 'object') {
       checks = Object.entries(environment).filter(([key, value]) => !['checkedAt', 'platform', 'arch', 'message', 'setupGuide', 'dockerInstallUrl'].includes(key) && value !== null).map(([key, value]) => typeof value === 'object' ? { name: key, ...value } : { name: key, detail: String(value), status: typeof value === 'boolean' ? value : 'unknown' });
     }
-    const names = { node: 'Node.js', docker: 'Docker Desktop', codex: '官方 Codex CLI', platform: '操作系统', npm: 'npm', wsl: 'WSL 2' };
+    const names = { node: 'Node.js', napcat: 'NapCat 本地启动文件', docker: 'Docker Desktop', codex: '官方 Codex CLI', platform: '操作系统', npm: 'npm', wsl: 'WSL 2' };
     $('#environment-checks').innerHTML = checks.length ? checks.map((check) => {
       const name = check.name ?? names[check.id] ?? check.id ?? check.label ?? '环境检查';
       const status = check.status ?? (check.name === 'docker' ? (check.running && check.linuxContainers ? 'ready' : check.installed ? 'warning' : 'missing') : check.supported !== undefined ? check.supported : check.ok !== undefined ? check.ok : check.available !== undefined ? check.available : check.installed !== undefined ? (check.installed ? 'installed' : 'missing') : 'unknown');
@@ -481,7 +482,7 @@
     const auth = state?.codexAuth?.loggedIn !== null && state?.codexAuth?.loggedIn !== undefined ? state.codexAuth : codexLoginStatus;
     $('#runtime-badge').textContent = currentPage === 'overview' ? `${accounts.length} 个账号 · ${accounts.filter((account) => account.runtime?.connected === true || account.runtime?.connectionState === 'connected').length} 个已连接` : selectedAccountId ? `${accountName()} · ${label}` : '尚无账号';
     $('#runtime-badge').className = `heading-status ${color === 'green' ? 'connected' : color === 'red' ? 'error' : ''}`;
-    $('#runtime-badge').classList.toggle('hidden', currentPage === 'settings' || Boolean(window.QQServiceBuilder?.getPage(currentPage)));
+    $('#runtime-badge').classList.toggle('hidden', currentPage === 'settings');
     $('#account-codex-status').textContent = auth?.message || (auth?.loggedIn === true ? '此账号的官方 Codex 已授权' : auth?.loggedIn === false ? '此账号尚未登录 Codex' : '此账号授权状态等待检查');
     $('#runtime-status').innerHTML = checkRow('QQ 实际连接', actualAccount ? `后台确认 QQ ${actualAccount}` : `尚未确认实际登录 QQ${configuredAccount ? `；配置 QQ ${configuredAccount}` : ''}`, qqStatus)
       + checkRow('消息发送权限', released ? `已释放 · ${writable} 个满足任务条件的发送群 · 私聊${state?.applied?.permissions?.privateReplies ? '已授权指定接收 QQ' : '未授权'}` : '只读：不会因连接 QQ 或登录模型而发送消息', released ? 'ready' : 'disabled')
@@ -494,7 +495,7 @@
       ['当前账号可读群', readable, `${sendTargets} 个群已选择发送权限`, '▤', 'groups'],
       ['当前账号整理记录', Array.isArray(state?.summaries) ? state.summaries.length : 0, '通知与收藏均可核对原文依据', '≡', 'summaries']
     ];
-    const statsHTML = stats.map(([name, value, note, icon, destination]) => `<button type="button" class="stat-card" data-ui-key="overview.stat.${destination}" data-overview-go="${destination}" ${destination !== 'accounts' && !state ? 'disabled' : ''}><span><span class="stat-label" data-ui-key="overview.statLabel.${destination}">${escapeHTML(name)}</span><span class="stat-value" data-ui-protected>${escapeHTML(value)}</span><span class="stat-note" data-ui-protected>${escapeHTML(note)}</span></span><span class="stat-icon" aria-hidden="true">${icon}</span></button>`).join('');
+    const statsHTML = stats.map(([name, value, note, icon, destination]) => `<button type="button" class="stat-card" data-overview-go="${destination}" ${destination !== 'accounts' && !state ? 'disabled' : ''}><span><span class="stat-label">${escapeHTML(name)}</span><span class="stat-value">${escapeHTML(value)}</span><span class="stat-note">${escapeHTML(note)}</span></span><span class="stat-icon" aria-hidden="true">${icon}</span></button>`).join('');
     updateRecordHTML($('#overview-stats'), statsHTML);
   }
   function renderPermissions() {
@@ -590,10 +591,99 @@
     select.value = groups.some((group) => group.id === previous) ? previous : '';
     select.disabled = !state;
   }
+  function acceptNapcatSettings(next) {
+    if (!next || !['native', 'docker'].includes(next.mode) || typeof next.executablePath !== 'string' || !Number.isSafeInteger(next.revision) || next.revision < 0) throw new Error('后台 NapCat 全局设置不完整，请刷新后重试。');
+    // A directory poll started before a save must not overwrite newer settings.
+    if (!savedNapcatSettings || next.revision >= savedNapcatSettings.revision) savedNapcatSettings = { mode: next.mode, executablePath: next.executablePath, revision: next.revision };
+  }
+  function napcatSettings() {
+    return savedNapcatSettings ?? { mode: 'native', executablePath: '', revision: 0 };
+  }
+  function napcatInstallUrl(mode) {
+    return `https://napneko.github.io/guide/boot/Shell#${mode === 'docker' ? 'docker' : 'windows-onekey'}`;
+  }
+  function renderNapcatSettings() {
+    const settings = pendingNapcatSettings ?? napcatSettings();
+    const isNative = settings.mode !== 'docker';
+    const saving = Boolean(pendingNapcatSettings);
+    $('#napcat-mode-options').disabled = !savedNapcatSettings || saving;
+    $$('input[name="napcatMode"]').forEach(input => { input.checked = input.value === settings.mode; });
+    $('#napcat-native-settings').classList.toggle('hidden', !isNative);
+    $('#napcat-docker-settings').classList.toggle('hidden', isNative);
+    $('#napcat-docker-download').classList.toggle('hidden', isNative);
+    $('#napcat-executable-path').value = settings.executablePath;
+    $('#napcat-executable-path').title = settings.executablePath;
+    $('#choose-napcat-executable').disabled = !savedNapcatSettings || saving;
+    $('#napcat-settings-save-state').textContent = saving ? '保存中…' : napcatSettingsError ? '未保存' : savedNapcatSettings ? '已保存' : '加载中…';
+    $('#napcat-settings-error').textContent = napcatSettingsError;
+    $('#napcat-settings-error').classList.toggle('hidden', !napcatSettingsError);
+    const active = napcatSettings();
+    const activeNative = active.mode !== 'docker';
+    $('#connection-napcat-mode').textContent = activeNative ? '本地安装' : 'Docker';
+    $('#connection-napcat-hint').textContent = activeNative && !active.executablePath
+      ? '先在设置中选择启动文件，再打开 NapCat、扫码登录并连接。'
+      : '先打开 NapCat，再到登录页扫码登录 QQ，最后连接。';
+    $('#napcat-login-token').classList.toggle('hidden', activeNative);
+    $$('[data-napcat-install-link]').forEach(link => {
+      const mode = link.closest('#page-settings') ? settings.mode : active.mode;
+      link.textContent = mode === 'docker' ? 'Docker 安装说明 ↗' : '本地安装说明 ↗';
+      link.href = napcatInstallUrl(mode);
+    });
+  }
+  async function saveNapcatSettings(update) {
+    if (!savedNapcatSettings) throw new Error('NapCat 全局设置尚未加载，请稍后。');
+    if (pendingNapcatSettings) throw new Error('接入方式正在保存，请稍后。');
+    const settings = { ...napcatSettings(), ...update };
+    pendingNapcatSettings = settings;
+    napcatSettingsError = '';
+    renderNapcatSettings(); renderConfigBar();
+    try {
+      acceptNapcatSettings(await api('/api/napcat/settings', settings));
+    } catch (error) {
+      napcatSettingsError = `未保存：${errorMessage(error)}`;
+      // Another window may have updated the global setting. Restore the actual
+      // saved value while keeping the failed operation's explanation visible.
+      try { acceptNapcatSettings(await api('/api/napcat/settings', undefined, 'GET')); } catch {}
+      throw error;
+    } finally {
+      pendingNapcatSettings = null;
+      renderNapcatSettings(); renderModules(); renderConfigBar();
+    }
+  }
+  async function chooseNapcatExecutable() {
+    const choose = window.qqBridgeDesktop?.chooseNapcatExecutable;
+    if (typeof choose !== 'function') throw new Error('请在 Windows 桌面应用中选择 NapCat 启动文件。');
+    const selection = await choose();
+    if (selection?.canceled) return;
+    if (!selection?.path) throw new Error('没有选中启动文件，请重试。');
+    await saveNapcatSettings({ executablePath: selection.path });
+  }
+  async function openNapcatProgram() {
+    const id = requireAccount();
+    if (!savedNapcatSettings || pendingNapcatSettings) throw new Error('请等待 NapCat 全局设置加载或保存完成。');
+    const settings = napcatSettings();
+    if (settings.mode === 'native' && !settings.executablePath) {
+      navigate('settings');
+      $('#choose-napcat-executable').focus();
+      return toast('请先在全局设置中选择 NapCat 启动文件。', 'info');
+    }
+    await mutate('/napcat/open', { revision: settings.revision }, '打开请求已提交，请查看 NapCat 窗口或此账号的任务记录。', id);
+  }
+  function openNapcatLogin() {
+    const id = requireAccount();
+    let url;
+    try {
+      url = new URL(editors.get(id).draft.qq.webUiUrl);
+      if (url.protocol !== 'http:' || !['localhost', '127.0.0.1', '[::1]'].includes(url.hostname) || url.username || url.password || url.search || url.hash || !['/', '/webui', '/webui/'].includes(url.pathname)) throw new Error();
+    } catch { throw new Error('请在连接帮助中填写有效的本机 NapCat 管理页面地址。'); }
+    window.open(url.href, '_blank', 'noopener,noreferrer');
+  }
   function renderModules() {
     const modules = getModules();
+    const settings = napcatSettings();
+    const native = settings.mode !== 'docker';
     const known = [
-      { id: 'napcat', name: 'NapCat · QQ 连接组件', kind: 'external', description: '自动安装使用 Docker。也可自行运行 Windows 原生 NapCat，再在账号控制填写独立连接地址与 Token。', icon: '⇄' },
+      { id: 'napcat', name: 'NapCat · QQ 连接组件', kind: 'external', description: native ? '按官方说明安装，选择启动文件后即可直接打开。' : '通过 Docker 安装和管理此账号的 NapCat 容器。', icon: '⇄' },
       { id: 'codex', name: '官方 Codex CLI', kind: 'external', description: '在此账号独立保存 ChatGPT / Codex 授权，用于本人指令与授权的整理任务。', icon: '✧' },
       { id: 'deepseek', name: 'DeepSeek 接入', kind: 'builtin', description: '此账号独立 API Key。配置模型不等于启用社交回复或释放消息权限。', path: 'models.deepseek.enabled', icon: '◈' },
       { id: 'summary', name: '通知汇总', kind: 'builtin', description: '此账号独立通知参数和任务模型；默认保存在本地，可另外授权指定私聊目标。', path: 'summary.enabled', icon: '▤' },
@@ -606,9 +696,14 @@
       const actualStatus = module ? module.state ?? module.status ?? (module.installed ? 'installed' : 'missing') : 'unknown';
       let actions;
       if (builtin) actions = `<button class="button button-secondary button-small" data-go="${definition.id === 'deepseek' ? 'connections' : 'scenarios'}">${enabled ? '查看当前账号参数' : '为当前账号配置'} →</button>`;
-      else if (definition.id === 'napcat') actions = '<button class="button button-secondary button-small" data-module-action="install" data-module="napcat">Docker 安装 / 检查</button><button class="button button-quiet button-small" data-module-action="start" data-module="napcat">启动</button><button class="button button-quiet button-small" data-module-action="stop" data-module="napcat">停止</button>';
+      else if (definition.id === 'napcat') actions = native
+        ? '<button class="button button-secondary button-small" data-open-napcat-program>打开 NapCat</button><a class="module-help-link" href="#settings">选择启动文件 →</a>'
+        : '<button class="button button-secondary button-small" data-module-action="install" data-module="napcat">安装 / 检查</button><button class="button button-quiet button-small" data-open-napcat-program>打开 NapCat</button><button class="button button-quiet button-small" data-module-action="stop" data-module="napcat">停止</button>';
       else actions = '<button class="button button-secondary button-small" data-module-action="install" data-module="codex">安装 / 检查</button><button class="button button-quiet button-small" data-action="codex-login">当前账号授权 →</button>';
-      return `<article class="module-card ${builtin ? 'builtin' : 'external'}"><div class="module-main"><div class="module-top"><span class="module-icon">${definition.icon}</span>${builtin ? `<span class="pill ${enabled ? 'pill-green' : 'pill-neutral'}">${enabled ? '此账号配置已启用' : '内置 · 尚未启用'}</span>` : pill(actualStatus)}</div><h2>${escapeHTML(definition.name)}</h2><p>${escapeHTML(definition.description)}</p><div class="module-version">${builtin ? '启用功能仍受账号与消息权限约束' : module ? `版本 ${escapeHTML(module.version || '未提供')} · ${module.installed ? '已安装' : '未确认安装'}` : '等待此账号的模块检查结果'}</div></div><div class="module-actions">${actions}</div></article>`;
+      const napcat = definition.id === 'napcat';
+      const status = napcat && native ? module?.kind === 'native' ? actualStatus : settings.executablePath ? 'configured' : 'not_configured' : actualStatus;
+      const version = napcat && native ? settings.executablePath || '在设置中选择 NapCat 启动文件' : builtin ? '启用功能仍受账号与消息权限约束' : module ? `版本 ${module.version || '未提供'} · ${module.installed ? '已安装' : '未确认安装'}` : '等待此账号的模块检查结果';
+      return `<article class="module-card ${builtin ? 'builtin' : 'external'}" data-module-card="${definition.id}"><div class="module-main"><div class="module-top"><span class="module-icon">${definition.icon}</span>${builtin ? `<span class="pill ${enabled ? 'pill-green' : 'pill-neutral'}">${enabled ? '此账号配置已启用' : '内置 · 尚未启用'}</span>` : pill(status)}</div><h2>${escapeHTML(definition.name)}</h2>${napcat ? `<span class="module-napcat-mode">${native ? '本地安装' : 'Docker'}</span>` : ''}<p>${escapeHTML(definition.description)}</p><div class="module-version ${napcat && native ? 'native-path' : ''}">${escapeHTML(version)}</div>${napcat ? `<div class="napcat-help-links"><a href="${napcatInstallUrl(settings.mode)}" target="_blank" rel="noopener noreferrer">${native ? '本地' : 'Docker'}安装说明 ↗</a><a href="#settings">更改方式</a></div>` : ''}</div><div class="module-actions">${actions}</div></article>`;
     }).join('');
   }
   function getJobs() {
@@ -671,14 +766,13 @@
     if (atBottom) element.scrollTop = element.scrollHeight;
   }
   function renderPageContext() {
-    const isCustomPage = Boolean(window.QQServiceBuilder?.getPage(currentPage));
     const isAccountPage = currentPage === 'connections' || currentPage === 'settings';
     const context = $('.account-context');
     if (currentPage === 'records') {
       if (context.parentElement !== $('#records-context-card')) $('#records-context-slot').after(context);
     } else if (context.previousElementSibling !== $('#global-account-slot')) $('#global-account-slot').after(context);
     $('.page-heading').classList.toggle('hidden', isAccountPage);
-    $('.account-context').classList.toggle('hidden', isAccountPage || isCustomPage || currentPage === 'overview');
+    $('.account-context').classList.toggle('hidden', isAccountPage || currentPage === 'overview');
     const configBar = $('.config-bar');
     const saveFooter = $('#account-save-footer');
     // Account actions live directly at the end of its menu, without a separate card.
@@ -686,10 +780,10 @@
     const destination = currentPage === 'connections' ? saveFooter : configBar;
     while (source.firstChild) destination.append(source.firstChild);
     $('#reset-account-defaults').classList.toggle('hidden', currentPage !== 'modules');
-    configBar.classList.toggle('hidden', isCustomPage || isAccountPage || currentPage === 'records' || currentPage === 'overview');
+    configBar.classList.toggle('hidden', isAccountPage || currentPage === 'records' || currentPage === 'overview');
     saveFooter.classList.toggle('hidden', currentPage !== 'connections' || !expandedAccountId || !state || (!dirty && !state.pendingChanges && !state.secretsPendingChanges));
-    $('#no-accounts').classList.toggle('hidden', accounts.length !== 0 || isAccountPage || isCustomPage);
-    $('#runtime-badge').classList.toggle('hidden', currentPage === 'settings' || isCustomPage);
+    $('#no-accounts').classList.toggle('hidden', accounts.length !== 0 || isAccountPage);
+    $('#runtime-badge').classList.toggle('hidden', currentPage === 'settings');
   }
   function scrollToFlowStage(step) {
     if (currentPage !== 'connections' || expandedAccountId !== selectedAccountId) return;
@@ -792,7 +886,7 @@
     }
     for (const entry of entries) if (!used.has(entry.id)) options.push({ value: entry.id, label: `已保存 · ${entry.label}` });
     options.push({ value: 'codex', label: 'ChatGPT 订阅 / Codex', key: 'codex' });
-    const html = options.map((option) => `<option value="${escapeHTML(option.value)}" ${option.key ? `data-ui-option-key="${option.key}"` : 'data-ui-protected'} ${option.value === '' ? 'disabled' : ''}>${escapeHTML(option.label)}</option>`).join('');
+    const html = options.map((option) => `<option value="${escapeHTML(option.value)}" ${option.value === '' ? 'disabled' : ''}>${escapeHTML(option.label)}</option>`).join('');
     if (select.innerHTML !== html) select.innerHTML = html;
     select.value = providers.length === 1 ? providers[0].id : '';
     select.disabled = !draft;
@@ -817,10 +911,10 @@
     const structure = `${selectedAccountId}:${entries.map((entry) => entry.id).join(',')}`;
     if (customApiStructure !== structure) {
       customApiStructure = structure;
-      $('#custom-api-cards').innerHTML = entries.map((entry, index) => `<section class="account-model-form custom-api-card hidden" data-api-card="${escapeHTML(entry.id)}" data-api-id="${escapeHTML(entry.id)}" data-ui-key="account.apiForm">
-        <div class="form-grid"><label class="field field-wide">API Key <small class="api-secret-note" data-ui-protected></small><input data-ui-protected type="password" data-secret="apiKey:${escapeHTML(entry.id)}" autocomplete="new-password" value="${escapeHTML(secretUpdates[`apiKey:${entry.id}`] || '')}" placeholder="粘贴 API Key"></label><label class="field field-wide">模型名称<input data-ui-protected data-config="models.apis.${index}.model" value="${escapeHTML(entry.model)}" spellcheck="false" placeholder="填写服务商提供的模型 ID"></label></div>
-        <div class="account-model-tools"><button class="button button-secondary button-small" data-setup-model-test="${escapeHTML(entry.id)}" data-ui-key="account.testApi">测试连接</button><div class="api-vendor-guide" data-api-guide></div></div>
-        <details class="account-advanced" ${vendorForApi(entry) === 'custom' ? 'open' : ''}><summary>接口与高级设置</summary><div class="form-grid"><label class="field field-wide">API 地址<input data-ui-protected data-config="models.apis.${index}.baseUrl" value="${escapeHTML(entry.baseUrl)}" placeholder="https://api.example.com/v1" spellcheck="false"></label><label class="field field-wide">接口名称<input data-ui-protected data-config="models.apis.${index}.label" value="${escapeHTML(entry.label)}" maxlength="80"></label><label class="field">最大输出 Token<input data-ui-protected type="number" min="128" max="131072" data-config="models.apis.${index}.maxTokens" value="${escapeHTML(entry.maxTokens ?? 1024)}"></label><label class="field">Temperature<input data-ui-protected type="number" min="0" max="2" step="0.1" data-config="models.apis.${index}.temperature" value="${escapeHTML(entry.temperature ?? .7)}"></label></div></details>
+      $('#custom-api-cards').innerHTML = entries.map((entry, index) => `<section class="account-model-form custom-api-card hidden" data-api-card="${escapeHTML(entry.id)}" data-api-id="${escapeHTML(entry.id)}">
+        <div class="form-grid"><label class="field field-wide">API Key <small class="api-secret-note"></small><input type="password" data-secret="apiKey:${escapeHTML(entry.id)}" autocomplete="new-password" value="${escapeHTML(secretUpdates[`apiKey:${entry.id}`] || '')}" placeholder="粘贴 API Key"></label><label class="field field-wide">模型名称<input data-config="models.apis.${index}.model" value="${escapeHTML(entry.model)}" spellcheck="false" placeholder="填写服务商提供的模型 ID"></label></div>
+        <div class="account-model-tools"><button class="button button-secondary button-small" data-setup-model-test="${escapeHTML(entry.id)}">测试连接</button><div class="api-vendor-guide" data-api-guide></div></div>
+        <details class="account-advanced" ${vendorForApi(entry) === 'custom' ? 'open' : ''}><summary>接口与高级设置</summary><div class="form-grid"><label class="field field-wide">API 地址<input data-config="models.apis.${index}.baseUrl" value="${escapeHTML(entry.baseUrl)}" placeholder="https://api.example.com/v1" spellcheck="false"></label><label class="field field-wide">接口名称<input data-config="models.apis.${index}.label" value="${escapeHTML(entry.label)}" maxlength="80"></label><label class="field">最大输出 Token<input type="number" min="128" max="131072" data-config="models.apis.${index}.maxTokens" value="${escapeHTML(entry.maxTokens ?? 1024)}"></label><label class="field">Temperature<input type="number" min="0" max="2" step="0.1" data-config="models.apis.${index}.temperature" value="${escapeHTML(entry.temperature ?? .7)}"></label></div></details>
       </section>`).join('');
     }
     $$('[data-api-card]').forEach((card) => card.classList.toggle('hidden', card.dataset.apiCard !== active));
@@ -961,12 +1055,6 @@
   function providerLabel(id) {
     return id === 'deepseek' ? 'DeepSeek API' : id === 'codex' ? 'ChatGPT / Codex' : (draft?.models?.apis ?? []).find((entry) => entry.id === id)?.label || id || '未选择模型';
   }
-  function selectConnectionRoute(route) {
-    const native = route !== 'docker';
-    $$('[data-connection-route]').forEach((button) => { const selected = button.dataset.connectionRoute === (native ? 'native' : 'docker'); button.classList.toggle('active', selected); button.setAttribute('aria-selected', String(selected)); });
-    $('#connection-native-guide').classList.toggle('hidden', !native);
-    $('#connection-docker-guide').classList.toggle('hidden', native);
-  }
   async function testSetupModel(provider) {
     const id = requireAccount();
     if (!await openDialog(`测试 ${providerLabel(provider)}`, '<p>将保存并应用这个账号当前参数，再向所选模型发送一次小型请求。可能消耗 API 费用或订阅额度。</p><p>应用后账号恢复只读，测试不向 QQ 发送消息。</p>', '保存并测试')) return;
@@ -1010,7 +1098,9 @@
   }
   async function initializeDesktopSettings() {
     const desktop = window.qqBridgeDesktop;
-    if (!desktop?.getSettings || !desktop?.updateSettings) return;
+    const available = Boolean(desktop?.getSettings && desktop?.updateSettings);
+    $('#window-settings-card').classList.toggle('hidden', !available);
+    if (!available) return;
     $('#desktop-settings-nav').classList.remove('hidden');
     function renderSettings(settings) {
       const closeBehavior = settings?.closeBehavior === 'quit' ? 'quit' : 'tray';
@@ -1054,6 +1144,7 @@
     renderRuntime();
     renderPermissions();
     renderModules();
+    renderNapcatSettings();
     renderJobs();
     renderSummaryGroupSelect();
     renderSummaries();
@@ -1203,9 +1294,9 @@
     const id = requireAccount();
     const guide = await accountApi('/napcat/guide', undefined, 'GET', id);
     let url;
-    try { url = new URL(editors.get(id).draft?.qq?.webUiUrl || guide.url || editors.get(id).state?.applied?.qq?.webUiUrl); } catch { throw new Error('此账号的 NapCat 登录地址无效。'); }
-    if (!['http:', 'https:'].includes(url.protocol)) throw new Error('NapCat 登录地址必须使用 HTTP 或 HTTPS。');
-    await openDialog(`「${accountName(id)}」QQ 扫码登录`, `<p>NapCat 负责连接 QQ。先登录其管理页面，再扫码登录你在本账号配置中填写的 QQ；输入 QQ 号或完成模型授权不代表 QQ 已登录。</p>${guide.initialWebUiToken && guide.message ? `<p>${escapeHTML(guide.message)}</p>` : '<p>原生 / 外部 NapCat：请打开你配置的管理页面。此应用不管理它的安装状态；已在 NapCat 登录的账号无需重新安装。</p>'}${guide.initialWebUiToken ? `<div class="notice notice-info"><strong>初始 WebUI 登录 Token</strong><p><code>${escapeHTML(guide.initialWebUiToken)}</code></p><p>仅用于此账号 NapCat 管理页面，请勿公开分享。</p></div>` : '<p>若已自行安装 Windows 原生 NapCat，可直接使用这个账号配置的管理页面，无需 Docker。</p>'}<p><a href="${escapeHTML(url.href)}" target="_blank" rel="noopener noreferrer">打开此账号 NapCat 页面 ↗</a></p>`, '知道了');
+    try { url = new URL(guide.url || editors.get(id).draft?.qq?.webUiUrl); } catch { throw new Error('此账号的 NapCat 登录地址无效。'); }
+    if (url.protocol !== 'http:' || !['localhost', '127.0.0.1', '[::1]'].includes(url.hostname) || url.username || url.password || url.search || url.hash) throw new Error('NapCat 登录地址必须是本机 HTTP 地址。');
+    await openDialog(`「${accountName(id)}」NapCat 登录`, `${guide.initialWebUiToken ? `<p>在 NapCat 登录页填写以下 WebUI Token。它与 QQ 连接栏的 OneBot Token 不同。</p><div class="notice notice-info"><strong>WebUI 登录 Token</strong><p><code>${escapeHTML(guide.initialWebUiToken)}</code></p><p>仅用于此账号的本机管理页面，请勿公开分享。</p></div>` : `<p>${escapeHTML(guide.message || '尚未生成登录 Token，请先安装并打开 NapCat。')}</p>`}<p><a href="${escapeHTML(url.href)}" target="_blank" rel="noopener noreferrer">打开登录页 ↗</a></p>`, '知道了');
     $('#dialog-content').replaceChildren();
   }
   function addDraftGroups(id, entries) {
@@ -1330,7 +1421,6 @@
   }, true);
   window.addEventListener('resize', positionGroupTriggerPicker);
   document.addEventListener('input', (event) => {
-    if (event.target.closest('[data-builder-owned], #designer-builder-slot')) return;
     const input = event.target;
     if (input.id === 'account-profile-name') { if (selectedAccountId) { const editor = editors.get(selectedAccountId); if (editor) editor.profileName = input.value; } return; }
     if (input.dataset.config && draft) {
@@ -1360,7 +1450,6 @@
     }
   });
   document.addEventListener('change', (event) => {
-    if (event.target.closest('[data-builder-owned], #designer-builder-slot')) return;
     if (event.target.id === 'account-llm-source' && draft) {
       chooseSingleLlm(draft, event.target.value); markDirty(event.target); populateForm(); renderLiveState(); return;
     }
@@ -1369,7 +1458,6 @@
     if (event.target.id === 'summary-group') rememberEditor();
   });
   document.addEventListener('click', (event) => {
-    if (event.target.closest('[data-builder-owned], #designer-builder-slot, [data-builder-nav]')) return;
     const summary = event.target.closest('.group-trigger-picker > summary');
     if (summary) {
       event.preventDefault();
@@ -1424,7 +1512,7 @@
     if (button.hasAttribute('data-setup-start')) return withButton(button, async () => { const id = requireAccount(); await releasePermissions(id); });
     if (button.hasAttribute('data-setup-refresh')) return withButton(button, () => refreshState({ notify: true }));
     if (button.dataset.setupModelTest) return withButton(button, () => testSetupModel(button.dataset.setupModelTest));
-    if (button.dataset.connectionRoute) return selectConnectionRoute(button.dataset.connectionRoute);
+    if (button.hasAttribute('data-open-napcat-program')) return withButton(button, openNapcatProgram);
     if (button.hasAttribute('data-return-to-setup')) { expandedAccountId = selectedAccountId; navigate('connections'); renderLiveState(); setSetupStep(currentScenarioTab === 'permissions' ? 'permissions' : 'scenarios'); return; }
     if (button.hasAttribute('data-repair-private')) return repairPrivateDelivery();
     if (button.dataset.errorStep) { if (button.dataset.errorStep === 'permissions') { selectScenarioTab('permissions'); navigate('scenarios'); } else { expandedAccountId = selectedAccountId; navigate('connections'); renderLiveState(); setSetupStep(button.dataset.errorStep); } return; }
@@ -1459,6 +1547,10 @@
     }
   });
   $('#account-selector').addEventListener('change', (event) => withButton(null, () => selectAccount(event.target.value)));
+  $$('input[name="napcatMode"]').forEach(input => input.addEventListener('change', () => {
+    withButton(null, () => saveNapcatSettings({ mode: input.value }));
+  }));
+  $('#choose-napcat-executable').addEventListener('click', (event) => withButton(event.currentTarget, chooseNapcatExecutable));
   $('#save-account-profile').addEventListener('click', (event) => withButton(event.currentTarget, saveAccountProfile));
   $('#create-account-entry').addEventListener('click', showCreateAccount);
   $('#cancel-create-account').addEventListener('click', () => $('#new-account-form').classList.add('hidden'));
@@ -1488,7 +1580,8 @@
     addDraftGroups(id, [{ id: groupId, name: $('#new-group-name').value.trim(), mode: $('#new-group-mode').value }]);
     toast(`「${accountName(id)}」已加入只读配置；保存应用后开始采集。`, 'info');
   }));
-  $('#open-napcat').addEventListener('click', (event) => withButton(event.currentTarget, openNapcatGuide));
+  $('#open-napcat').addEventListener('click', (event) => withButton(event.currentTarget, openNapcatLogin));
+  $('#napcat-login-token').addEventListener('click', (event) => withButton(event.currentTarget, openNapcatGuide));
   $('#export-config')?.addEventListener('click', (event) => withButton(event.currentTarget, async () => {
     const id = requireAccount();
     if (window.qqBridgeDesktop?.exportConfig) {
@@ -1538,11 +1631,6 @@
     event.preventDefault();
     event.returnValue = '';
   });
-  window.QQServiceNavigation = Object.freeze({
-    go: navigate,
-    currentPage: () => currentPage,
-    pendingPage: () => pendingBuilderPage,
-  });
   window.addEventListener('hashchange', () => navigate(location.hash.slice(1)));
   if (window.qqBridgeDesktop?.isDesktop) {
     $('.sidebar-version span').textContent = window.qqBridgeDesktop.version || '0.4.0';
@@ -1551,6 +1639,7 @@
     $('.page-footer span:last-child').textContent = '模型授权 ≠ 发送授权 · 关闭窗口留在托盘';
   }
   initializeWindowControls().catch((error) => toast(errorMessage(error), 'error'));
+  if (!window.qqBridgeDesktop?.isDesktop) initializeDesktopSettings().catch((error) => toast(errorMessage(error), 'error'));
   navigate(location.hash.slice(1));
   renderLiveState();
   refreshState();

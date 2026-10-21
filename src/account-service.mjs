@@ -6,7 +6,7 @@ import { createRuntime } from './runtime.mjs';
 
 const fail = (message, statusCode = 409, details) => Object.assign(new Error(message), { statusCode, ...(details ? { details } : {}) });
 
-export function createAccountService({ account, dataDir, csrfToken, installerFactory = createInstaller, runtimeFactory = createRuntime, redactAll = value => String(value), checkConflicts = () => {}, reserveConfig = () => () => {} }) {
+export function createAccountService({ account, dataDir, csrfToken, installerFactory = createInstaller, runtimeFactory = createRuntime, getNapcatSettings = () => ({ mode: 'docker', executablePath: '', revision: 0 }), redactAll = value => String(value), checkConflicts = () => {}, reserveConfig = () => () => {} }) {
   const store = createStore(dataDir);
   const logs = [], jobs = [];
   let environment = null, activeJob = null, applying = false, started = false, closed = false;
@@ -25,7 +25,7 @@ export function createAccountService({ account, dataDir, csrfToken, installerFac
     if (logs.length > 200) logs.shift();
   };
   const safeDetails = value => typeof value === 'string' ? redact(value) : Array.isArray(value) ? value.map(safeDetails) : value && typeof value === 'object' ? Object.fromEntries(Object.entries(value).map(([key, item]) => [key, safeDetails(item)])) : value;
-  const installer = installerFactory({ dataDir, platform: account.platform, profileId: account.id, accountId: account.id, legacy: account.id === 'legacy', getConfig: store.getConfig, getSecret: store.getSecret, setSecret: store.setSecret, log });
+  const installer = installerFactory({ dataDir, platform: account.platform, profileId: account.id, accountId: account.id, legacy: account.id === 'legacy', getConfig: store.getConfig, getNapcatSettings, getSecret: store.getSecret, setSecret: store.setSecret, log });
   const runtime = runtimeFactory({ platform: account.platform, profileId: account.id, accountId: account.id, getConfig: store.getConfig, getSecret: store.getSecret, store, installer, log });
   const summary = () => {
     const config = store.getState();
@@ -92,6 +92,11 @@ export function createAccountService({ account, dataDir, csrfToken, installerFac
     return { job: item };
   };
   const ensureIdle = () => { ensureOpen(); if (applying || activeJob) throw fail('该账号的配置或模块任务正在执行，请稍后重试。'); };
+  const checkEnvironment = async () => {
+    const revision = getNapcatSettings().revision;
+    const result = await installer.environment();
+    if (!closed && revision === getNapcatSettings().revision) environment = result;
+  };
   const apply = async (mode = 'apply', revision) => {
     ensureIdle();
     if (mode !== 'rollback' && revision !== store.getState().revision) throw fail('配置版本已变化，请刷新后重试。');
@@ -199,19 +204,24 @@ export function createAccountService({ account, dataDir, csrfToken, installerFac
   };
   const invoke = async (route, body) => {
     ensureOpen();
+    if (route === '/napcat/open') {
+      if (!Number.isSafeInteger(body.revision) || Object.keys(body).some(key => key !== 'revision')) throw fail('请提供当前 NapCat 全局设置版本后重试。', 400);
+      if (body.revision !== getNapcatSettings().revision) throw fail('NapCat 接入方式已变化，请刷新后再打开。');
+      return { code: 202, value: job('打开 NapCat', installer.startNapcat) };
+    }
     if (route === '/config/save') return { value: await save(body) };
     if (route === '/config/reset-defaults') return { value: await resetDefaults(body) };
     if (route === '/config/apply') { await apply('apply', body.revision); return { value: await state() }; }
     if (route === '/config/rollback') { await apply('rollback'); return { value: await state() }; }
     if (route === '/permissions/release') { await apply('release', body.revision); return { value: await state() }; }
     if (route === '/permissions/revoke') return { value: await revoke() };
-    if (route === '/environment/check') { environment = await installer.environment(); return { value: await state() }; }
+    if (route === '/environment/check') { await checkEnvironment(); return { value: await state() }; }
     if (route === '/setup/install') {
       const ids = body.modules || ['napcat', 'codex'];
       if (!Array.isArray(ids) || !ids.length || ids.some(id => !['napcat', 'codex'].includes(id))) throw fail('安装模块列表无效。', 400);
       return { code: 202, value: job('安装所选模块', async onLog => {
         for (const id of [...new Set(ids)]) { onLog(`开始安装 ${id}`); await installer.install(id, onLog); if (id === 'napcat') await installer.startNapcat(onLog); }
-        environment = await installer.environment();
+        await checkEnvironment();
       }) };
     }
     const installMatch = route.match(/^\/modules\/(napcat|codex|deepseek|summary|favorites)\/install$/);
@@ -241,11 +251,12 @@ export function createAccountService({ account, dataDir, csrfToken, installerFac
     throw fail('接口不存在。', 404);
   };
   return {
-    account, store, runtime, installer, summary, state, setupStatus, invoke, redact,
+    account, store, runtime, installer, summary, state, setupStatus, invoke, redact, ensureIdle,
+    invalidateEnvironment() { environment = null; },
     async start() {
       if (started) return;
       started = true;
-      Promise.resolve().then(() => installer.environment()).then(result => { environment = result; }).catch(error => log(`环境检查失败：${error.message}`, 'error'));
+      Promise.resolve().then(checkEnvironment).catch(error => log(`环境检查失败：${error.message}`, 'error'));
       await runtime.reload();
     },
     async close() {

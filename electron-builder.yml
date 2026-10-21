@@ -8,7 +8,6 @@ directories:
   buildResources: desktop/assets
 files:
   - desktop/**
-  - public/layout-schema.cjs
   - package.json
   - '!desktop/**/*.test.*'
   - '!node_modules/**'

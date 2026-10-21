@@ -13,7 +13,6 @@ const {
   configExportPath, isAccountProfileId, isDashboardIpcSender,
 } = require('./security.cjs');
 const { createDesktopSettingsStore } = require('./settings.cjs');
-const { createUiDesignStore, validateUiDesign } = require('./ui-design.cjs');
 
 const APP_NAME = 'QQ_Service';
 const STARTUP_TIMEOUT = 30_000;
@@ -31,8 +30,6 @@ let failureDialog = false;
 let closeNoticeShown = false;
 let exporting = false;
 let desktopSettings = null;
-let uiDesign = null;
-let exportingUiDesign = false;
 
 // Preserve the old desktop profile and single-instance lock when upgrading
 // from 0.2.0, so the renamed EXE cannot run a second backend on the same data.
@@ -64,15 +61,12 @@ if (!app.requestSingleInstanceLock()) {
   app.whenReady().then(async () => {
     desktopSettings = createDesktopSettingsStore(app.getPath('userData'));
     await desktopSettings.load();
-    uiDesign = createUiDesignStore(app.getPath('userData'));
-    await uiDesign.load();
     dashboardSession = session.fromPartition('qqbridge-dashboard');
     hardenSession(dashboardSession);
     setupMenu();
     setupTray();
     setupExportHandler();
     setupWindowHandlers();
-    setupUiDesignHandlers();
     await launch();
   }).catch(() => {
     dialog.showErrorBox(`${APP_NAME}无法启动`, '桌面运行环境初始化失败。请重新安装应用后再试。');
@@ -484,6 +478,16 @@ function setupWindowHandlers() {
     trusted(event);
     return desktopSettings.get();
   });
+  ipcMain.handle('qqbridge:napcat-choose-executable', async event => {
+    trusted(event);
+    const selection = await dialog.showOpenDialog(window, {
+      title: '选择 NapCat 启动文件',
+      properties: ['openFile'],
+      filters: [{ name: 'NapCat 启动文件', extensions: ['bat', 'cmd', 'exe'] }],
+    });
+    trusted(event);
+    return selection.canceled ? { canceled: true } : { canceled: false, path: selection.filePaths[0] };
+  });
   ipcMain.handle('qqbridge:desktop-settings-update', async (event, value) => {
     trusted(event);
     try {
@@ -494,45 +498,6 @@ function setupWindowHandlers() {
       if (error.message.startsWith('关闭方式无效')) throw error;
       throw new Error('无法保存应用设置，请检查本机用户资料目录是否可写后重试。');
     }
-  });
-}
-
-function setupUiDesignHandlers() {
-  const trusted = event => {
-    if (quitting || !isDashboardIpcSender(event, window?.webContents, backendOrigin)) {
-      throw new Error('仅允许本机仪表盘修改界面。');
-    }
-  };
-  ipcMain.handle('qqbridge:ui-design-get', event => {
-    trusted(event);
-    return uiDesign.get();
-  });
-  ipcMain.handle('qqbridge:ui-design-save', async (event, value) => {
-    trusted(event);
-    const next = validateUiDesign(value);
-    try { return await uiDesign.update(next); }
-    catch { throw new Error('无法保存界面修改，请检查本机用户资料目录是否可写后重试。'); }
-  });
-  ipcMain.handle('qqbridge:ui-design-export', async (event, value) => {
-    trusted(event);
-    const next = validateUiDesign(value);
-    if (exportingUiDesign) return { ok: true, canceled: true };
-    exportingUiDesign = true;
-    try {
-      const options = {
-        title: '导出界面修改',
-        defaultPath: path.join(app.getPath('documents'), 'QQ_Service-ui-design.json'),
-        filters: [{ name: '界面修改 JSON', extensions: ['json'] }],
-        properties: ['createDirectory', 'showOverwriteConfirmation'],
-      };
-      const result = window ? await dialog.showSaveDialog(window, options) : await dialog.showSaveDialog(options);
-      if (result.canceled || !result.filePath) return { ok: true, canceled: true };
-      // Only the native dialog chooses a destination. No renderer path, business
-      // configuration, account details or credentials enter this export.
-      await fsp.writeFile(result.filePath, JSON.stringify(next), { encoding: 'utf8', mode: 0o600 });
-      return { ok: true, canceled: false, file: path.basename(result.filePath) };
-    } catch { throw new Error('无法导出界面修改，请检查所选位置是否可写后重试。'); }
-    finally { exportingUiDesign = false; }
   });
 }
 

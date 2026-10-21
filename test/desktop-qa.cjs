@@ -96,7 +96,6 @@ async function createAccount(window, name, qqNumber) {
   await window.locator('#create-account-entry').click();
   await window.locator('#new-account-name').fill(name);
   await window.locator('#new-account-qq').fill(qqNumber);
-  await window.locator('#new-account-llm-source').selectOption('deepseek');
   const created = window.waitForResponse(response => response.url().endsWith('/api/accounts') && response.request().method() === 'POST');
   await window.locator('#submit-create-account').click();
   const response = await created;
@@ -116,10 +115,6 @@ async function configureAccount(window, account, { ownerQQ, secret, persona }) {
     await window.locator(`#account-cards [data-open-account="${account.id}"]`).click();
   }
   await window.locator('#account-llm-source').selectOption('deepseek');
-  if (!await window.locator('[data-setup-panel="models"]').isVisible()) {
-    await window.locator('[data-setup-save="models"]').click();
-    await window.locator('[data-setup-panel="models"]').waitFor({ state: 'visible' });
-  }
   await window.locator('[data-secret="deepseekApiKey"]').fill(secret);
   await window.locator('[data-page="scenarios"]').click();
   await window.locator('[data-scenario-tab="tasks"]').click();
@@ -152,7 +147,7 @@ async function configureAccount(window, account, { ownerQQ, secret, persona }) {
     assert.equal(prefs.sandbox, true);
     assert.equal(prefs.webviewTag, false);
     assert.equal(await window.evaluate(() => typeof require), 'undefined');
-    assert.deepEqual(await window.evaluate(() => Object.keys(window.qqBridgeDesktop).sort()), ['close', 'exportConfig', 'exportUiDesign', 'getSettings', 'getUiDesign', 'getWindowState', 'isDesktop', 'minimize', 'onWindowState', 'quit', 'saveUiDesign', 'toggleMaximize', 'updateSettings', 'version']);
+    assert.deepEqual(await window.evaluate(() => Object.keys(window.qqBridgeDesktop).sort()), ['chooseNapcatExecutable', 'close', 'exportConfig', 'getSettings', 'getWindowState', 'isDesktop', 'minimize', 'onWindowState', 'quit', 'toggleMaximize', 'updateSettings', 'version']);
     backendPid = await app.evaluate(() => process._getActiveHandles().find(handle => handle.constructor.name === 'ChildProcess' && handle.spawnargs?.some(arg => arg.endsWith('server.mjs')))?.pid);
     assert.ok(Number.isInteger(backendPid) && alive(backendPid));
     pass('真实 Electron 独立窗口、本机随机端口、隔离 preload 与禁止 NodeIntegration');
@@ -171,6 +166,15 @@ async function configureAccount(window, account, { ownerQQ, secret, persona }) {
     assert.equal(fs.existsSync(emptyExportFile), false);
     assert.equal((await window.evaluate(() => fetch('/api/accounts').then(response => response.json()))).accounts.length, 0);
     pass('空账号目录点击原生导出只提示创建并选择账号，不导出或懒建 legacy');
+    await window.locator('[data-page="settings"]').click();
+    assert.equal(await window.locator('#napcat-settings-account').count(), 0);
+    await app.evaluate(({ dialog }) => {
+      dialog.showOpenDialog = async () => ({ canceled: false, filePaths: ['C:\\NapCat\\NapCatQQ-Desktop.exe'] });
+    });
+    await window.locator('#choose-napcat-executable').click();
+    await condition(async () => (await window.evaluate(() => fetch('/api/napcat/settings').then(response => response.json()))).executablePath === 'C:\\NapCat\\NapCatQQ-Desktop.exe', '原生文件选择没有保存全局启动入口');
+    assert.equal((await window.evaluate(() => fetch('/api/accounts').then(response => response.json()))).accounts.length, 0);
+    pass('真实受限文件选择 IPC 在零账号时保存全局启动文件，设置页无账号选择框');
     const first = await createAccount(window, '桌面验收账号 A', '12345001');
     assert.equal((await readState(window, first.id)).applied.permissions.released, false);
     assert.equal(await window.locator('#account-permission-badge').textContent(), '只读 · 未释放发送');
@@ -193,7 +197,7 @@ async function configureAccount(window, account, { ownerQQ, secret, persona }) {
         dialog.showSaveDialog = async () => ({ canceled: false, filePath });
       }, exportFile);
       await window.locator('[data-page="modules"]').click();
-      await window.locator('#export-config').click();
+      await window.evaluate(id => window.qqBridgeDesktop.exportConfig(id), account.id);
       await condition(() => fs.existsSync(exportFile), '账号原生导出未写文件');
       const exported = fs.readFileSync(exportFile, 'utf8');
       const config = JSON.parse(exported);

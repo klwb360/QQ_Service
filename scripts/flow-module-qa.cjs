@@ -86,6 +86,8 @@ async function seed() {
   token = (await (await fetch(origin + '/api/accounts')).json()).csrfToken;
   account = (await post('/api/accounts', { name:'QA 主账号', platform:'qq', qqNumber:'12345001' })).account;
   second = (await post('/api/accounts', { name:'QA 第二账号', platform:'qq', qqNumber:'12345002' })).account;
+  const napcatSettings = await (await fetch(origin + '/api/napcat/settings')).json();
+  await post('/api/napcat/settings', { ...napcatSettings, mode:'docker' });
 }
 async function launch() {
   const main = path.join(fixture, 'electron-main.cjs');
@@ -96,7 +98,7 @@ async function launch() {
   page.on('dialog', dialog => dialog.accept().catch(() => {}));
   page.on('request', request => { if (request.method() === 'POST' && request.url().startsWith(origin + '/api/')) posts.push({ url:request.url().slice(origin.length), body:request.postDataJSON() }); });
   await page.route('**/*', route => route.request().url().startsWith(origin) || route.request().url().startsWith('data:') ? route.continue() : route.abort());
-  await page.waitForFunction(() => document.querySelector('#server-label')?.textContent === '管理服务可访问' && Boolean(window.QQServiceDesigner) && Boolean(window.QQServiceBuilder));
+  await page.waitForFunction(() => document.querySelector('#server-label')?.textContent === '管理服务可访问');
   await page.setViewportSize({ width:1400, height:1050 });
   await page.evaluate(() => {
     const original=Element.prototype.animate; window.qaFlowAnimations=[];
@@ -111,13 +113,9 @@ async function launch() {
   assert.equal(await page.locator('#account-llm-source').getAttribute('multiple'),null);
   assert.equal(await page.locator('#new-account-llm-source, #new-account-platform, #setup-connection-badge, #setup-model-status').count(),0);
   assert.equal(await page.locator('.config-bar').isVisible(),false);
-  const oldKeys=JSON.parse(fs.readFileSync(path.join(project,'public/index.html'),'utf8').match(/id="ui-design-baseline"[^>]*>(.*?)<\/script>/s)[1]).retiredKeys;
-  const legacy={version:2,edits:oldKeys.map(key=>({selector:`[data-ui-key="${key}"]`,hidden:true})),layout:{navigation:['overview','connections','scenarios','modules','records','settings','custom-qaflowaa'],pages:[{id:'custom-qaflowaa',label:'QA 自建菜单',title:'QA 自建页面',description:'旧界面兼容',icon:'◇'}],components:[{id:'block-qaflowaa',type:'button',page:'custom-qaflowaa',parent:null,label:'QA 按钮',text:'',placeholder:'',description:'',styles:{fontSize:'18px'},action:{type:'pending',note:'后续接入'}}]}};
-  await page.evaluate(doc=>window.QQServiceDesigner.importDocument(doc),legacy);
-  const imported=await page.evaluate(()=>window.QQServiceDesigner.getDocument());
-  assert.deepEqual(imported.edits,[]);assert.deepEqual(imported.layout,legacy.layout);
-  await page.evaluate(()=>window.QQServiceDesigner.importDocument({version:1,edits:[]}));
-  pass('保留每个账号主下拉栏与单选 AI 下拉框；流程缩为四部分，旧版删除项自动消解，自建菜单继续保留');
+  assert.equal(await page.locator('#frontend-editor-toggle, #designer-root').count(),0);
+  assert.equal(await page.evaluate(()=>Boolean(window.QQServiceDesigner||window.QQServiceBuilder)),false);
+  pass('保留每个账号主下拉栏与单选 AI 下拉框，四部分账号流程可用；编辑器不再加载');
 
   for(const source of ['deepseek','vendor:openai','vendor:dashscope','vendor:zhipu','vendor:kimi','vendor:siliconflow','vendor:custom','codex']) {
     await page.locator('#account-llm-source').selectOption(source);
@@ -273,14 +271,9 @@ async function launch() {
   pass('保留的模块卡片真实提交独立安装与 Codex 授权任务；账号切换不改任务归属，两个账号可并发安装，同账号 NapCat 与 Codex 可同时保留');
 
   await post(`/api/accounts/${account.id}/permissions/revoke`);
-  const beforeEdit=posts.length;
-  await page.locator('#frontend-editor-toggle').click(); await page.locator('#designer-root[data-mode="edit"]').waitFor();
-  await page.locator('#module-cards [data-module-action="install"][data-module="napcat"]').click();
-  assert.equal(posts.length,beforeEdit,'编辑模式点击安装按钮触发了后端操作');
-  await page.locator('#designer-close').click();
   assert.deepEqual(errors,[]); assert.equal(sent.length,0);
   assert.equal(installerCalls.some(call=>!['legacy',account.id,second.id].includes(call.id)),false);
-  pass('编辑模式仍拦截安装操作，无页面异常、真实 QQ 消息、外部下载或付费模型调用');
+  pass('无页面异常、真实 QQ 消息、外部下载或付费模型调用；账号任务归属保持正确');
   console.log(`本次真实 Electron 流程与模块验证通过：${checks.length} 项。`);
  } catch(error) {
   if(page) { console.error('VISIBLE',(await page.locator('body').innerText().catch(()=>'' )).slice(0,14000)); await page.screenshot({path:'/tmp/qq-service-flow-failure.png',fullPage:false}).catch(()=>{}); }

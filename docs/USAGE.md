@@ -2,11 +2,11 @@
 
 [返回首页](../README.md) · [功能实现与架构](ARCHITECTURE.md) · [Windows 原生 NapCat](NATIVE_NAPCAT_WINDOWS.md)
 
-稳定下载仍为 v0.4.1；以下界面说明对应当前源码分支。首次使用在同一个账号菜单内连续配置：**账号与来源 → 模型准备 → QQ 连接 → 账号任务 → 范围与授权 → 验证效果**。完成当前部分并继续后，下一部分向下展开，已填写的表单保留在上方。多个账号可以同时运行；切换界面不会改变正在执行任务的所属账号。
+v0.5.0 在同一个账号菜单内连续配置：**账号与 AI → 连接 QQ → 任务与权限 → 启动账号**。完成当前部分并继续后，下一部分向下展开，已填写的表单保留在上方。多个账号可以同时运行；切换界面不会改变正在执行任务的所属账号。
 
 ## 1. 打开应用，创建账号
 
-从 [Release](https://github.com/klwb360/QQ_Service/releases/latest) 下载 `QQ_Service-0.4.1-Windows-x64.exe`，放在普通文件夹，例如 `D:\Apps\QQ_Service`，双击打开。适用于 Windows 10/11 x64，自带 Node.js 和 npm。便携 EXE 首次展开可能较慢；当前未签名，Windows 可能显示发布者未知或 SmartScreen 提示。
+从 [Release](https://github.com/klwb360/QQ_Service/releases/latest) 下载 `QQ_Service-0.5.0-Windows-x64.exe`，放在普通文件夹，例如 `D:\Apps\QQ_Service`，双击打开。适用于 Windows 10/11 x64，自带 Node.js 和 npm。便携 EXE 首次展开可能较慢；当前未签名，Windows 可能显示发布者未知或 SmartScreen 提示。
 
 窗口使用应用内标题栏，可最小化、最大化或关闭；原生菜单栏已移除。可在「设置」选择关闭按钮的行为：**默认最小化到托盘**继续运行，也可改为完全退出；这是所有账号共用的应用设置。托盘始终提供完全退出入口；无法创建托盘时，关闭会退出。重复双击会唤起已有窗口。后台只在本机运行；休眠、关机或完全退出时不采集新消息，也不补跑错过的定时汇总。
 
@@ -46,19 +46,19 @@ Codex 使用本人订阅当前可用的模型与额度。ChatGPT 网页历史、
 
 如果 NapCat 已经安装并登录，不需要重装；直接检查接口、连接与实际身份，再继续选择功能和群。尚未准备 NapCat 且不想安装 Docker 时，使用 [Windows 原生指南](NATIVE_NAPCAT_WINDOWS.md)：
 
-1. 用官方 Windows OneKey 安装器安装 NapCat，在生成的目录启动 `napcat.bat`。
-2. 按 NapCat 控制台/WebUI 提示完成 QQ 登录，确认登录的正是刚才填写的账号。
+1. 在「设置 → NapCat 接入方式」选择本地安装。按该处官方链接安装 NapCat，点击「选择文件」选中 `napcat.bat`、`launcher.bat` 或 NapCat 管理程序；此设置适用于所有账号。
+2. 回到「连接 QQ」，点击「打开 NapCat」，再点击「打开登录页」，按提示完成对应 QQ 的登录。
 3. 在 NapCat WebUI 启用 **WebSocket 服务器（正向）**，记下本机端口和 OneBot Token。
 4. 在当前账号的 QQ 连接步骤填入相同的 WebSocket 地址和 OneBot Token，保存并建立连接。
-5. 查看应用显示的**实际登录 QQ**是否与目标一致；连接失败时按该步骤的诊断处理。
+5. 点击「连接并继续」。后台核对实际 QQ，账号栏头显示在线；连接失败时按当前步骤的诊断处理。
 
 注意两种 Token：WebUI Token 用来打开 NapCat 管理页，OneBot Token 用来让 QQ_Service 连接消息接口，不能混填。只有 OneBot 正向 WebSocket 服务可供当前连接方式使用，反向 WebSocket 不是同一配置。
 
-已经安装 Docker Desktop 的用户也可选择应用内 Docker 安装。其前提是 [Docker Desktop](https://docs.docker.com/desktop/setup/install/windows-install/) 已运行、使用 Linux 容器后端；WSL 2、BIOS 和重启需按 Docker 提示处理。应用内安装/启动/停止 NapCat 管理的是 Docker 容器，**尚不提供原生 Windows NapCat 一键安装**。只使用 Codex 不需要 Docker。
+使用 Docker 时，在「设置」将全局接入方式选为 Docker，再到「模块」安装 NapCat。其前提是 [Docker Desktop](https://docs.docker.com/desktop/setup/install/windows-install/) 已运行、使用 Linux 容器后端；WSL 2、BIOS 和重启需按 Docker 提示处理。应用内安装/启动/停止 NapCat 管理的是 Docker 容器，**尚不提供原生 Windows NapCat 一键安装**。只使用 Codex 不需要 Docker。
 
 模块页保留 NapCat、Codex、DeepSeek、通知汇总和收藏五张卡片，分别从卡片进入安装、授权或配置。顶部不再提供安装勾选项或批量安装入口。
 
-Docker 使用官方 `mlikiowa/napcat-docker:v4.18.37`，首次安装记录镜像摘要，此后按摘要启动。多账号需要各自的 NapCat 实例、实际 QQ 登录资料、端口和 Token；不能让两个账号配置指向同一 OneBot 接口。原生 NapCat 由本人启动和停止，QQ_Service 不管理其进程。Docker 容器也可能在应用退出后继续运行。
+Docker 使用官方 `mlikiowa/napcat-docker:v4.18.37`，首次安装记录镜像摘要，此后按摘要启动。多账号需要各自的 NapCat 实例、实际 QQ 登录资料、端口和 Token；不能让两个账号配置指向同一 OneBot 接口。本地方式的「打开 NapCat」启动全局选定程序；账号实例、登录和停止由 NapCat 自身管理。Docker 容器也可能在应用退出后继续运行。
 
 QQ 连接本身不要求私聊接收 QQ，也不要求提前开通发送权限。判断是否连通应看实际 OneBot 连接和登录身份，而不是只看“模块已安装”。
 
@@ -72,7 +72,7 @@ QQ 连接本身不要求私聊接收 QQ，也不要求提前开通发送权限�
 | 通知汇总 | 独立选择模型、条数、保留天数和时间；默认只在面板保存，可选私聊发送 |
 | QQ 收藏整理 | 读取条数和独立整理模型；读取原始列表不依赖模型，整理时需要可用模型 |
 
-聊天可选择 DeepSeek、已启用的兼容 API，或个人 Codex。选择 Codex 作为默认聊天模型时仅处理本人私聊，不自动群聊。通知和收藏可以分别使用其他模型，不需要都选同一个。
+账号从下拉栏选择 DeepSeek、兼容 API 或个人 Codex，聊天与整理任务使用所选来源。选择 Codex 时仅处理本人请求及明确授权的整理，不用于群友触发的自动群聊。
 
 **保存**只保存待应用参数。**应用参数·保持只读**更新参数并让当前账号回到只读；检查目标范围后需重新显式授权。模型与任务参数配置完毕，不代表允许发消息。
 

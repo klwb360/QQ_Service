@@ -6,6 +6,7 @@ import { fileURLToPath, pathToFileURL } from 'node:url';
 import { randomBytes, timingSafeEqual } from 'node:crypto';
 import { createAccountCatalog, PLATFORMS } from './accounts.mjs';
 import { createAccountService } from './account-service.mjs';
+import { createNapcatSettings } from './napcat-settings.mjs';
 
 const projectDir = fileURLToPath(new URL('../', import.meta.url));
 const fail = (message, statusCode = 409) => Object.assign(new Error(message), { statusCode });
@@ -18,6 +19,7 @@ export function defaultDataDir() {
 export function createDashboard({ dataDir = defaultDataDir(), installerFactory, runtimeFactory } = {}) {
   const csrfToken = randomBytes(32).toString('hex');
   const catalog = createAccountCatalog(dataDir);
+  const napcatSettings = createNapcatSettings({ dataDir, accountDirectories: catalog.list().map(account => catalog.directory(account.id)) });
   const services = new Map();
   const reservations = new Map();
   let started = false, closing = false;
@@ -51,7 +53,7 @@ export function createDashboard({ dataDir = defaultDataDir(), installerFactory, 
   };
   const buildService = account => {
     if (services.has(account.id)) return services.get(account.id);
-    const service = createAccountService({ account, dataDir: catalog.directory(account.id), csrfToken, installerFactory, runtimeFactory, redactAll, checkConflicts, reserveConfig });
+    const service = createAccountService({ account, dataDir: catalog.directory(account.id), csrfToken, installerFactory, runtimeFactory, getNapcatSettings: napcatSettings.get, redactAll, checkConflicts, reserveConfig });
     services.set(account.id, service);
     return service;
   };
@@ -72,7 +74,7 @@ export function createDashboard({ dataDir = defaultDataDir(), installerFactory, 
     Object.assign(services.get('legacy').account, account);
     return services.get('legacy');
   };
-  const directory = () => ({ csrfToken, accounts: catalog.list().map(account => resolve(account.id).summary()), platforms: PLATFORMS });
+  const directory = () => ({ csrfToken, accounts: catalog.list().map(account => resolve(account.id).summary()), platforms: PLATFORMS, napcatSettings: napcatSettings.get() });
   const json = (response, value, code = 200) => {
     response.writeHead(code, { 'Content-Type': 'application/json; charset=utf-8', 'Cache-Control': 'no-store' });
     response.end(JSON.stringify(value));
@@ -110,6 +112,16 @@ export function createDashboard({ dataDir = defaultDataDir(), installerFactory, 
       if (closing && request.method !== 'GET' && request.method !== 'HEAD') throw fail('应用正在退出，请重新启动后操作。', 503);
       const url = new URL(request.url, `http://${request.headers.host}`), route = url.pathname;
       if (request.method === 'GET' && route === '/api/accounts') return json(response, directory());
+      if (request.method === 'GET' && route === '/api/napcat/settings') return json(response, napcatSettings.get());
+      if (request.method === 'POST' && route === '/api/napcat/settings') {
+        const body = await readBody(request);
+        // The synchronous idle check + atomic save prevents changing the shared
+        // launch method underneath any account's in-flight install/apply job.
+        for (const service of services.values()) service.ensureIdle();
+        const saved = napcatSettings.update(body);
+        for (const service of services.values()) service.invalidateEnvironment();
+        return json(response, saved);
+      }
       if (request.method === 'POST' && route === '/api/accounts') {
         const body = await readBody(request);
         const ordinal = catalog.list().length;
@@ -120,6 +132,10 @@ export function createDashboard({ dataDir = defaultDataDir(), installerFactory, 
         draft.qq.wsUrl = `ws://127.0.0.1:${3001 + ordinal * 2}`;
         draft.qq.webUiUrl = `http://127.0.0.1:${6099 + ordinal * 2}`;
         service.store.saveDraft(draft);
+        // Establish only the new profile's disabled, read-only identity/ports.
+        // The installer reads applied endpoints before the first QQ connection;
+        // without this baseline every fresh account would start on port 3001.
+        service.store.commitDraft();
         if (started) await service.start();
         return json(response, { account: service.summary(), state: await service.state() }, 201);
       }
@@ -149,7 +165,7 @@ export function createDashboard({ dataDir = defaultDataDir(), installerFactory, 
         }
         throw fail('接口不存在。', 404);
       }
-      const files = { '/': ['index.html', 'text/html'], '/index.html': ['index.html', 'text/html'], '/styles.css': ['styles.css', 'text/css'], '/app.js': ['app.js', 'text/javascript'], '/designer.js': ['designer.js', 'text/javascript'], '/designer.css': ['designer.css', 'text/css'], '/layout-schema.js': ['layout-schema.cjs', 'text/javascript'], '/builder.js': ['builder.js', 'text/javascript'], '/builder.css': ['builder.css', 'text/css'] };
+      const files = { '/': ['index.html', 'text/html'], '/index.html': ['index.html', 'text/html'], '/styles.css': ['styles.css', 'text/css'], '/app.js': ['app.js', 'text/javascript'] };
       if (request.method === 'GET' && files[route]) {
         const [file, type] = files[route];
         response.writeHead(200, { 'Content-Type': `${type}; charset=utf-8`, 'Cache-Control': 'no-cache' });

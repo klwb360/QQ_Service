@@ -21,12 +21,14 @@ async function verifyWindowsPackage(appOutDir, expectedVersion) {
     path.join(resources, 'app.asar'),
     path.join(resources, 'runtime', 'node.exe'), npmCli,
     path.join(backend, 'src', 'server.mjs'),
+    path.join(backend, 'src', 'account-service.mjs'),
+    path.join(backend, 'src', 'installer.mjs'),
+    path.join(backend, 'src', 'napcat-settings.mjs'),
+    path.join(backend, 'src', 'napcat-native.mjs'),
     path.join(backend, 'src', 'group-events.mjs'),
-    path.join(backend, 'public', 'designer.js'),
-    path.join(backend, 'public', 'designer.css'),
-    path.join(backend, 'public', 'layout-schema.cjs'),
-    path.join(backend, 'public', 'builder.js'),
-    path.join(backend, 'public', 'builder.css'),
+    path.join(backend, 'public', 'index.html'),
+    path.join(backend, 'public', 'app.js'),
+    path.join(backend, 'public', 'styles.css'),
     path.join(backend, 'node_modules', 'ws', 'package.json')
   ];
   for (const file of required) {
@@ -48,10 +50,16 @@ async function verifyWindowsPackage(appOutDir, expectedVersion) {
   assert.equal(windowsMachine(await fs.readFile(path.join(appOutDir, 'QQ_Service.exe'))), 0x8664, 'Packaged desktop executable is not Windows x64');
   const asar = await import('@electron/asar');
   const files = asar.listPackage(path.join(resources, 'app.asar')).map(file => file.replaceAll('\\', '/'));
-  for (const file of ['/desktop/main.cjs', '/desktop/preload.cjs', '/desktop/security.cjs', '/desktop/settings.cjs', '/desktop/ui-design.cjs', '/public/layout-schema.cjs']) {
+  for (const file of ['/desktop/main.cjs', '/desktop/preload.cjs', '/desktop/security.cjs', '/desktop/settings.cjs']) {
     assert(files.includes(file), `Required desktop shell file is missing: ${file}`);
   }
-  const privateFile = /(?:^|\/)(?:auth\.json|config(?:\.v\d+\.backup)?\.json|secrets\.json|vault\.(?:json|key)|accounts\.json|module-state\.json|\.env(?:\.[^/]*)?|[^/]+\.sqlite(?:-wal|-shm)?|codex-home|accounts|data)(?:\/|$)/i;
+  const retiredAssets = ['public/designer.js', 'public/designer.css', 'public/builder.js', 'public/builder.css', 'public/layout-schema.cjs', 'desktop/ui-design.cjs'];
+  for (const file of retiredAssets) {
+    assert(!files.includes(`/${file}`), `Retired editor resource is still in the desktop archive: ${file}`);
+    const leftover = await fs.stat(path.join(backend, file)).catch(error => { if (error.code === 'ENOENT') return null; throw error; });
+    assert(!leftover, `Retired editor resource is still in the backend package: ${file}`);
+  }
+  const privateFile = /(?:^|\/)(?:auth\.json|config(?:\.v\d+\.backup)?\.json|secrets\.json|vault\.(?:json|key)|accounts\.json|module-state\.json|napcat-settings\.json|ui-design\.json|\.env(?:\.[^/]*)?|[^/]+\.sqlite(?:-wal|-shm)?|codex-home|accounts|data)(?:\/|$)/i;
   assert(!files.some(file => privateFile.test(file)), 'Desktop archive contains unexpected account data');
   async function scan(directory) {
     for (const entry of await fs.readdir(directory, { withFileTypes: true })) {

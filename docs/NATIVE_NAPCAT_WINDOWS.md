@@ -4,13 +4,13 @@
 
 QQ_Service 可以连接本机原生 NapCat 的 OneBot v11 接口，无需 Docker Desktop 或 WSL。NapCat 是 QQ 连接组件，负责实际 QQ 登录和消息接口；DeepSeek/Codex 不代替它登录 QQ。
 
-v0.4.0 在「账号控制」展开账号，按 QQ 连接步骤填写该账号的独立参数。应用内 Docker「安装 / 启动 / 停止 NapCat」按钮仍管理容器；原生 NapCat 由官方安装器部署、由本人启动。已有 NapCat 且已经登录时，从第 2 节开始核对接口即可，无需重装。
+v0.5.0 在「设置 → NapCat 接入方式」全局选择 **本地安装**。此设置适用于所有账号，设置页无需选择账号。按官方说明安装后，点击「选择文件」选中启动文件；再到账号的「连接 QQ」点击 **打开 NapCat → 打开登录页 → 连接并继续**。已有 NapCat 且已经登录时，直接核对第 2 节的接口即可。
 
 ## 1. 用官方安装器准备 NapCat
 
 1. 下载 [官方 Windows OneKey ZIP · v4.18.38](https://github.com/NapNeko/NapCatQQ/releases/download/v4.18.38/NapCat.Shell.Windows.OneKey.zip)，解压到固定文件夹，例如 `D:\Apps\NapCat-AccountA`。其他版本见 [NapCat Releases](https://github.com/NapNeko/NapCatQQ/releases)。
 2. 运行 `NapCatInstaller.exe`，按提示完成安装；过程中仍需下载 QQ/NapCat 组件。
-3. 进入生成的 `NapCat.XXXX.Shell` 目录，双击 `napcat.bat`。
+3. 进入生成的 `NapCat.XXXX.Shell` 目录，在 QQ_Service 设置中选择其中的 `napcat.bat`。也可选择官方桌面管理工具的 `.exe`；支持 `.exe/.bat/.cmd` 启动文件。
 4. 按控制台提示实际登录准备接入的 QQ 账号并打开 WebUI，地址和登录 Token 以输出为准，常用地址为 `http://127.0.0.1:6099`。
 
 无需提前安装系统 QQ，适用范围为上游说明中的 Windows amd64。若已有兼容 QQ，可按官方文档用 `NapCat.Shell.zip` 手动安装；本页采用 OneKey 路径。**在面板输入 QQ 号仅设置预期身份，不能跳过此处登录。**
@@ -46,25 +46,25 @@ v0.4.0 在「账号控制」展开账号，按 QQ 连接步骤填写该账号的
 
 连接成功后可读取已加入群作为验证，但这不等于已授权这些群。请让所选群产生一条新消息，再检查当前账号记录；完整验证步骤见 [使用指南](USAGE.md#6-验证一次完整流程)。不要仅依据“NapCat 已安装”判断 QQ 已接通。
 
-不要点击 Docker 版 NapCat 安装或启动。只需 Codex 时，在所选账号的一键安装中取消 NapCat 勾选；Codex 不依赖 Docker。
+本地方式的模块卡片显示「打开 NapCat」，不显示 Docker 安装/停止按钮。Codex CLI 在自己的模块卡片安装，不依赖 Docker。选择文件或切换方式不会自动启动程序。
 
 ## 4. 多账号同时在线
 
-每个受控 QQ 需要自己的 NapCat 实例、登录资料、OneBot Token 和本机端口。QQ_Service 的账号配置互不代替上游实际登录过程；同一接口不会变成多个独立 QQ 会话。
+NapCat 支持多账号并行；官方 [NapCatQQ-Desktop](https://github.com/NapNeko/NapCatQQ-Desktop) 可管理多个账号实例。每个 QQ 需要自己的实际登录、连接端口和 OneBot 配置。QQ_Service 共用的是安装方式与启动入口，账号连接、数据与消息权限仍独立；点击同一个启动文件并不会自动创建多个隔离账号。
 
 下面仅是端口规划示例，实际以各实例生效配置为准：
 
 | 实例 | OneBot 地址 | WebUI 地址 |
 | --- | --- | --- |
 | 账号 A | `ws://127.0.0.1:3001` | `http://127.0.0.1:6099` |
-| 账号 B | `ws://127.0.0.1:3002` | `http://127.0.0.1:6100` |
+| 账号 B | `ws://127.0.0.1:3003` | `http://127.0.0.1:6101` |
 
 在上游实例中同时调整监听端口和 WebUI 端口，不能只改 QQ_Service 表单。独立目录是否足以隔离 QQ 登录资料，取决于上游启动方式；请按官方多实例方式配置，不要复制正在使用的会话目录冒充第二次登录。当前未完成真实 Windows 原生多账号验收。
 
 ## 运行与排查
 
-- 各 NapCat 实例和 QQ_Service 都需保持运行。应用托盘只管理自己的后台，不负责原生 QQ/NapCat 的启动停止。
-- Docker 环境或模块状态可以显示未安装；这不阻止 OneBot 直连。以所选账号的实际 QQ 连接与身份校验结果为准。
+- 各 NapCat 实例和 QQ_Service 都需保持运行。应用可打开全局选定启动程序；原生 QQ/NapCat 的各账号停止及实例切换由上游窗口管理。
+- 本地方式不检查 Docker/WSL；「已选启动文件」只表示文件可用，实际 QQ 在线以连接与身份校验结果为准。
 - 连接被拒绝时，先确认 `napcat.bat` 启动的窗口仍在运行、正向 WS 服务器已启用，且 WS 地址对应消息接口端口，不是 WebUI 端口；不能靠重新填入 QQ 号解决。
 - 鉴权失败时核对 OneBot Token，不能填写 WebUI Token。身份不一致时核对实际登录 QQ 和实例端口；多个账号不能复用同一正在使用的接口。
 - “连接成功但不回复”通常还需检查该账号功能开关、群读取/发送、私聊目标及最后的权限释放；普通应用和回滚会回只读。
