@@ -218,8 +218,37 @@ export function createAccountService({ account, dataDir, csrfToken, installerFac
     log('当前账号功能参数已还原默认并保存；应用后只读，发送需单独释放权限。');
     return state();
   };
+  const memoryIdentity = supplied => {
+    const current = store.getState();
+    if (supplied !== undefined && (typeof supplied !== 'string' || !/^[1-9]\d{3,19}$/.test(supplied))) throw fail('实际登录 QQ 格式无效。', 400);
+    const actualQQ = supplied ?? String(runtime.status().accountId || current.applied.botQQ || current.draft.botQQ || '');
+    if (!actualQQ) return '';
+    if (typeof actualQQ !== 'string' || !/^[1-9]\d{3,19}$/.test(actualQQ)) throw fail('实际登录 QQ 格式无效。', 400);
+    if (!store.memory.identities().includes(actualQQ) && String(runtime.status().accountId || '') !== actualQQ) throw fail('这个 QQ 不属于当前账号配置的记忆目录。', 404);
+    return actualQQ;
+  };
+  const memoryRead = (filters = {}) => {
+    ensureOpen();
+    const actualQQ = memoryIdentity(filters.actualQQ);
+    return { records: actualQQ ? store.memory.list({ ...filters, actualQQ }) : [], groups: store.memory.groups() };
+  };
+  const memoryTree = () => { ensureOpen(); return store.memory.tree(); };
   const invoke = async (route, body) => {
     ensureOpen();
+    if (route === '/memory/action' || route === '/memory/group') {
+      if (applying) throw fail('账号参数正在应用，请稍后修改记忆。');
+      if (!body || typeof body !== 'object' || Array.isArray(body)) throw fail('记忆操作参数无效。', 400);
+      const allowed = route === '/memory/group' ? ['actualQQ', 'groupId', 'enabled'] : ['action', 'actualQQ', 'groupId', 'userId', 'id', 'version', 'text', 'kind'];
+      if (Object.keys(body).some(key => !allowed.includes(key))) throw fail('不支持的记忆操作字段。', 400);
+      if (typeof body.actualQQ !== 'string') throw fail('请提供所选记忆目录的实际 QQ。', 400);
+      const actualQQ = memoryIdentity(body.actualQQ);
+      if (!actualQQ) throw fail('请先创建并选择一个 QQ 账号。', 409);
+      const input = { ...body, actualQQ };
+      const result = route === '/memory/group' ? { group: store.memory.setGroup(input) } : { record: store.memory.mutate(input) };
+      await runtime.invalidateMemory?.({ actualQQ, groupId: body.groupId });
+      log(route === '/memory/group' ? `群 ${body.groupId} 记忆已${body.enabled ? '启用' : '暂停'}。` : `群 ${body.groupId} 记忆操作完成：${body.action}。`);
+      return { value: { ...result, ...memoryRead({ actualQQ, groupId: body.groupId }) } };
+    }
     if (route === '/tools/call') {
       ensureIdle();
       if (typeof body.tool !== 'string' || Object.keys(body).some(key => !['tool', 'arguments'].includes(key))) throw fail('请提供工具标识和 arguments。', 400);
@@ -281,7 +310,7 @@ export function createAccountService({ account, dataDir, csrfToken, installerFac
     throw fail('接口不存在。', 404);
   };
   return {
-    account, store, runtime, installer, summary, state, setupStatus, invoke, redact, ensureIdle,
+    account, store, runtime, installer, summary, state, setupStatus, invoke, redact, ensureIdle, memoryRead, memoryTree,
     invalidateEnvironment() { environment = null; },
     async start() {
       if (started) return;

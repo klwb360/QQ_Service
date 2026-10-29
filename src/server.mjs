@@ -173,6 +173,8 @@ export function createDashboard({ dataDir = defaultDataDir(), installerFactory, 
         if (request.method === 'GET') {
           if (action === '/state') return json(response, await service.state());
           if (action === '/setup/status') return json(response, service.setupStatus());
+          if (action === '/memory') return json(response, service.memoryRead(Object.fromEntries(url.searchParams)));
+          if (action === '/memory/tree') return json(response, service.memoryTree());
           if (action === '/tools') {
             const settings = service.store.getConfig().tools || {};
             return json(response, { tools: service.runtime.listTools?.() || [], enabled: settings.enabled === true, triggers: settings.triggers || ['mention', 'poke', 'name'], prefix: settings.prefix || '/工具' });
@@ -196,7 +198,7 @@ export function createDashboard({ dataDir = defaultDataDir(), installerFactory, 
         }
         throw fail('接口不存在。', 404);
       }
-      const files = { '/': ['index.html', 'text/html'], '/index.html': ['index.html', 'text/html'], '/styles.css': ['styles.css', 'text/css'], '/app.js': ['app.js', 'text/javascript'] };
+      const files = { '/': ['index.html', 'text/html'], '/index.html': ['index.html', 'text/html'], '/styles.css': ['styles.css', 'text/css'], '/app.js': ['app.js', 'text/javascript'], '/memory-ui.js': ['memory-ui.js', 'text/javascript'] };
       if (request.method === 'GET' && files[route]) {
         const [file, type] = files[route];
         response.writeHead(200, { 'Content-Type': `${type}; charset=utf-8`, 'Cache-Control': 'no-cache' });

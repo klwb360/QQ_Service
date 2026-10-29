@@ -6,7 +6,7 @@
 [![Release](https://img.shields.io/github/v/release/klwb360/QQ_Service)](https://github.com/klwb360/QQ_Service/releases/latest)
 [![License: MIT](https://img.shields.io/badge/License-MIT-blue.svg)](LICENSE)
 
-[下载 Windows EXE](https://github.com/klwb360/QQ_Service/releases/latest) · [使用指南](docs/USAGE.md) · [无需 Docker 接入 QQ](docs/NATIVE_NAPCAT_WINDOWS.md) · [功能实现与架构](docs/ARCHITECTURE.md) · [开发指南](docs/DEVELOPMENT.md) · [验证记录](docs/VALIDATION.md)
+[下载 Windows EXE](https://github.com/klwb360/QQ_Service/releases/latest) · [使用指南](docs/USAGE.md) · [自由群聊与记忆](docs/SOCIAL_CHAT.md) · [无需 Docker 接入 QQ](docs/NATIVE_NAPCAT_WINDOWS.md) · [功能实现与架构](docs/ARCHITECTURE.md) · [开发指南](docs/DEVELOPMENT.md) · [验证记录](docs/VALIDATION.md)
 
 QQ_Service 是支持多个 QQ 账号同时在线的本地助手。「账号控制」集中管理创建与配置：每个账号是一条可展开的菜单，从账号信息开始逐段向下完成模型、QQ 登录、功能与权限配置，已填写的内容保留在上方。总览只显示关键统计、运行状态和最近任务，统计卡片可点击进入对应页面。支持 DeepSeek、多组 OpenAI 兼容 API，以及通过官方 Codex CLI 使用本人 ChatGPT 订阅。**新账号默认只读；填入 QQ 号、API Key 或登录 Codex 都不会自动运行场景或获得发送权限。**
 
@@ -51,12 +51,12 @@ QQ_Service 是支持多个 QQ 账号同时在线的本地助手。「账号控�
 
 ## 下载与快速开始
 
-当前版本：**v0.5.0**，适用于 **Windows 10/11 x64**。
+当前版本：**v0.6.0**，适用于 **Windows 10/11 x64**。
 
 | 下载 | 说明 |
 | --- | --- |
-| [QQ_Service-0.5.0-Windows-x64.exe](https://github.com/klwb360/QQ_Service/releases/download/v0.5.0/QQ_Service-0.5.0-Windows-x64.exe) | 便携应用，自带 Node.js 和 npm，双击启动 |
-| [SHA256 校验文件](https://github.com/klwb360/QQ_Service/releases/download/v0.5.0/QQ_Service-0.5.0-Windows-x64.exe.sha256) | 用于核对下载文件 |
+| [QQ_Service-0.6.0-Windows-x64.exe](https://github.com/klwb360/QQ_Service/releases/download/v0.6.0/QQ_Service-0.6.0-Windows-x64.exe) | 便携应用，自带 Node.js 和 npm，双击启动 |
+| [SHA256 校验文件](https://github.com/klwb360/QQ_Service/releases/download/v0.6.0/QQ_Service-0.6.0-Windows-x64.exe.sha256) | 用于核对下载文件 |
 | [最新发布与更新说明](https://github.com/klwb360/QQ_Service/releases/latest) | 查看已发布版本和更新记录 |
 
 1. **创建账号配置**：创建入口只在「账号控制」显示。输入希望接入的 QQ 号，从下拉栏选择一个 API 厂商或 ChatGPT 订阅。每个账号的栏头与展开内容连为同一菜单，可点击栏头展开或收起，参数与数据分别保存，多个账号可以同时运行。完成一部分并继续后，下一部分带动画向下展开，之前的表单保持可见，无需切换顶部步骤标签。
@@ -76,8 +76,9 @@ EXE 当前未签名。详细操作、私聊命令与备份见 [使用指南](doc
 | 权限配置 | 账号功能参数与群/私聊权限分开；默认只读，独立释放/撤销入口，自动场景和发送由后台分别核对 |
 | Windows 应用 | Electron 自绘标题栏和窗口按钮，管理单实例与托盘；附带 Node.js 运行本地后台 |
 | 一键安装 | NapCat 接入方式全局设置；本地安装后选择启动文件，或按账号安装 Docker 容器；Codex 经 npm 安装 |
-| 插件与 AI 工具调用（开发分支） | 模块页导入可信插件，为账号、群和调用人授权工具；支持真实 @、戳一戳及名字／别名唤醒，自定义 Skill 与插件独立加密凭据。AI 可选择已授权工具执行；写入需额外授权。见 [开发指南](docs/PLUGIN_DEVELOPMENT.md)、[Bilibili 示例](examples/plugins/bilibili-assistant)；尚未包含在 v0.5.0 EXE 中 |
-| 群聊回复 | 获准读取及发送的群可组合勾选 @、前缀、低频插话及群事件触发，调用所选 API 模型；带冷却时间 |
+| 插件与 AI 工具调用 | 模块页导入可信插件，为账号、群和调用人授权工具；支持真实 @、戳一戳及名字／别名唤醒，自定义 Skill 与插件独立加密凭据。AI 可选择已授权工具执行；写入需明确请求和额外授权。见 [开发指南](docs/PLUGIN_DEVELOPMENT.md)、[Bilibili 示例](examples/plugins/bilibili-assistant) |
+| 自由群聊与主动分享 | 每群单独开启；记录双向对话、合并短消息并接住追问，AI 判断接话或沉默；可使用独立授权的只读工具寻找素材，自行决定是否分享。见 [配置指南](docs/SOCIAL_CHAT.md) |
+| 群友记忆 | 设置中按账号、实际 QQ、群和成员管理明确事实与偏好；AI 提出候选，经主人确认后用于聊天，可编辑、删除或逐群暂停 |
 | 多 AI 配置 | 提供 DeepSeek、OpenAI、百炼、智谱、Kimi、硅基流动及自定义兼容 API 选项；每个账号从下拉栏选择一个模型来源，已保存的其他接口参数可保留 |
 | GPT 个人订阅 | 使用本人已登录的官方 Codex CLI，处理本人私聊及明确发起或授权的个人整理任务 |
 | 通知汇总 | 当前账号的可读工作群消息存入 SQLite，手动或定时交给所选模型解释；默认保存在本地，可授权私聊发送 |
@@ -107,6 +108,7 @@ flowchart LR
 - **QQ 来源**：只缓存连接后实际收到、且已授予读取权限的选定群消息，不回填完整历史。收藏只属于实际登录账号，暂为列表摘要，不含完整正文、图片或附件。
 - **GPT 接入**：使用 Codex 当前模型与订阅额度；ChatGPT 网页历史、记忆和自定义 GPTs 不会自动带入。额度不足不自动切换付费 API。
 - **本地运行**：多个 QQ 账号可同时在线；应用后台保持运行才会采集和定时汇总。新账号数据相互分开，旧版升级保留原目录、登录状态和既有权限，不扩大授权。
+- **自主聊天**：自由聊天、主动话题和群友记忆默认关闭，分别按群启用。主动检查与模型判断受预算约束，可以一直保持沉默；Bilibili 示例按视频元数据筛选，不具备完整视频观看能力。
 - **后续平台**：微信、Telegram 目前仅列入平台扩展规划，没有可用接入实现。
 - **验证**：自动测试、界面与桌面检查见 [验证记录](docs/VALIDATION.md)。正式 EXE 由 Windows CI 测试和构建；真实 QQ、DeepSeek、ChatGPT 及 Windows 原生扫码联调仍待完成。
 
@@ -115,6 +117,7 @@ flowchart LR
 | 文档 | 内容 |
 | --- | --- |
 | [使用指南](docs/USAGE.md) | 创建账号、任务参数、读取与发送权限、私聊命令、收藏和备份 |
+| [自由群聊与记忆](docs/SOCIAL_CHAT.md) | 自然追问、内容驱动的主动分享、背景只读工具、群友记忆确认和排障 |
 | [Windows 原生 NapCat](docs/NATIVE_NAPCAT_WINDOWS.md) | 无需 Docker 的官方安装器、每账号高级连接与端口配置 |
 | [功能实现与架构](docs/ARCHITECTURE.md) | 多账号隔离、模型路由、权限门和旧版迁移 |
 | [开发指南](docs/DEVELOPMENT.md) | 源码启动、测试、Windows 打包与发布 |

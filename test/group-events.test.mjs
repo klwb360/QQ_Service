@@ -10,7 +10,9 @@ test('群触发条件可同时选择、全选和清空，并保留旧版单选�
   config.groups = [{ id: '123456', mode: 'social', triggers: ['mention', 'poke', 'group_name'] }];
   assert.deepEqual(validateConfig(config).groups[0].triggers, ['mention', 'poke', 'group_name']);
   config.groups[0].triggers = [...GROUP_TRIGGER_IDS];
-  assert.equal(validateConfig(config).groups[0].triggers.length, 12);
+  assert.deepEqual(validateConfig(config).groups[0].triggers, [...GROUP_TRIGGER_IDS]);
+  config.groups[0].triggers = ['name', 'reply'];
+  assert.deepEqual(validateConfig(config).groups[0].triggers, ['name', 'reply']);
   config.groups[0].triggers = [];
   assert.deepEqual(validateConfig(config).groups[0].triggers, []);
   assert.deepEqual(effectiveGroupTriggers({ triggers: [], trigger: 'mention' }), []);
@@ -25,7 +27,7 @@ test('群触发条件可同时选择、全选和清空，并保留旧版单选�
 
 test('无效触发条件给出字段提示，不能从畸形配置意外恢复自动回复', () => {
   const config = structuredClone(DEFAULT_CONFIG);
-  for (const triggers of ['poke', ['fake_event'], [null], Array(13).fill('poke')]) {
+  for (const triggers of ['poke', ['fake_event'], ['unknown_reply_event'], [null], Array(GROUP_TRIGGER_IDS.length + 1).fill('poke')]) {
     config.groups = [{ id: '123456', mode: 'social', triggers }];
     assert.throws(() => validateConfig(config), error => error.issues.some(issue => issue.path === 'groups.0.triggers' && issue.action.includes('清空')));
   }

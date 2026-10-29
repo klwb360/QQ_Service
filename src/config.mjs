@@ -1,5 +1,13 @@
 import { createHash } from 'node:crypto';
 
+export const DEFAULT_CHAT_SOCIAL = Object.freeze({
+  name: '', aliases: [], interests: '', batchMs: 1500, followUpSeconds: 120, accountCallsPerHour: 30,
+});
+export const DEFAULT_GROUP_SOCIAL = Object.freeze({
+  enabled: false, proactive: false, interests: '', style: '', activeStart: '10:00', activeEnd: '22:00',
+  decisionCallsPerHour: 12, repliesPerHour: 6, proactiveIntervalMinutes: 10, readTools: [],
+});
+
 export const DEFAULT_CONFIG = {
   schemaVersion: 2, ownerQQ: '', botQQ: '',
   permissions: { released: false, privateReplies: false },
@@ -9,7 +17,7 @@ export const DEFAULT_CONFIG = {
     codex: { enabled: false, model: '', timeoutSeconds: 180 },
     apis: []
   },
-  chat: { enabled: false, provider: 'deepseek', persona: '你是一个友好、简洁的群聊助手。', contextMessages: 12 },
+  chat: { enabled: false, provider: 'deepseek', persona: '你是一个友好、简洁的群聊助手。', contextMessages: 12, social: structuredClone(DEFAULT_CHAT_SOCIAL) },
   groups: [],
   plugins: [],
   tools: { enabled: false, triggers: ['mention', 'poke', 'name'], aliases: [], prefix: '/工具', skill: '', grants: [] },
@@ -50,7 +58,7 @@ export function getModelConfig(config, provider) {
     ? config.models.apis.find(api => api.id === provider) : undefined;
 }
 
-export const GROUP_TRIGGER_IDS = Object.freeze(['mention', 'prefix', 'casual', 'poke', 'group_name', 'member_join', 'member_leave', 'admin_change', 'mute', 'recall', 'group_card', 'emoji_like']);
+export const GROUP_TRIGGER_IDS = Object.freeze(['mention', 'prefix', 'casual', 'poke', 'group_name', 'member_join', 'member_leave', 'admin_change', 'mute', 'recall', 'group_card', 'emoji_like', 'name', 'reply']);
 const LEGACY_GROUP_TRIGGERS = ['mention', 'prefix', 'casual'];
 export function effectiveGroupTriggers(group) {
   if (Array.isArray(group?.triggers)) return [...new Set(group.triggers.filter(trigger => GROUP_TRIGGER_IDS.includes(trigger)))];
@@ -221,6 +229,50 @@ export function validateConfig(input, { applying = false, hasSecret = () => fals
   result.chat.provider = provider(chat.provider, 'deepseek', '默认聊天模型', 'chat.provider');
   result.chat.persona = string(chat.persona, result.chat.persona, '群聊风格', 4000, 'chat.persona');
   result.chat.contextMessages = number(chat.contextMessages, 12, '群聊上下文条数', 0, 50, true, 'chat.contextMessages');
+  if (chat.social !== undefined && !object(chat.social)) issue('chat.social', '自由聊天默认参数必须是对象');
+  const chatSocial = object(chat.social) ? chat.social : {};
+  for (const key of Object.keys(chatSocial)) if (!Object.hasOwn(DEFAULT_CHAT_SOCIAL, key)) issue(`chat.social.${key}`, '不支持的自由聊天默认参数');
+  const aliases = (value, path) => {
+    if (value === undefined) return [];
+    if (!Array.isArray(value) || value.length > 10 || value.some(alias => typeof alias !== 'string' || !alias.trim() || alias.length > 20 || /[\u0000-\u001f\u007f]/u.test(alias))) {
+      issue(path, '最多填写 10 个称呼，每个 1–20 字符，且不能包含换行或控制字符');
+      return [];
+    }
+    return [...new Set(value.map(alias => alias.trim()))];
+  };
+  result.chat.social = {
+    name: string(chatSocial.name, '', '助手名字', 30, 'chat.social.name'),
+    aliases: aliases(chatSocial.aliases, 'chat.social.aliases'),
+    interests: string(chatSocial.interests, '', '助手兴趣', 2000, 'chat.social.interests'),
+    batchMs: number(chatSocial.batchMs, 1500, '连续消息等待毫秒', 0, 3000, true, 'chat.social.batchMs'),
+    followUpSeconds: number(chatSocial.followUpSeconds, 120, '连续对话窗口秒数', 0, 600, true, 'chat.social.followUpSeconds'),
+    accountCallsPerHour: number(chatSocial.accountCallsPerHour, 30, '账号主动判断每小时调用上限', 0, 1000, true, 'chat.social.accountCallsPerHour'),
+  };
+  if (/[\u0000-\u001f\u007f]/u.test(result.chat.social.name)) issue('chat.social.name', '助手名字不能包含换行或控制字符');
+  const groupSocial = (value, index) => {
+    const prefix = `groups.${index}.social`;
+    if (value !== undefined && !object(value)) issue(prefix, '群自由聊天参数必须是对象');
+    const social = object(value) ? value : {};
+    for (const key of Object.keys(social)) if (!Object.hasOwn(DEFAULT_GROUP_SOCIAL, key)) issue(`${prefix}.${key}`, '不支持的群自由聊天参数');
+    const normalized = {
+      enabled: bool(social.enabled, false, '自由聊天', `${prefix}.enabled`),
+      proactive: bool(social.proactive, false, '自主开话题', `${prefix}.proactive`),
+      interests: string(social.interests, '', '群兴趣', 2000, `${prefix}.interests`),
+      style: string(social.style, '', '群聊天风格', 2000, `${prefix}.style`),
+      activeStart: string(social.activeStart, '10:00', '主动活动开始时间', 5, `${prefix}.activeStart`),
+      activeEnd: string(social.activeEnd, '22:00', '主动活动结束时间', 5, `${prefix}.activeEnd`),
+      decisionCallsPerHour: number(social.decisionCallsPerHour, 12, '群主动判断每小时调用上限', 0, 1000, true, `${prefix}.decisionCallsPerHour`),
+      repliesPerHour: number(social.repliesPerHour, 6, '群主动发言每小时上限', 0, 100, true, `${prefix}.repliesPerHour`),
+      proactiveIntervalMinutes: number(social.proactiveIntervalMinutes, 10, '主动素材检查间隔分钟', 1, 1440, true, `${prefix}.proactiveIntervalMinutes`),
+      readTools: [],
+    };
+    for (const key of ['activeStart', 'activeEnd']) if (!/^([01]\d|2[0-3]):[0-5]\d$/.test(normalized[key])) issue(`${prefix}.${key}`, '主动活动时间须为 HH:MM');
+    if (social.readTools !== undefined) {
+      if (!Array.isArray(social.readTools) || social.readTools.length > 20 || social.readTools.some(tool => typeof tool !== 'string' || !/^[a-z][a-z0-9-]{0,63}\/[a-z][a-z0-9_]{0,47}$/.test(tool))) issue(`${prefix}.readTools`, '主动素材只读工具须为最多 20 项的有效工具标识');
+      else normalized.readTools = [...new Set(social.readTools)];
+    }
+    return normalized;
+  };
   if (!Array.isArray(input.groups)) errors.push('群列表必须是数组');
   else if (input.groups.length > 100) errors.push('首版最多配置 100 个群');
   else {
@@ -236,7 +288,7 @@ export function validateConfig(input, { applying = false, hasSecret = () => fals
       const read = bool(g.read, true, `${label}读取权限`);
       const send = bool(g.send, false, `${label}发送权限`);
       if (send && !read) errors.push(`${label}发送消息需要先允许读取`);
-      return { id: groupId, name: string(g.name, '', `${label}名称`, 80), mode: g.mode === 'work' ? 'work' : 'social', read, send, trigger: g.trigger || 'mention', triggers: effectiveGroupTriggers(g), prefix: string(g.prefix, '/ai', `${label}命令前缀`, 30), probability: number(g.probability, 0.03, `${label}插话概率`, 0, 0.25, false), cooldownSeconds: number(g.cooldownSeconds, 30, `${label}冷却秒数`, 5, 3600) };
+      return { id: groupId, name: string(g.name, '', `${label}名称`, 80), mode: g.mode === 'work' ? 'work' : 'social', read, send, trigger: g.trigger || 'mention', triggers: effectiveGroupTriggers(g), prefix: string(g.prefix, '/ai', `${label}命令前缀`, 30), probability: number(g.probability, 0.03, `${label}插话概率`, 0, 0.25, false), cooldownSeconds: number(g.cooldownSeconds, 30, `${label}冷却秒数`, 5, 3600), social: groupSocial(g.social, i) };
     });
     if (result.groups.length !== input.groups.length) errors.push('每个群配置必须是对象');
   }

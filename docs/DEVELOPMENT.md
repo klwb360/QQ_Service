@@ -15,7 +15,7 @@ npm start
 
 打开 `http://127.0.0.1:3210`。Windows 源码入口 `start.cmd` / PowerShell 仍固定使用 3210。
 
-调试 v0.4.0 时使用独立数据目录，避免把真实旧版资料作为测试夹具。新建账号可同时运行；所有请求明确带 profile ID，界面当前选择不是后端执行目标。
+调试时使用独立数据目录，避免把真实旧版资料作为测试夹具。新建账号可同时运行；所有请求明确带 profile ID，界面当前选择不是后端执行目标。
 
 ## 检查与测试
 
@@ -58,7 +58,7 @@ npm run desktop
 npm run build:exe
 ```
 
-本版目标为 `dist/QQ_Service-0.4.0-Windows-x64.exe`。`npm run build:installer` 提供可选 NSIS 目标，默认 Release 交付便携 EXE。
+本版目标为 `dist/QQ_Service-0.6.0-Windows-x64.exe`。`npm run build:installer` 提供可选 NSIS 目标，默认 Release 交付便携 EXE。
 
 窗口为无原生边框 Electron 窗口，最小化、最大化/还原、关闭通过受限预加载接口操作。关闭偏好是桌面全局设置，默认进入托盘，可选完全退出；系统关闭和自绘关闭行为应一致。实际窗口控制和设置持久化需用 Electron 检查，不能只测 DOM 按钮存在。
 
@@ -92,6 +92,6 @@ EXE 使用附带运行时和随机空闲后台端口。Linux 桌面调试需通�
 
 `v*` 标签必须与 `package.json` 版本一致。Windows 构建成功后，独立发布任务创建 Release 并上传 EXE/校验文件。Actions 固定提交 SHA，本地构建使用 `--publish never`。普通文档提交不会替换已发布 EXE。
 
-发布 v0.4.0 时同步 package/lock 版本、界面、README 下载链接和实际验证记录，再创建匹配标签。公开资产需检查下载与 SHA256；不要把旧版本构建成功或模拟协议测试写成本版真实账号联调成功。
+发布时同步 package/lock 版本、界面、README 下载链接和实际验证记录，再创建匹配标签。公开资产需检查下载与 SHA256；不要把旧版本构建成功或模拟协议测试写成本版真实账号联调成功。
 
-外部原生 NapCat 按上游流程单独部署；项目安装按钮仍使用 Docker，不应在文档或界面宣称已经实现原生一键安装。
+外部原生 NapCat 按上游流程单独安装，选择启动文件后可从应用打开；Docker 方式保留应用内安装和容器管理。不要宣称已实现原生一键安装。

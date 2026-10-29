@@ -147,7 +147,7 @@ async function configureAccount(window, account, { ownerQQ, secret, persona }) {
     assert.equal(prefs.sandbox, true);
     assert.equal(prefs.webviewTag, false);
     assert.equal(await window.evaluate(() => typeof require), 'undefined');
-    assert.deepEqual(await window.evaluate(() => Object.keys(window.qqBridgeDesktop).sort()), ['chooseNapcatExecutable', 'close', 'exportConfig', 'getSettings', 'getWindowState', 'isDesktop', 'minimize', 'onWindowState', 'quit', 'toggleMaximize', 'updateSettings', 'version']);
+    assert.deepEqual(await window.evaluate(() => Object.keys(window.qqBridgeDesktop).sort()), ['chooseNapcatExecutable', 'choosePluginDirectory', 'close', 'exportConfig', 'getSettings', 'getWindowState', 'isDesktop', 'minimize', 'onWindowState', 'quit', 'toggleMaximize', 'updateSettings', 'version']);
     backendPid = await app.evaluate(() => process._getActiveHandles().find(handle => handle.constructor.name === 'ChildProcess' && handle.spawnargs?.some(arg => arg.endsWith('server.mjs')))?.pid);
     assert.ok(Number.isInteger(backendPid) && alive(backendPid));
     pass('真实 Electron 独立窗口、本机随机端口、隔离 preload 与禁止 NodeIntegration');

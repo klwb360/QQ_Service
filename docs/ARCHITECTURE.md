@@ -2,7 +2,7 @@
 
 [返回首页](../README.md) · [使用指南](USAGE.md) · [开发指南](DEVELOPMENT.md) · [接口契约](CONTRACT.md)
 
-v0.4.0 使用一个 Electron 桌面壳和一个本地 Node.js 管理后台，同时运行多个相互隔离的 QQ 配置。每个账号拥有独立的配置、多组 API 凭据、SQLite、QQ 连接、任务队列、NapCat 实例资料及 Codex 登录目录。
+v0.6.0 使用一个 Electron 桌面壳和一个本地 Node.js 管理后台，同时运行多个相互隔离的 QQ 配置。每个账号拥有独立的配置、多组 API 凭据、SQLite、QQ 连接、任务调度、NapCat 实例资料及 Codex 登录目录。
 
 NapCat 是 QQ 连接组件，负责实际登录和消息接口；DeepSeek/Codex 负责分析文字；应用自己的后台决定执行什么任务、允许向哪里发送。输入 QQ 号不是登录动作，模型也不直接获得任意 QQ 操作能力。
 
@@ -85,11 +85,25 @@ schema 2 保留 `botQQ`、`ownerQQ` 内部字段；界面分别解释为实际�
 
 ## 模型路由与账号任务
 
-群消息先判定是否允许读取，仅选定可读消息入库。允许发送、聊天启用且账号已释放后，再按 `group.triggers` 中已勾选的新消息/真实通知条件触发所选 API 模型，并统一检查冷却时间。上下文仅包含当前账号、当前群及用途下的资料，工作通知、收藏与其他群不作为普通群聊上下文。
+群消息先判定是否允许读取，仅选定可读消息入库。允许发送、聊天启用且账号已释放后，再根据该群的触发方式或自由聊天设置处理。上下文仅包含当前账号配置、实际 QQ、当前群的资料；工作通知、收藏与其他群不作为普通群聊上下文。
 
-群触发为多选 OR：`mention`、`prefix`、`casual`、`poke`、`group_name`、`member_join`、`member_leave`、`admin_change`、`mute`、`recall`、`group_card`、`emoji_like`。默认只有 `mention`，空数组禁用自动群回复；旧单值 `trigger` 在规范化时映射到数组，保留原有选择。多选或全选不能越过账号、群读取/发送和场景权限。
+群触发为多选 OR：`mention`、`name`、`reply`、`prefix`、`casual`、`poke`、`group_name`、`member_join`、`member_leave`、`admin_change`、`mute`、`recall`、`group_card`、`emoji_like`。默认只有 `mention`，普通触发模式下空数组禁用自动群回复；旧单值 `trigger` 在规范化时映射到数组，保留原有选择，不自动授予新触发。多选或全选不能越过账号、群读取/发送和场景权限。
 
-`casual` 仅在收到新文本时按概率回复，不设置无人消息时主动说话的定时器。通知从实际 OneBot/NapCat 消息读取；例如群名变化为 `notice/notify/group_name` 携带 `name_new`。通知触发只产生文字回复，不映射成任意 QQ 管理操作。事件边界按 [NapCat 通知实现](https://github.com/NapNeko/NapCatQQ/tree/v4.18.38/packages/napcat-onebot/event/notice) 核对，模拟事件测试不能替代真实 QQ 触发验收。
+普通模式的 `casual` 仅在收到新文本时按概率回复；自由聊天和背景主动话题另有显式开关。通知从实际 OneBot/NapCat 消息读取；例如群名变化为 `notice/notify/group_name` 携带 `name_new`。通知触发只产生文字回复，不映射成任意 QQ 管理操作。事件边界按 [NapCat 通知实现](https://github.com/NapNeko/NapCatQQ/tree/v4.18.38/packages/napcat-onebot/event/notice) 核对，模拟事件测试不能替代真实 QQ 触发验收。
+
+### 自由聊天与记忆
+
+`chat.social` 保存账号名字、别名、兴趣、短消息合并和会话窗口等默认参数；`groups[].social` 保存该群的自由聊天、主动话题、活动时段、调用预算、风格补充和独立背景只读工具白名单。新功能默认关闭，旧配置缺省字段不会扩大授权。
+
+统一会话入口处理普通提问与模型工具调用，无可用工具时仍可正常回答。明确请求优先，非直接互动可以选择沉默。连续短消息合并，相关追问延续会话；发送前再次校验 epoch、身份、目标和话题有效性。慢工具不应阻塞其他群，可能已生效的外部写入不能因新消息自动重试。
+
+双向会话记录保存角色、实际 QQ、群、发送者、回复关系和时间，按独立 30 天窗口清理。OneBot 确认成功的 AI 发送分段才作为已送达内容保存；自身回声去重，不产生新一轮聊天。该记录不受通知 `summary.retentionDays` 影响。
+
+主动任务按群在活动时段内获得检查机会；AI 结合当前语境、确认记忆和独立授权的只读工具决定是否分享，默认检查间隔不等于固定发言计划。预算计入每次模型请求，调度与防重复状态跨重启保存。自动任务使用明确的背景调用身份，不冒充群友，也不继承个人写工具授权。
+
+`store.memory` 独立管理候选、确认记录、证据摘录和逐群暂停状态，按 profile 目录、实际 QQ、群、成员 QQ 隔离。候选仅从同次正常回复提供的真实成员原话产生，确认后才检索注入。通知、工具返回、AI 输出或其他群资料不能成为成员事实证据。确认、修改与暂停属于记忆数据操作，不应用账号配置或释放发送权限；已确认记忆不随通知清理、暂停或功能参数重置删除。
+
+配置与实际操作见 [自由群聊与记忆](SOCIAL_CHAT.md)。
 
 本人私聊普通文字使用 `chat.provider`，可选择 `deepseek`、`codex` 或 `models.apis` 中某个稳定 API ID，且只要求所选模型可用；`/ds`、`/gpt` 可切换已启用的内置通道。`/summary 群号`、`/favorites` 使用各自模型。这些命令仍需启用相关场景和私聊权限。默认聊天选 Codex 时不运行自动群聊；个人订阅只处理本人明确发起或授权的任务。
 
@@ -119,7 +133,7 @@ napcat-settings.json           全局安装方式、启动文件和独立版本�
 accounts/<ID>/config.json      新账号草稿、应用与上一版本
 accounts/<ID>/vault.json       新账号加密凭据
 accounts/<ID>/vault.key        该账号加密密钥
-accounts/<ID>/history.sqlite   消息、收藏、汇总与任务
+accounts/<ID>/history.sqlite   消息、会话、记忆、收藏、汇总与任务
 accounts/<ID>/modules/         NapCat / Codex 与模块安装记录相关资料
 accounts/<ID>/codex-home/      官方 CLI 自行管理的独立认证目录
 accounts/<ID>/codex-workspace/ 独立文字任务工作目录
