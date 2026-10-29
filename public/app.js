@@ -396,8 +396,8 @@
     if (currentPage === 'connections') $('#config-label').textContent = dirty ? '有未保存的修改' : pending ? '已保存，等待应用' : '已保存';
     renderPageContext();
     $('#discard-draft').disabled = !dirty;
-    $('#save-draft').disabled = !state || !dirty;
-    $('#apply-config').disabled = !state || (!dirty && !pending);
+    $$('#save-draft, #group-save').forEach(button => { button.disabled = !state || !dirty; });
+    $$('#apply-config, #group-apply').forEach(button => { button.disabled = !state || (!dirty && !pending); });
     $('#release-permissions').disabled = !state;
     $('#reset-account-defaults').disabled = !state;
     $('#revoke-permissions').disabled = !state || state.applied?.permissions?.released !== true;
@@ -1555,10 +1555,11 @@
   $('#create-account-entry').addEventListener('click', showCreateAccount);
   $('#cancel-create-account').addEventListener('click', () => $('#new-account-form').classList.add('hidden'));
   $('#new-account-form').addEventListener('submit', (event) => { event.preventDefault(); withButton($('#submit-create-account'), createAccount); });
-  $('#refresh-state').addEventListener('click', (event) => withButton(event.currentTarget, () => refreshState({ notify: true })));
-  $('#save-draft').addEventListener('click', (event) => withButton(event.currentTarget, () => saveDraft()));
+  $$('#refresh-state, #group-refresh').forEach(button => button.addEventListener('click', (event) => withButton(event.currentTarget, () => refreshState({ notify: true }))));
+  $$('#save-draft, #group-save').forEach(button => button.addEventListener('click', (event) => withButton(event.currentTarget, () => saveDraft())));
   $('#reset-account-defaults').addEventListener('click', (event) => withButton(event.currentTarget, resetAccountDefaults));
   $('#apply-config').addEventListener('click', (event) => withButton(event.currentTarget, () => applyConfig()));
+  $('#group-apply').addEventListener('click', (event) => withButton(event.currentTarget, () => applyConfig(selectedAccountId, { advanceSetup: false })));
   $('#release-permissions').addEventListener('click', (event) => withButton(event.currentTarget, () => releasePermissions()));
   $('#revoke-permissions').addEventListener('click', (event) => withButton(event.currentTarget, async () => {
     const id = requireAccount();
