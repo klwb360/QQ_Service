@@ -46,8 +46,12 @@ export function createAccountService({ account, dataDir, csrfToken, installerFac
     const verified = Boolean(actual.connected && actual.accountId && String(actual.accountId) === draft.botQQ && draft.qq.enabled && applied.qq.enabled && applied.botQQ === draft.botQQ && draft.qq.wsUrl === applied.qq.wsUrl && !napcatTokenPending);
     const providers = ['deepseek', 'codex', ...(draft.models.apis || []).map(model => model.id)].map(id => {
       const model = getModelConfig(draft, id);
-      const credentialReady = id === 'codex' ? codexAuth.loggedIn === true : store.hasDraftSecret(id === 'deepseek' ? 'deepseekApiKey' : apiSecretName(id));
-      return { id, label: id === 'deepseek' ? 'DeepSeek' : id === 'codex' ? 'ChatGPT 订阅 / Codex' : model.label, enabled: Boolean(model.enabled), credentialReady, configured: Boolean(credentialReady && (!isApiProviderId(id) || model.model)), tested: Boolean(credentialReady && actual.modelTests?.[id]?.tested && JSON.stringify(model) === JSON.stringify(getModelConfig(applied, id)) && !store.secretsPending()), testedAt: actual.modelTests?.[id]?.testedAt || null, status: actual.modelTests?.[id]?.status || 'untested', message: actual.modelTests?.[id]?.message || '' };
+      const credentialName = id === 'codex' ? null : id === 'deepseek' ? 'deepseekApiKey' : apiSecretName(id);
+      const credentialReady = credentialName ? store.hasDraftSecret(credentialName) : codexAuth.loggedIn === true;
+      // Other models and the QQ connection have independent credentials. Their
+      // pending edits must not invalidate this provider's unchanged evidence.
+      const credentialPending = credentialName && Object.hasOwn(secretSnapshot, `draft:${credentialName}`) && secretSnapshot[`draft:${credentialName}`] !== secretSnapshot[credentialName];
+      return { id, label: id === 'deepseek' ? 'DeepSeek' : id === 'codex' ? 'ChatGPT 订阅 / Codex' : model.label, enabled: Boolean(model.enabled), credentialReady, credentialPending: Boolean(credentialPending), configured: Boolean(credentialReady && (!isApiProviderId(id) || model.model)), tested: Boolean(credentialReady && actual.modelTests?.[id]?.tested && JSON.stringify(model) === JSON.stringify(getModelConfig(applied, id)) && !credentialPending), testedAt: actual.modelTests?.[id]?.testedAt || null, status: actual.modelTests?.[id]?.status || 'untested', message: actual.modelTests?.[id]?.message || '' };
     });
     const selected = providers.filter(provider => provider.enabled);
     const modelsReady = selected.length > 0 && selected.every(provider => provider.configured);

@@ -214,7 +214,7 @@ async function launch() {
   assert.equal(await page.locator('[data-flow-actions="permissions"] [data-setup-skip]').isVisible(),false);
   await page.locator('[data-flow-actions="permissions"] [data-setup-apply]').click();await active('verification');
   assert.equal((await state()).applied.permissions.released,false);assert.equal(sent.length,0);
-  assert.ok((await page.locator('#setup-verification-checks').innerText()).includes('尚未测试或登录'));
+  assert.equal((await page.locator('#setup-verification-checks .check-row').nth(1).locator('.pill').innerText()).trim(), '未测试');
   await page.locator('[data-setup-start]').click();await page.locator('#app-dialog[open]').waitFor();
   assert.ok((await page.locator('#dialog-content').innerText()).includes('98765001'));
   assert.equal((await state()).applied.permissions.released,false);

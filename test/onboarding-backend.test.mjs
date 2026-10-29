@@ -191,6 +191,46 @@ test('相同参数最新模型或群发送测试失败时，不得继续显示�
   } finally { await f.close(); await napcat.close(); }
 });
 
+test('模型测试证明仅随该模型的参数和密钥失效，连接及其他接口的待应用密钥不误清除结果', async () => {
+  const napcat = await mockNapcat(); const f = await fixture();
+  try {
+    const a = await f.create(napcat.url);
+    a.config.models.apis = [{ id: 'api_saved', label: '已保存的其他接口', enabled: false, baseUrl: 'https://example.com/v1', model: 'mock-model', maxTokens: 1024, temperature: 0.3 }];
+    let state = (await f.post(a.route + '/config/save', { config: a.config, secretUpdates: { napcatToken: 'original-connection-token', deepseekApiKey: 'original-model-key', 'apiKey:api_saved': 'other-interface-key' } })).body;
+    state = (await f.post(a.route + '/config/apply', { revision: state.revision })).body;
+    assert.equal((await f.post(a.route + '/runtime/connect')).status, 200);
+    assert.equal((await f.post(a.route + '/test/model', { provider: 'deepseek' })).status, 200);
+    const tested = state => state.setup.models.providers.find(provider => provider.id === 'deepseek').tested;
+    state = (await f.get(a.route + '/state')).body;
+    assert.equal(tested(state), true);
+    const calls = f.modelCalls.length;
+
+    state = (await f.post(a.route + '/config/save', { config: state.draft, secretUpdates: { napcatToken: 'updated-connection-token' } })).body;
+    assert.equal(state.secretsPendingChanges, true);
+    assert.equal(state.setup.connection.verified, false);
+    assert.equal(tested(state), true, 'OneBot Token 的待应用修改不应清除 DeepSeek 的测试证明');
+    state = (await f.post(a.route + '/config/apply', { revision: state.revision })).body;
+    assert.equal(tested(state), true, '应用未变的模型配置后仍保留测试证明');
+    state = (await f.post(a.route + '/permissions/release', { revision: state.revision })).body;
+    assert.equal(tested(state), true, '启动账号不应清除同一模型的测试证明');
+
+    state = (await f.post(a.route + '/config/save', { config: state.draft, secretUpdates: { 'apiKey:api_saved': 'other-interface-updated' } })).body;
+    assert.equal(state.secretsPendingChanges, true);
+    assert.equal(tested(state), true, '其他接口的密钥不应影响当前模型的测试证明');
+
+    state = (await f.post(a.route + '/config/save', { config: state.draft, secretUpdates: { deepseekApiKey: 'updated-model-key' } })).body;
+    assert.equal(tested(state), false, '当前模型密钥待应用时不能沿用旧测试证明');
+    state = (await f.post(a.route + '/config/apply', { revision: state.revision })).body;
+    assert.equal(tested(state), false, '当前模型密钥真正更新后需要重新测试');
+    assert.equal(state.runtime.modelTests.deepseek.status, 'stale');
+    assert.equal(f.modelCalls.length, calls, '保存、应用和启动不应自动调用付费模型');
+    assert.equal((await f.post(a.route + '/test/model', { provider: 'deepseek' })).status, 200);
+    state = (await f.get(a.route + '/state')).body;
+    assert.equal(tested(state), true);
+    assert.equal(f.modelCalls.length, calls + 1);
+  } finally { await f.close(); await napcat.close(); }
+});
+
 for (const [statusCode, expectedCode] of [[401, 'ONEBOT_AUTH_FAILED'], [404, 'ONEBOT_WRONG_ENDPOINT']]) {
   test(`OneBot HTTP ${statusCode} 返回可理解的操作指引，失败释放不授予权限`, async () => {
     const napcat = await mockNapcat({ statusCode }); const f = await fixture();

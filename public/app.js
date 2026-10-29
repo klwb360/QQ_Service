@@ -426,7 +426,9 @@
       error: ['失败', 'red'], failed: ['失败', 'red'], missing: ['未安装', 'orange'], not_installed: ['未安装', 'orange'],
       disconnected: ['未连接', 'neutral'], stopped: ['已停止', 'neutral'], disabled: ['未启用', 'neutral'],
       unknown: ['待检查', 'neutral'], idle: ['待运行', 'neutral'], cancelled: ['已取消', 'neutral'],
-      configured: ['已选启动文件', 'neutral'], not_configured: ['待选择启动文件', 'orange']
+      configured: ['已选启动文件', 'neutral'], not_configured: ['待选择启动文件', 'orange'],
+      model_missing: ['未配置', 'orange'], model_pending: ['待应用', 'orange'], model_untested: ['未测试', 'neutral'],
+      model_stale: ['需重测', 'orange'], testing: ['测试中', 'orange']
     };
     return table[raw] ?? [String(value ?? '待检查'), 'neutral'];
   }
@@ -935,18 +937,22 @@
     return state?.codexAuth?.loggedIn !== undefined && state?.codexAuth?.loggedIn !== null ? state.codexAuth : codexLoginStatus;
   }
   function modelEvidence(provider) {
-    if (provider.id === 'codex') return JSON.stringify(provider.config) !== JSON.stringify(state?.applied?.models?.codex) ? ['订阅模型参数尚未应用，授权状态仍可在下方检查', 'pending'] : authStatus()?.loggedIn === true ? ['官方 CLI 已确认授权', 'logged_in'] : ['尚未确认官方订阅授权', 'waiting_login'];
-    if (secretUpdates[provider.secret]) return ['密钥已修改，需要保存并重新测试', 'pending'];
+    if (provider.id === 'codex') return JSON.stringify(provider.config) !== JSON.stringify(state?.applied?.models?.codex) ? ['订阅模型参数尚未应用，请先保存并应用', 'model_pending'] : authStatus()?.loggedIn === true ? ['官方 CLI 已确认授权', 'logged_in'] : ['尚未确认官方订阅授权，请在账号与 AI 中登录或检查状态', 'waiting_login'];
+    if (!provider.config?.model) return ['请先填写模型名称', 'model_missing'];
+    if (!secretUpdates[provider.secret] && !state?.secrets?.[provider.secret]) return ['尚未填写 API Key', 'model_missing'];
+    if (secretUpdates[provider.secret]) return ['密钥已修改，需要保存、应用并重新测试', 'model_pending'];
     const appliedProvider = provider.id === 'deepseek' ? state?.applied?.models?.deepseek : state?.applied?.models?.apis?.find((entry) => entry.id === provider.id);
-    if (JSON.stringify(provider.config) !== JSON.stringify(appliedProvider)) return ['模型参数尚未应用，需要保存并实际测试', 'pending'];
+    if (JSON.stringify(provider.config) !== JSON.stringify(appliedProvider)) return ['模型参数尚未应用，需要保存、应用并测试', 'model_pending'];
     const evidence = state?.setup?.models?.providers?.find((entry) => entry.id === provider.id);
-    if (evidence?.tested === true) return [`实际测试通过${evidence.testedAt ? ` · ${formatTime(evidence.testedAt)}` : ''}`, 'passed'];
+    if (evidence?.credentialPending) return ['当前模型的密钥已保存但尚未应用，需要应用后重新测试', 'model_pending'];
     const tests = state?.runtime?.modelTests ?? {};
     const test = Array.isArray(tests) ? tests.find((entry) => entry.provider === provider.id) : tests[provider.id];
+    if (test?.status === 'testing' || evidence?.status === 'testing') return ['正在进行模型连接测试，请等待本次请求完成', 'testing'];
+    if (evidence?.tested === true) return [`实际测试通过${evidence.testedAt ? ` · ${formatTime(evidence.testedAt)}` : ''}`, 'passed'];
     if (evidence?.tested !== false && (test?.tested === true || test?.success === true || test?.status === 'success' || test?.ok === true)) return [`实际测试通过${test.testedAt || test.at ? ` · ${formatTime(test.testedAt || test.at)}` : ''}`, 'passed'];
-    if (test?.success === false || test?.ok === false || test?.status === 'failed') return [test.message || test.error || '最近一次实际测试失败，请查看输出', 'failed'];
-    if (secretUpdates[provider.secret]) return ['密钥已输入，尚未保存与测试', 'pending'];
-    return state?.secrets?.[provider.secret] ? ['密钥已保存，尚未通过实际模型测试', 'unknown'] : ['尚未填写 API Key', 'missing'];
+    if (test?.success === false || test?.ok === false || test?.status === 'failed' || evidence?.status === 'failed') return [test?.message || test?.error || evidence?.message || '最近一次模型测试失败，请查看日志', 'failed'];
+    if (test?.status === 'stale' || evidence?.status === 'stale' || evidence?.tested === false && test?.tested === true) return ['模型参数或密钥已变化，请重新测试', 'model_stale'];
+    return ['API Key 已保存，本次运行尚未测试；可点击“测试连接”验证', 'model_untested'];
   }
   function setFlowDisclosure(element, open, { animate = false, force = false, duration = 280 } = {}) {
     if (!force && element.dataset.flowOpen === String(open)) return;
@@ -997,7 +1003,7 @@
     renderCustomApis();
     const providers = configuredProviders();
     const selectedProvider = providers.length === 1 ? providers[0] : null;
-    const modelsReady = Boolean(selectedProvider && ['passed', 'logged_in'].includes(modelEvidence(selectedProvider)[1]));
+    const [modelDescription, modelState] = selectedProvider ? modelEvidence(selectedProvider) : ['请先选择 AI', 'model_missing'];
     const applied = state.applied ?? {};
     const hasTask = ['chat', 'summary', 'favorites'].some((name) => applied[name]?.enabled);
     const released = applied.permissions?.released === true;
@@ -1035,9 +1041,21 @@
     const draftSends = (draft.groups ?? []).filter(group => group.send).length;
     $('#setup-permission-summary').textContent = draftReads || draftSends ? `${draftReads} 个可读群 · ${draftSends} 个可发送群` : '设置可读取和回复的群';
     const permissionSummary = `${readTargets.length} 个可读群 · ${(applied.groups ?? []).filter(group => group.send).length} 个可发送群`;
-    $('#setup-verification-checks').innerHTML = checkRow('QQ 连接', verified ? `QQ ${actualQQ}` : '请先连接 QQ', verified ? 'passed' : 'pending') + checkRow('AI', modelsReady ? selectedProvider.label : selectedProvider ? `${selectedProvider.label} · 尚未测试或登录` : '请先选择 AI', modelsReady ? 'passed' : 'pending') + checkRow('任务与权限', hasTask ? `${permissionSummary} · ${released ? '已启动' : '启动前保持只读'}` : '请先选择要启用的功能', hasTask ? released ? 'running' : 'ready' : 'pending');
+    $('#setup-verification-checks').innerHTML = checkRow('QQ 连接', verified ? `QQ ${actualQQ}` : '请先连接 QQ', verified ? 'passed' : 'pending') + checkRow('AI', selectedProvider ? `${selectedProvider.label} · ${modelDescription}` : modelDescription, modelState) + checkRow('任务与权限', hasTask ? `${permissionSummary} · ${released ? '已启动' : '启动前保持只读'}` : '请先选择要启用的功能', hasTask ? released ? 'running' : 'ready' : 'pending');
+    const modelAction = document.createElement('button');
+    modelAction.type = 'button'; modelAction.className = 'button button-quiet button-small';
+    if (!selectedProvider || modelState === 'model_missing' || selectedProvider.id === 'codex' && modelState !== 'logged_in') {
+      modelAction.dataset.setupStep = 'identity'; modelAction.textContent = '配置 AI';
+    } else if (selectedProvider.id === 'codex') {
+      modelAction.dataset.action = 'codex-status'; modelAction.textContent = '检查登录';
+    } else {
+      modelAction.dataset.setupModelTest = selectedProvider.id;
+      modelAction.textContent = modelState === 'passed' ? '重新测试' : '测试连接'; modelAction.disabled = modelState === 'testing';
+    }
+    const modelRow = $$('#setup-verification-checks .check-row')[1];
+    modelRow.insertBefore(modelAction, $('.pill', modelRow));
     const writable = (applied.groups ?? []).find((group) => group.read && group.send);
-    const testText = !verified ? '当前应先完成 QQ 连接：确认 NapCat 已扫码并启用正向 WebSocket 服务，再验证实际 QQ 身份。' : !hasTask ? 'QQ 已连接。请先启用一个功能：聊天、通知汇总或收藏整理，并保存应用。' : !released ? '任务已配置。下一步在“选定群与消息权限”选择群、设定读取 / 发送，再确认“启动此账号”。' : applied.chat?.enabled && writable ? `现在可在群 ${writable.name || writable.id} 中，用其他群成员账号${effectiveTriggers(writable).includes('prefix') ? `发送“${writable.prefix || '/ai'} 你好”` : effectiveTriggers(writable).includes('casual') && !effectiveTriggers(writable).includes('mention') ? '发一条普通消息（概率参与可能不会立即回复，首次验证推荐改为 @ 触发）' : `@ QQ ${actualQQ} 并发送“你好”`}。查看下方接收、模型和发送计数，再核对群中回复。` : applied.summary?.enabled ? '现在可在“账号功能参数”中，选择已应用的可读工作群并运行一次通知汇总。需先在群中产生可读消息。未授权私聊发送时，结果在任务与记录中查看。' : applied.favorites?.enabled ? '现在可在“账号功能参数”中点击“读取此账号收藏”，然后整理已读取收藏。结果可在任务与记录中核对。' : '此账号已启动。请按已授权的触发条件发送测试消息，并查看任务与记录。';
+    const testText = !verified ? '当前应先完成 QQ 连接：确认 NapCat 已扫码并启用正向 WebSocket 服务，再验证实际 QQ 身份。' : !hasTask ? 'QQ 已连接。请先启用一个功能：聊天、通知汇总或收藏整理，并保存应用。' : !released ? '任务已配置。下一步在“选定群与消息权限”选择群、设定读取 / 发送，再确认“启动此账号”。' : applied.chat?.enabled && applied.chat?.provider === 'codex' ? '当前使用 ChatGPT 订阅，仅处理本人请求及授权整理，不自动回复群消息。需要群内自动回复时，请改选 DeepSeek 等 API；需要私聊时，请使用已配置的私聊接收 QQ 发起请求。' : applied.chat?.enabled && writable ? `现在可在群 ${writable.name || writable.id} 中，用其他群成员账号${effectiveTriggers(writable).includes('prefix') ? `发送“${writable.prefix || '/ai'} 你好”` : effectiveTriggers(writable).includes('casual') && !effectiveTriggers(writable).includes('mention') ? '发一条普通消息（概率参与可能不会立即回复，首次验证推荐改为 @ 触发）' : `@ QQ ${actualQQ} 并发送“你好”`}。查看下方接收、模型和发送计数，再核对群中回复。` : applied.summary?.enabled ? '现在可在“账号功能参数”中，选择已应用的可读工作群并运行一次通知汇总。需先在群中产生可读消息。未授权私聊发送时，结果在任务与记录中查看。' : applied.favorites?.enabled ? '现在可在“账号功能参数”中点击“读取此账号收藏”，然后整理已读取收藏。结果可在任务与记录中核对。' : '此账号已启动。请按已授权的触发条件发送测试消息，并查看任务与记录。';
     $('#setup-test-guide').textContent = testText;
     const metrics = runtime.metrics ?? {};
     $('#setup-live-metrics').innerHTML = [['received','已接收消息'],['selected','命中处理规则'],['modelCalls','模型调用'],['sent','已发送消息']].map(([key,label]) => `<div><strong>${Number(metrics[key] || 0)}</strong><span>${label}</span></div>`).join('');
@@ -1057,8 +1075,15 @@
   }
   async function testSetupModel(provider) {
     const id = requireAccount();
-    if (!await openDialog(`测试 ${providerLabel(provider)}`, '<p>将保存并应用这个账号当前参数，再向所选模型发送一次小型请求。可能消耗 API 费用或订阅额度。</p><p>应用后账号恢复只读，测试不向 QQ 发送消息。</p>', '保存并测试')) return;
-    await applyConfig(id, { advanceSetup: false });
+    rememberEditor();
+    const editor = editors.get(id);
+    const version = editor.editVersion, revision = editor.state.revision, appliedRevision = editor.state.appliedRevision;
+    const needsApply = editor.dirty || editor.state.pendingChanges || editor.state.secretsPendingChanges || taskModelNeedsSync(editor.draft);
+    const preparation = needsApply ? '<p>将保存并应用这个账号当前参数；应用后账号恢复只读，发送需要重新启动账号授权。</p>' : '<p>将使用当前已应用的模型参数测试，不改变账号发送权限。</p>';
+    if (!await openDialog(`测试 ${providerLabel(provider)}`, `${preparation}<p>向所选模型发送一次小型请求，可能消耗 API 费用或订阅额度；测试不向 QQ 发送消息。</p>`, needsApply ? '保存并测试' : '开始测试')) return;
+    const current = editors.get(id);
+    if (!current || current.editVersion !== version || current.state.revision !== revision || current.state.appliedRevision !== appliedRevision) throw new Error('确认期间账号参数发生变化，请重新检查后再测试。');
+    if (needsApply) await applyConfig(id, { advanceSetup: false });
     const result = await mutate('/test/model', { provider }, undefined, id);
     await openDialog('模型实际测试结果', `<pre class="result-box">${escapeHTML(JSON.stringify(result, null, 2))}</pre><p>模型测试成功仍需单独完成 QQ 连接及群权限设置。</p>`, '知道了');
     renderSetupGuide();
