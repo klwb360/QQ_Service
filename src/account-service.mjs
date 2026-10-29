@@ -1,6 +1,6 @@
 import { randomUUID } from 'node:crypto';
 import { createStore } from './store.mjs';
-import { DEFAULT_CONFIG, validateConfig, getModelConfig, isCredentialName, apiSecretName, isApiProviderId } from './config.mjs';
+import { DEFAULT_CONFIG, validateConfig, getModelConfig, isCredentialName, apiSecretName, isApiProviderId, pluginSecretName, parsePluginSecretName } from './config.mjs';
 import { createInstaller } from './installer.mjs';
 import { createRuntime } from './runtime.mjs';
 
@@ -40,7 +40,8 @@ export function createAccountService({ account, dataDir, csrfToken, installerFac
     let modules;
     try { modules = await installer.status(); } catch (error) { modules = [{ id: 'napcat', name: 'NapCat', state: 'error', description: redact(error.message) }]; }
     const draft = store.getState().draft;
-    const secrets = Object.fromEntries(['deepseekApiKey', 'napcatToken', ...(draft.models.apis || []).map(model => apiSecretName(model.id))].map(name => [name, store.hasDraftSecret(name)]));
+    const pluginCredentials = (pluginManager?.list() || []).flatMap(plugin => (plugin.secretsSchema || []).map(field => pluginSecretName(plugin.id, field.key)));
+    const secrets = Object.fromEntries(['deepseekApiKey', 'napcatToken', ...(draft.models.apis || []).map(model => apiSecretName(model.id)), ...pluginCredentials].map(name => [name, store.hasDraftSecret(name)]));
     return { csrfToken, account: summary(), ...store.getState(), pendingChanges: store.pendingChanges(), secrets, secretsPendingChanges: store.secretsPending(), codexAuth: safeDetails(codexAuth), runtime: safeDetails(runtime.status()), setup: setupStatus(), modules, plugins: pluginManager?.list() || [], jobs: safeDetails(jobs.slice(-20)), logs: safeDetails(logs.slice(-100)), summaries: store.getSummaries(), favorites: store.getFavorites(), environment, metrics: store.metrics(), dataDir };
   };
   const setupStatus = () => {
@@ -169,6 +170,8 @@ export function createAccountService({ account, dataDir, csrfToken, installerFac
     if (!updates || typeof updates !== 'object' || Array.isArray(updates)) throw fail('凭据更新格式无效。', 400);
     for (const [name, value] of Object.entries(updates)) {
       if (!isCredentialName(name) || (name.startsWith('apiKey:') && !(config.models.apis || []).some(model => apiSecretName(model.id) === name)) || typeof value !== 'string' || value.length > 2000 || /[\r\n]/.test(value)) throw fail('凭据字段无效。', 400);
+      const plugin = parsePluginSecretName(name);
+      if (plugin && (!config.plugins?.some(entry => entry.id === plugin.pluginId) || !pluginManager?.get(plugin.pluginId)?.secretsSchema.some(field => field.key === plugin.key))) throw fail('插件凭据没有对应的已安装声明和账号配置。', 400);
     }
     return updates;
   };
@@ -199,6 +202,7 @@ export function createAccountService({ account, dataDir, csrfToken, installerFac
     for (const section of ['chat', 'summary', 'favorites']) config[section] = { ...structuredClone(DEFAULT_CONFIG[section]), provider };
     config.groups = structuredClone(DEFAULT_CONFIG.groups);
     config.plugins = [];
+    config.tools = structuredClone(DEFAULT_CONFIG.tools);
     config.permissions = structuredClone(DEFAULT_CONFIG.permissions);
     const oldSecrets = store.getSecretSnapshot();
     try {
@@ -216,6 +220,12 @@ export function createAccountService({ account, dataDir, csrfToken, installerFac
   };
   const invoke = async (route, body) => {
     ensureOpen();
+    if (route === '/tools/call') {
+      ensureIdle();
+      if (typeof body.tool !== 'string' || Object.keys(body).some(key => !['tool', 'arguments'].includes(key))) throw fail('请提供工具标识和 arguments。', 400);
+      const result = await runtime.callTool(body.tool, body.arguments ?? {});
+      return { value: { tool: body.tool, result: safeDetails(result) } };
+    }
     const pluginRun = route.match(/^\/plugins\/([a-z][a-z0-9-]{0,63})\/run$/);
     if (pluginRun) {
       ensureIdle();

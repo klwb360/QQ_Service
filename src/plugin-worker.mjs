@@ -2,6 +2,9 @@ import { parentPort, workerData } from 'node:worker_threads';
 
 // This worker isolates crashes and gives the host a cancellable execution unit.
 // Imported plugins are trusted local Node.js code, not sandboxed web scripts.
+// For callTool the host already checked the declared name and input schema;
+// Plugins receive name/arguments, their own settings/declared secrets and host
+// context. Application/other-plugin credentials are never added by this worker.
 try {
   const module = await import(workerData.entry);
   const handler = module[workerData.handler];

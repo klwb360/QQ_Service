@@ -3,6 +3,7 @@ import path from 'node:path';
 import { randomUUID } from 'node:crypto';
 import { pathToFileURL } from 'node:url';
 import { Worker } from 'node:worker_threads';
+import { validateToolSchema, validateToolInput } from './tool-schema.mjs';
 
 const ID = /^[a-z][a-z0-9-]{0,63}$/;
 const KEY = /^[A-Za-z][A-Za-z0-9_]{0,63}$/;
@@ -63,7 +64,7 @@ function validateSettingValue(field, value) {
 }
 
 function validateManifest(value) {
-  exactKeys(value, ['apiVersion', 'id', 'name', 'version', 'description', 'entry', 'events', 'permissions', 'settingsSchema', 'timeoutSeconds'], '插件清单');
+  exactKeys(value, ['apiVersion', 'id', 'name', 'version', 'description', 'entry', 'events', 'permissions', 'settingsSchema', 'timeoutSeconds', 'tools', 'secretsSchema'], '插件清单');
   if (value.apiVersion !== 1) throw fail('插件 apiVersion 必须为 1。');
   if (typeof value.id !== 'string' || !ID.test(value.id)) throw fail('插件 ID 须为小写字母开头的 1–64 位字母、数字或连字符。');
   const entry = text(value.entry, '插件入口', 240);
@@ -99,11 +100,34 @@ function validateManifest(value) {
     if (Object.hasOwn(field, 'default')) result.default = validateSettingValue(result, field.default);
     return result;
   });
+  const declaredTools = value.tools === undefined ? [] : value.tools;
+  if (!Array.isArray(declaredTools) || declaredTools.length > 20) throw fail('每个插件最多声明 20 个 AI 工具。');
+  const toolNames = new Set();
+  const tools = declaredTools.map(tool => {
+    exactKeys(tool, ['name', 'description', 'effect', 'inputSchema'], '插件工具定义');
+    if (typeof tool.name !== 'string' || !/^[a-z][a-z0-9_]{0,47}$/.test(tool.name)
+      || FORBIDDEN_KEYS.has(tool.name) || toolNames.has(tool.name)) throw fail('插件工具名无效或重复。');
+    toolNames.add(tool.name);
+    const effect = tool.effect === undefined ? 'write' : tool.effect;
+    if (!['read', 'write'].includes(effect)) throw fail('插件工具 effect 只能为 read 或 write。');
+    return { name: tool.name, description: text(tool.description, '插件工具说明', 1000), effect, inputSchema: validateToolSchema(tool.inputSchema) };
+  });
+  const declaredSecrets = value.secretsSchema === undefined ? [] : value.secretsSchema;
+  if (!Array.isArray(declaredSecrets) || declaredSecrets.length > 10) throw fail('每个插件最多声明 10 个独立密钥。');
+  const secretKeys = new Set();
+  const secretsSchema = declaredSecrets.map(field => {
+    exactKeys(field, ['key', 'label', 'description'], '插件密钥定义');
+    if (typeof field.key !== 'string' || !KEY.test(field.key) || FORBIDDEN_KEYS.has(field.key) || secretKeys.has(field.key)) throw fail('插件密钥名无效或重复。');
+    secretKeys.add(field.key);
+    const descriptor = { key: field.key, label: text(field.label, '插件密钥名称', 100) };
+    if (field.description !== undefined) descriptor.description = text(field.description, '插件密钥说明', 500, { optional: true });
+    return descriptor;
+  });
   return {
     apiVersion: 1, id: value.id,
     name: text(value.name, '插件名称', 100), version: text(value.version, '插件版本', 64),
     description: text(value.description, '插件说明', 1000, { optional: true }),
-    entry, events: [...events], permissions: [...permissions], settingsSchema, timeoutSeconds,
+    entry, events: [...events], permissions: [...permissions], settingsSchema, timeoutSeconds, tools, secretsSchema,
   };
 }
 
@@ -167,11 +191,12 @@ function inspectPackage(directory) {
   return { manifest, files, directories };
 }
 
-function validateResult(value, manifest) {
+function validateResult(value, manifest, handler) {
   if (value === null || value === undefined) return null;
   exactKeys(value, ['text', 'reply'], '插件返回结果');
   for (const field of ['text', 'reply']) if (Object.hasOwn(value, field)
     && (typeof value[field] !== 'string' || value[field].length > 6000)) throw fail(`插件返回的 ${field} 须为最多 6000 字符的文本。`);
+  if (handler === 'callTool' && Object.hasOwn(value, 'reply')) throw fail('AI 工具只能返回本地 text 结果，不能直接返回 reply。', 403);
   if (Object.hasOwn(value, 'reply') && !manifest.permissions.includes('group.send')) throw fail('插件未声明 group.send，不能返回群回复。', 403);
   return jsonValue(value, MAX_RESULT_BYTES, '插件返回结果');
 }
@@ -279,7 +304,7 @@ export function createPluginManager({ dataDir }) {
     async execute(id, invocation, { signal } = {}) {
       ensureOpen();
       const manifest = requirePackage(id);
-      if (!plain(invocation) || !['run', 'onMessage'].includes(invocation.handler)) throw fail('插件执行方式无效。');
+      if (!plain(invocation) || !['run', 'onMessage', 'callTool'].includes(invocation.handler)) throw fail('插件执行方式无效。');
       if (invocation.handler === 'onMessage' && !manifest.events.includes('group.message')) throw fail('插件没有声明 group.message 事件。', 403);
       if (signal?.aborted) throw fail('插件任务已取消。', 409);
       if (active.size >= 8) throw fail('插件执行队列已满，请稍后重试。', 429);
@@ -287,8 +312,25 @@ export function createPluginManager({ dataDir }) {
       const inspected = inspectPackage(directory).manifest;
       if (JSON.stringify(inspected) !== JSON.stringify(manifest)) throw fail('插件清单已在安装目录中改变，请重新导入插件。', 409);
       const payload = { settings: validateSettings(id, invocation.settings ?? {}), context: invocation.context ?? {} };
-      if (invocation.input !== undefined) payload.input = invocation.input;
-      if (invocation.event !== undefined) payload.event = invocation.event;
+      const suppliedSecrets = invocation.secrets === undefined ? {} : invocation.secrets;
+      if (!plain(suppliedSecrets)) throw fail('插件独立密钥必须为对象。');
+      const declaredSecretKeys = new Set(manifest.secretsSchema.map(field => field.key));
+      for (const key of Object.keys(suppliedSecrets)) {
+        if (!declaredSecretKeys.has(key)) throw fail('插件独立密钥包含未声明字段。');
+        const secret = suppliedSecrets[key];
+        if (typeof secret !== 'string' || secret.length > 2000 || /[\r\n]/.test(secret)) throw fail('插件独立密钥须为最多 2000 字符的单行文本。');
+      }
+      payload.secrets = jsonValue(suppliedSecrets, 16 * 1024, '插件独立密钥');
+      if (invocation.handler === 'callTool') {
+        const tool = manifest.tools.find(item => item.name === invocation.name);
+        if (!tool) throw fail('插件未声明这个 AI 工具。', 404);
+        payload.name = tool.name;
+        payload.arguments = validateToolInput(tool.inputSchema, Object.hasOwn(invocation, 'arguments') ? invocation.arguments : {});
+      }
+      if (invocation.handler !== 'callTool') {
+        if (invocation.input !== undefined) payload.input = invocation.input;
+        if (invocation.event !== undefined) payload.event = invocation.event;
+      }
       const safePayload = jsonValue(payload, MAX_INPUT_BYTES, '插件输入');
       return new Promise((resolve, reject) => {
         const worker = new Worker(new URL('./plugin-worker.mjs', import.meta.url), {
@@ -318,7 +360,7 @@ export function createPluginManager({ dataDir }) {
           try {
             if (!plain(packet)) throw fail('插件执行协议无效。');
             if (packet.type === 'error' && typeof packet.message === 'string') void finish(fail(`插件执行失败：${packet.message.slice(0, 1000)}`, 502));
-            else if (packet.type === 'result') void finish(null, validateResult(packet.value, manifest));
+            else if (packet.type === 'result') void finish(null, validateResult(packet.value, manifest, invocation.handler));
             else throw fail('插件执行协议无效。');
           } catch (error) { void finish(error); }
         });

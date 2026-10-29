@@ -25,7 +25,7 @@ function safeError(value, secret = '') {
 
 /** Providers never select another billing channel when one channel fails. */
 export function createProviders({ fetchImpl = globalThis.fetch, spawnImpl = spawn } = {}) {
-  async function chatCompletion({ messages, config, apiKey, signal, provider, label, official = false }) {
+  async function chatCompletion({ messages, config, apiKey, signal, provider, label, official = false, tools, toolChoice = 'auto' }) {
     if (!apiKey) throw failure(`尚未设置 ${label} API Key，请在模型配置的密钥栏填写并保存。`, 400);
     if (!config?.enabled) throw failure(`${label} 模块尚未启用，请先在模型配置中开启。`, 400);
     if (signal?.aborted) throw failure('模型请求已取消。', 409);
@@ -51,6 +51,7 @@ export function createProviders({ fetchImpl = globalThis.fetch, spawnImpl = spaw
           stream: false,
           max_tokens: config.maxTokens,
           temperature: config.temperature,
+          ...(tools !== undefined ? { tools, tool_choice: toolChoice, parallel_tool_calls: false } : {}),
         }),
         signal: combineSignal(signal, 60_000),
       });
@@ -75,10 +76,16 @@ export function createProviders({ fetchImpl = globalThis.fetch, spawnImpl = spaw
             : '请检查密钥、额度、模型名称和参数';
       throw failure(`${label} 请求失败（HTTP ${response.status}）：${safeError(payload?.error?.message || '服务返回错误', apiKey)}；${guidance}。`);
     }
-    const text = payload?.choices?.[0]?.message?.content;
-    if (typeof text !== 'string' || !text.trim()) throw failure(`${label} 没有返回可用的文字回答，请检查模型是否支持文字聊天。`);
+    const message = payload?.choices?.[0]?.message;
+    const text = message?.content;
+    const calls = message?.tool_calls;
+    if ((calls != null && !Array.isArray(calls)) || (calls?.length && (!tools?.length || toolChoice === 'none' || calls.length > 3))) throw failure(`${label} 返回了无效或未授权的工具调用。`);
+    if ((!Array.isArray(calls) || !calls.length) && (typeof text !== 'string' || !text.trim())) throw failure(`${label} 没有返回可用的文字回答，请检查模型是否支持文字聊天或工具调用。`);
     const truncated = payload.choices[0].finish_reason === 'length';
-    return { provider, text: text.trim() + (truncated ? '\n\n[模型输出达到长度限制，回答可能不完整。]' : ''), usage: payload.usage || null, truncated };
+    if (truncated && calls?.length) throw failure(`${label} 的工具调用输出被截断，本次未执行工具。`);
+    const reasoning = tools !== undefined ? message?.reasoning_content : undefined;
+    if (reasoning != null && (typeof reasoning !== 'string' || Buffer.byteLength(reasoning) > 128 * 1024)) throw failure(`${label} 的工具续传字段无效或超过长度限制。`);
+    return { provider, text: (typeof text === 'string' ? text.trim() : '') + (truncated ? '\n\n[模型输出达到长度限制，回答可能不完整。]' : ''), ...(calls?.length ? { toolCalls: calls } : {}), ...(typeof reasoning === 'string' ? { reasoningContent: reasoning } : {}), usage: payload.usage || null, truncated };
   }
 
   const deepseek = args => chatCompletion({ ...args, provider: 'deepseek', label: 'DeepSeek', official: true });

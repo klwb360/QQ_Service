@@ -5,6 +5,7 @@ import os from 'node:os';
 import path from 'node:path';
 import { spawnSync } from 'node:child_process';
 import { createPluginManager } from '../src/plugins.mjs';
+import { validateToolSchema, validateToolInput } from '../src/tool-schema.mjs';
 
 function fixture(t) {
   const root = fs.mkdtempSync(path.join(os.tmpdir(), 'qq-service-plugins-'));
@@ -239,4 +240,211 @@ test('修改已安装清单不会悄悄改变插件权限或配置契约', async
   fs.writeFileSync(manifestPath, JSON.stringify(manifest));
   await assert.rejects(fx.manager.execute('tampered', { handler: 'run' }), error => error.statusCode === 409 && /改变/.test(error.message));
   assert.deepEqual(fx.manager.get('tampered').permissions, []);
+});
+
+const toolInputSchema = {
+  type: 'object',
+  properties: {
+    title: { type: 'string', minLength: 1, maxLength: 30, description: '标题' },
+    mode: { type: 'string', enum: ['brief', 'full'] },
+    details: {
+      type: 'object', properties: {
+        count: { type: 'integer', minimum: 1, maximum: 5 },
+        ratio: { type: 'number', minimum: 0, maximum: 1 },
+        include: { type: 'boolean', enum: [true] },
+      }, required: ['count'], additionalProperties: false,
+    },
+    tags: { type: 'array', items: { type: 'string', maxLength: 5 }, minItems: 1, maxItems: 3 },
+  },
+  required: ['title'], additionalProperties: false,
+};
+const declaredTool = (override = {}) => ({
+  name: 'inspect_text', description: '整理指定文本', effect: 'read', inputSchema: toolInputSchema, ...override,
+});
+
+test('AI 工具参数定义采用有界 JSON Schema 子集并返回独立的规范化副本', () => {
+  const canonical = validateToolSchema(toolInputSchema);
+  assert.deepEqual(canonical.required, ['title']);
+  assert.equal(canonical.additionalProperties, false);
+  assert.equal(canonical.properties.mode.maxLength, 6000);
+  assert.equal(canonical.properties.tags.items.minLength, 0);
+  assert.equal(canonical.properties.title.description, '标题');
+  canonical.properties.title.maxLength = 2;
+  assert.equal(toolInputSchema.properties.title.maxLength, 30);
+  assert.deepEqual(validateToolSchema({ type: 'object' }), { type: 'object', properties: {}, required: [], additionalProperties: false });
+  assert.deepEqual(validateToolSchema({ type: 'object', properties: { list: { type: 'array', items: { type: 'boolean' } } } }).properties.list,
+    { type: 'array', items: { type: 'boolean' }, minItems: 0, maxItems: 100 });
+  assert.deepEqual(validateToolInput(toolInputSchema, { title: '通知', mode: 'brief', details: { count: 2, ratio: 0.5, include: true }, tags: ['QQ'] }),
+    { title: '通知', mode: 'brief', details: { count: 2, ratio: 0.5, include: true }, tags: ['QQ'] });
+  assert.deepEqual(validateToolInput({ type: 'object', properties: { text: { type: 'string', maxLength: 1 } } }, { text: '🙂' }), { text: '🙂' });
+});
+
+test('AI 工具参数定义拒绝开放属性、引用、表达式、非法枚举与不支持的关键字', () => {
+  const badSchemas = [
+    null, {}, { type: 'string' }, { type: ['object', 'null'] },
+    { type: 'object', properties: null }, { type: 'object', required: null },
+    { type: 'object', additionalProperties: true },
+    { type: 'object', additionalProperties: { type: 'string' } },
+    { type: 'object', $ref: '#/definitions/x' },
+    { type: 'object', pattern: '.*' },
+    { type: 'object', anyOf: [] },
+    { type: 'object', properties: { x: { type: 'string', default: 'x' } } },
+    { type: 'object', properties: { x: { type: 'string', pattern: '[x]' } } },
+    { type: 'object', properties: { x: { type: 'number', enum: [1, 1] } } },
+    { type: 'object', properties: { x: { type: 'boolean', enum: ['true'] } } },
+    { type: 'object', properties: { x: { type: 'integer', enum: [1.5] } } },
+    { type: 'object', properties: { x: { type: 'string', maxLength: 2, enum: ['long'] } } },
+    { type: 'object', properties: { x: { type: 'array', items: { type: 'string' }, maxItems: 101 } } },
+    { type: 'object', properties: { x: { type: 'array', items: [] } } },
+    { type: 'object', properties: { x: { type: 'string', minLength: 3, maxLength: 1 } } },
+    { type: 'object', properties: { x: { type: 'number', minimum: 10, maximum: 1 } } },
+    { type: 'object', properties: { x: { type: 'boolean', maximum: 1 } } },
+    { type: 'object', properties: { x: { type: 'null' } } },
+    { type: 'object', required: ['missing'] },
+    { type: 'object', properties: { x: { type: 'boolean' } }, required: ['x', 'x'] },
+    JSON.parse('{"type":"object","properties":{"__proto__":{"type":"boolean"}}}'),
+    JSON.parse('{"type":"object","properties":{"constructor":{"type":"boolean"}}}'),
+  ];
+  for (const schema of badSchemas) assert.throws(() => validateToolSchema(schema), error => error.statusCode === 400, JSON.stringify(schema));
+  const properties = Object.fromEntries(Array.from({ length: 31 }, (_, index) => [`x${index}`, { type: 'boolean' }]));
+  assert.throws(() => validateToolSchema({ type: 'object', properties }), /30/);
+  const manyNodes = { type: 'object', properties: {} };
+  for (let index = 0; index < 10; index++) manyNodes.properties[`obj${index}`] = { type: 'object', properties: Object.fromEntries(Array.from({ length: 10 }, (_, n) => [`x${n}`, { type: 'boolean' }])) };
+  assert.throws(() => validateToolSchema(manyNodes), /100/);
+  let nested = { type: 'boolean' };
+  for (let index = 0; index < 7; index++) nested = { type: 'array', items: nested };
+  assert.throws(() => validateToolSchema({ type: 'object', properties: { nested } }), /6 层/);
+  const tooLarge = { type: 'object', description: '文'.repeat(6000) };
+  assert.throws(() => validateToolSchema(tooLarge), /16 KiB/);
+});
+
+test('AI 工具参数严格检查必填、类型、范围、枚举、数组与 JSON 安全边界', () => {
+  const badInputs = [
+    undefined, null, [], {}, { title: '' }, { title: 'x'.repeat(31) },
+    { title: '通知', extra: true }, { title: '通知', mode: 'unexpected' },
+    { title: '通知', details: { count: 1.5 } },
+    { title: '通知', details: { count: 0 } },
+    { title: '通知', details: { count: 2, ratio: 2 } },
+    { title: '通知', details: { count: 2, include: false } },
+    { title: '通知', details: { count: 2, extra: 'x' } },
+    { title: '通知', details: { count: NaN } },
+    { title: '通知', tags: [] }, { title: '通知', tags: ['a', 'b', 'c', 'd'] },
+    { title: '通知', tags: [false] }, { title: '通知', tags: ['too long'] },
+    { title: '通知', tags: new Array(1) },
+    { title: '通知', details: { count: Infinity } },
+    { title: '通知', mode: () => 'brief' },
+    JSON.parse('{"title":"通知","__proto__":{}}'),
+  ];
+  for (const value of badInputs) assert.throws(() => validateToolInput(toolInputSchema, value), error => error.statusCode === 400);
+  const circular = { title: '通知' }; circular.self = circular;
+  assert.throws(() => validateToolInput(toolInputSchema, circular), /JSON/);
+  assert.throws(() => validateToolInput({ type: 'object', properties: { text: { type: 'string' } } }, { text: '文'.repeat(6000) }), /16 KiB/);
+  let getterCalled = false;
+  const dynamic = { get title() { getterCalled = true; return '通知'; } };
+  assert.throws(() => validateToolInput(toolInputSchema, dynamic), /动态属性/);
+  assert.equal(getterCalled, false);
+  const source = { title: '通知', tags: ['QQ'] };
+  const cloned = validateToolInput(toolInputSchema, source); cloned.tags[0] = '修改';
+  assert.equal(source.tags[0], 'QQ');
+});
+
+test('插件声明 AI 工具无需群事件权限，工具名称、数量、效果和参数定义在安装时校验', async t => {
+  const fx = fixture(t);
+  const source = fx.packageDir('tool-definitions', undefined, { tools: [declaredTool({ effect: undefined })] });
+  const installed = await fx.manager.install(source);
+  assert.equal(installed.tools[0].effect, 'write');
+  assert.deepEqual(installed.events, []); assert.deepEqual(installed.permissions, []);
+  assert.equal(installed.tools[0].inputSchema.properties.mode.maxLength, 6000);
+  const visible = fx.manager.get('tool-definitions'); visible.tools[0].name = 'modified';
+  assert.equal(fx.manager.list()[0].tools[0].name, 'inspect_text');
+  assert.equal(fx.restart().get('tool-definitions').tools[0].name, 'inspect_text');
+  const badTools = [
+    [declaredTool({ name: 'Uppercase' })], [declaredTool({ name: '../escape' })],
+    [declaredTool({ name: 'x'.repeat(49) })], [declaredTool({ name: 'constructor' })],
+    [declaredTool(), declaredTool()], [declaredTool({ effect: 'execute' })],
+    [declaredTool({ effect: null })],
+    [declaredTool({ description: '' })], [declaredTool({ description: 'x'.repeat(1001) })],
+    [declaredTool({ extra: true })], [declaredTool({ inputSchema: { type: 'string' } })],
+    Array.from({ length: 21 }, (_, i) => declaredTool({ name: `tool_${i}` })),
+  ];
+  for (const [index, tools] of badTools.entries()) await assert.rejects(fx.manager.install(fx.packageDir(`bad-tools-${index}`, undefined, { tools })), error => error.statusCode === 400);
+  await assert.rejects(fx.manager.install(fx.packageDir('null-tools', undefined, { tools: null })), error => error.statusCode === 400);
+  await fx.manager.install(fx.packageDir('no-tools'));
+  assert.deepEqual(fx.manager.get('no-tools').tools, []);
+});
+
+test('callTool 仅调用已声明工具，校验参数后才导入，并传递工具参数与独立上下文', async t => {
+  const fx = fixture(t);
+  const marker = path.join(fx.root, 'tool-imported.txt');
+  const code = `import fs from 'node:fs'; fs.writeFileSync(${JSON.stringify(marker)}, 'imported');
+    export async function callTool({ name, arguments: args, settings, context }) { return { text: JSON.stringify({ name, args, settings, context }) }; }`;
+  await fx.manager.install(fx.packageDir('tool-dispatch', code, {
+    tools: [declaredTool()], settingsSchema: [{ key: 'label', label: '名称', type: 'string', default: '演示' }],
+  }));
+  await assert.rejects(fx.manager.execute('tool-dispatch', { handler: 'callTool', name: 'missing', arguments: {} }), error => error.statusCode === 404);
+  await assert.rejects(fx.manager.execute('tool-dispatch', { handler: 'callTool', name: 'inspect_text', arguments: {} }), error => error.statusCode === 400);
+  await assert.rejects(fx.manager.execute('tool-dispatch', { handler: 'callTool', name: 'inspect_text', arguments: { title: '通知', leaked: true } }), error => error.statusCode === 400);
+  assert.equal(fs.existsSync(marker), false);
+  const result = await fx.manager.execute('tool-dispatch', { handler: 'callTool', name: 'inspect_text', arguments: { title: '通知' }, context: { profileId: 'demo' } });
+  assert.deepEqual(JSON.parse(result.text), { name: 'inspect_text', args: { title: '通知' }, settings: { label: '演示' }, context: { profileId: 'demo' } });
+  assert.equal(fs.readFileSync(marker, 'utf8'), 'imported');
+  await fx.manager.install(fx.packageDir('empty-tool', 'export function callTool({ arguments: args }) { return { text: JSON.stringify(args) }; }', { tools: [declaredTool({ inputSchema: { type: 'object' } })] }));
+  assert.deepEqual(await fx.manager.execute('empty-tool', { handler: 'callTool', name: 'inspect_text' }), { text: '{}' });
+  await assert.rejects(fx.manager.execute('empty-tool', { handler: 'callTool', name: 'inspect_text', arguments: null }), error => error.statusCode === 400);
+});
+
+test('callTool 不允许直接回复 QQ，缺失导出和取消仍遵守 Worker 生命周期', async t => {
+  const fx = fixture(t);
+  const tools = [declaredTool({ inputSchema: { type: 'object' } })];
+  await fx.manager.install(fx.packageDir('tool-reply', 'export function callTool() { return { reply: "不能发送" }; }', { ...eventManifest, tools }));
+  await assert.rejects(fx.manager.execute('tool-reply', { handler: 'callTool', name: 'inspect_text', arguments: {} }), error => error.statusCode === 403 && /reply/.test(error.message));
+  await fx.manager.install(fx.packageDir('tool-missing-export', undefined, { tools }));
+  await assert.rejects(fx.manager.execute('tool-missing-export', { handler: 'callTool', name: 'inspect_text', arguments: {} }), /未导出 callTool/);
+  await fx.manager.install(fx.packageDir('tool-hang', 'export function callTool() { while (true) {} }', { tools, timeoutSeconds: 1 }));
+  const controller = new AbortController();
+  const task = fx.manager.execute('tool-hang', { handler: 'callTool', name: 'inspect_text', arguments: {} }, { signal: controller.signal });
+  const cancellation = assert.rejects(task, /取消/); controller.abort(); await cancellation;
+  await assert.rejects(fx.manager.execute('tool-hang', { handler: 'callTool', name: 'inspect_text', arguments: {} }), error => error.statusCode === 408);
+  await fx.manager.uninstall('tool-hang');
+});
+
+test('插件独立密钥只暴露清单定义，执行只传入声明过的本插件单行凭据', async t => {
+  const fx = fixture(t);
+  const tools = [declaredTool({ inputSchema: { type: 'object' } })];
+  const code = `export function callTool({ secrets, settings }) { return { text: JSON.stringify({ secrets, settings, env: Object.keys(process.env) }) }; }
+    export function run({ secrets }) { return { text: JSON.stringify(secrets) }; }`;
+  await fx.manager.install(fx.packageDir('own-secrets', code, {
+    tools, secretsSchema: [{ key: 'sessdata', label: '登录凭据', description: '仅供本插件' }, { key: 'csrf', label: 'CSRF' }],
+  }));
+  const secrets = { sessdata: 'demo-session', csrf: 'demo-csrf' };
+  const result = await fx.manager.execute('own-secrets', { handler: 'callTool', name: 'inspect_text', arguments: {}, secrets });
+  assert.deepEqual(JSON.parse(result.text), { secrets, settings: {}, env: [] });
+  assert.deepEqual(await fx.manager.execute('own-secrets', { handler: 'run', secrets: { csrf: 'only-one' } }), { text: '{"csrf":"only-one"}' });
+  assert.deepEqual(await fx.manager.execute('own-secrets', { handler: 'run' }), { text: '{}' });
+  assert.equal(fx.manager.get('own-secrets').secretsSchema.length, 2);
+  assert.equal(JSON.stringify(fx.manager.list()).includes('demo-session'), false);
+  assert.equal(JSON.stringify(fx.restart().get('own-secrets')).includes('demo-csrf'), false);
+  for (const bad of [null, [], { csrf: 3 }, { csrf: 'x'.repeat(2001) }, { csrf: 'line\nbreak' }, { csrf: 'line\rbreak' }, { deepseekApiKey: 'core-key' }, { otherPluginKey: 'other-key' }]) {
+    await assert.rejects(fx.manager.execute('own-secrets', { handler: 'callTool', name: 'inspect_text', arguments: {}, secrets: bad }), error => error.statusCode === 400);
+  }
+  const schema = Array.from({ length: 10 }, (_, index) => ({ key: `key${index}`, label: `密钥${index}` }));
+  await fx.manager.install(fx.packageDir('large-secrets', code, { tools, secretsSchema: schema }));
+  const largeSecrets = Object.fromEntries(schema.map(field => [field.key, 'x'.repeat(2000)]));
+  await assert.rejects(fx.manager.execute('large-secrets', { handler: 'run', secrets: largeSecrets }), /16|体积/);
+});
+
+test('插件密钥定义拒绝默认值、保留名、重复名和超额项，旧插件默认为无独立密钥', async t => {
+  const fx = fixture(t);
+  const badSchemas = [
+    null, [{ key: 'constructor', label: '保留名' }], [{ key: 'prototype', label: '保留名' }],
+    [{ key: '__proto__', label: '保留名' }], [{ key: 'a-b', label: '非法名' }],
+    [{ key: 'valid', label: '' }], [{ key: 'valid', label: 'x'.repeat(101) }],
+    [{ key: 'valid', label: '密钥', description: 'x'.repeat(501) }],
+    [{ key: 'valid', label: '密钥', default: 'must-not-store-in-manifest' }],
+    [{ key: 'same', label: '一' }, { key: 'same', label: '二' }],
+    Array.from({ length: 11 }, (_, index) => ({ key: `key${index}`, label: '超额' })),
+  ];
+  for (const [index, secretsSchema] of badSchemas.entries()) await assert.rejects(fx.manager.install(fx.packageDir(`bad-secret-${index}`, undefined, { secretsSchema })), error => error.statusCode === 400);
+  await fx.manager.install(fx.packageDir('no-own-keys'));
+  assert.deepEqual(fx.manager.get('no-own-keys').secretsSchema, []);
 });

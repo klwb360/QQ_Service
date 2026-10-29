@@ -21,6 +21,7 @@ Never report a real login, deployment or Windows interaction as tested without p
   "chat": {"enabled": false, "provider": "deepseek", "persona": "你是一个友好、简洁的群聊助手。", "contextMessages": 12},
   "groups": [],
   "plugins": [],
+  "tools": {"enabled": false, "triggers": ["mention", "poke", "name"], "aliases": [], "prefix": "/工具", "skill": "", "grants": []},
   "summary": {"enabled": false, "provider": "deepseek", "scheduleEnabled": false, "time": "18:00", "backgroundAuthorized": false, "sendToOwner": false, "retentionDays": 7, "maxMessages": 200},
   "favorites": {"enabled": false, "provider": "deepseek", "count": 50}
 }
@@ -56,7 +57,15 @@ Root `accounts.json` stores server-generated stable profile IDs, labels, platfor
 
 The legacy profile retains the original root data directory, login state and managed-container identity. `migrateConfig` explicitly maps schema 1 to 2 for draft/applied/previous documents, preserves revisions, and is idempotent. Existing social sends and personal private access are mapped without broadening; work groups remain unsent unless the user later explicitly grants permission. The original configuration is backed up as `config.v1.backup.json`.
 
-Secrets are `deepseekApiKey`, `napcatToken`, and `apiKey:<api-ID>`, never returned in configuration or exports. Empty key fields preserve existing values. Updates are staged until apply. Official Codex CLI manages per-profile authentication; the dashboard does not read `auth.json`. Logs must redact credentials across all profiles and include their profile ID.
+Secrets are `deepseekApiKey`, `napcatToken`, `apiKey:<api-ID>`, and declared `pluginSecret:<plugin-ID>:<key>`, never returned in configuration or exports. Plugin credential updates require a matching installed declaration and current profile entry; handlers receive only their own declared plugin credentials, never model/NapCat/other-profile keys. Empty key fields preserve existing values. Updates are staged until apply. Official Codex CLI manages per-profile authentication; the dashboard does not read `auth.json`. Logs must redact credentials across all profiles and include their profile ID.
+
+## AI tool calling
+
+The registered-plugin function-calling protocol is documented in [PLUGIN_DEVELOPMENT.md](PLUGIN_DEVELOPMENT.md). It is not an MCP stdio/HTTP implementation or arbitrary website automation. Account `tools` defaults off; at most 20 grants each identify `{tool:'plugin/name',groupIds:[],userIds:[],allowWrite:false}`. Reads may allow every member of explicitly selected groups through an empty `userIds`; writes require `allowWrite:true` and an explicit matching requester. QQ read/send permissions do not grant access to external apps by themselves.
+
+Wake modes are real OneBot mentions, notices that poke the controlled QQ, configured names/aliases at the start of a message, and an optional command prefix. Bare mentions/names/pokes only return a wake response without inference or external tool execution. An explicit request requires enabled API chat, an applied installed plugin, matching tool grants, current QQ identity, read/send group access and account release. The personal Codex subscription is not used for automatic group tools. Tool routing precedes ordinary chat/plugin callbacks to avoid duplicate execution.
+
+The host offers only currently authorized descriptors to the API model; each candidate call is schema-checked before any batch executes, re-authorized on execution and final delivery, and bounded to three tool calls/four model requests. Results are `tool` role data, not system instructions. Errors fail without automatic retry or billing fallback. Same-request duplicate writes and persistent same-message write replays are blocked; cancelling a tool cannot roll back effects already accepted by an external app.
 
 ## HTTP API
 
@@ -90,6 +99,8 @@ POST /api/accounts/:id/test/model {provider}
 POST /api/accounts/:id/plugins/:pluginId/run {input?}
 POST /api/accounts/:id/qq/test-message {groupId}
 GET  /api/accounts/:id/setup/status
+GET  /api/accounts/:id/tools
+POST /api/accounts/:id/tools/call {tool, arguments?}
 POST /api/accounts/:id/summary/run {groupId}
 POST /api/accounts/:id/favorites/sync
 POST /api/accounts/:id/favorites/summarize

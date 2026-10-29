@@ -12,6 +12,7 @@ export const DEFAULT_CONFIG = {
   chat: { enabled: false, provider: 'deepseek', persona: '你是一个友好、简洁的群聊助手。', contextMessages: 12 },
   groups: [],
   plugins: [],
+  tools: { enabled: false, triggers: ['mention', 'poke', 'name'], aliases: [], prefix: '/工具', skill: '', grants: [] },
   summary: { enabled: false, provider: 'deepseek', scheduleEnabled: false, time: '18:00', backgroundAuthorized: false, sendToOwner: false, retentionDays: 7, maxMessages: 200 },
   favorites: { enabled: false, provider: 'deepseek', count: 50 }
 };
@@ -32,8 +33,17 @@ export const apiSecretName = id => {
   if (!isApiProviderId(id)) throw new TypeError('API 通道标识无效');
   return `apiKey:${id}`;
 };
+export function parsePluginSecretName(value) {
+  const match = typeof value === 'string' && value.match(/^pluginSecret:([a-z][a-z0-9-]{0,63}):([A-Za-z][A-Za-z0-9_]{0,63})$/);
+  return match && !['constructor', 'prototype', '__proto__'].includes(match[2]) ? { pluginId: match[1], key: match[2] } : null;
+}
+export const pluginSecretName = (id, key) => {
+  const name = `pluginSecret:${id}:${key}`;
+  if (!parsePluginSecretName(name)) throw new TypeError('插件凭据名称无效');
+  return name;
+};
 export const isCredentialName = value => value === 'deepseekApiKey' || value === 'napcatToken'
-  || (typeof value === 'string' && value.startsWith('apiKey:') && isApiProviderId(value.slice(7)));
+  || Boolean(parsePluginSecretName(value)) || (typeof value === 'string' && value.startsWith('apiKey:') && isApiProviderId(value.slice(7)));
 export function getModelConfig(config, provider) {
   if (provider === 'deepseek' || provider === 'codex') return config?.models?.[provider];
   return isApiProviderId(provider) && Array.isArray(config?.models?.apis)
@@ -241,6 +251,39 @@ export function validateConfig(input, { applying = false, hasSecret = () => fals
   result.favorites.enabled = bool(favorites.enabled, false, '收藏', 'favorites.enabled');
   result.favorites.provider = provider(favorites.provider, 'deepseek', '收藏整理模型通道', 'favorites.provider');
   result.favorites.count = number(favorites.count, 50, '收藏列表条数', 1, 100, true, 'favorites.count');
+  const tools = section('tools');
+  for (const key of Object.keys(tools)) if (!['enabled', 'triggers', 'aliases', 'prefix', 'skill', 'grants'].includes(key)) issue(`tools.${key}`, '不支持的工具配置字段');
+  result.tools.enabled = bool(tools.enabled, false, '群友工具调用', 'tools.enabled');
+  result.tools.prefix = string(tools.prefix, '/工具', '工具指令前缀', 30, 'tools.prefix');
+  if (!result.tools.prefix) issue('tools.prefix', '工具前缀不能为空');
+  result.tools.skill = string(tools.skill, '', '工具 Skill', 8000, 'tools.skill');
+  if (tools.triggers !== undefined) {
+    if (!Array.isArray(tools.triggers) || tools.triggers.length > 4 || tools.triggers.some(value => !['mention', 'poke', 'name', 'command'].includes(value))) issue('tools.triggers', '工具唤醒方式无效');
+    else result.tools.triggers = [...new Set(tools.triggers)];
+  }
+  if (tools.aliases !== undefined) {
+    if (!Array.isArray(tools.aliases) || tools.aliases.length > 10 || tools.aliases.some(value => typeof value !== 'string' || !value.trim() || value.length > 20 || /[\r\n]/.test(value))) issue('tools.aliases', '最多填写 10 个称呼，每个 1–20 字符');
+    else result.tools.aliases = [...new Set(tools.aliases.map(value => value.trim()))];
+  }
+  if (tools.grants !== undefined) {
+    if (!Array.isArray(tools.grants) || tools.grants.length > 20) issue('tools.grants', '每个账号最多授权 20 个工具');
+    else {
+      const seen = new Set();
+      result.tools.grants = tools.grants.map((grant, index) => {
+        const prefix = `tools.grants.${index}`;
+        if (!object(grant)) { issue(prefix, '工具授权必须是对象'); grant = {}; }
+        for (const key of Object.keys(grant)) if (!['tool', 'groupIds', 'userIds', 'allowWrite'].includes(key)) issue(`${prefix}.${key}`, '不支持的工具授权字段');
+        const tool = string(grant.tool, '', '工具标识', 113, `${prefix}.tool`);
+        if (!/^[a-z][a-z0-9-]{0,63}\/[a-z][a-z0-9_]{0,47}$/.test(tool) || seen.has(tool)) issue(`${prefix}.tool`, '工具标识无效或重复');
+        seen.add(tool);
+        const ids = (key, label) => {
+          if (!Array.isArray(grant[key]) || grant[key].length > 100) { issue(`${prefix}.${key}`, `${label}须为最多 100 项的号码数组`); return []; }
+          return [...new Set(grant[key].map(value => id(value, label, `${prefix}.${key}`)))];
+        };
+        return { tool, groupIds: ids('groupIds', '授权群号'), userIds: ids('userIds', '允许调用的 QQ'), allowWrite: bool(grant.allowWrite, false, '外部写入授权', `${prefix}.allowWrite`) };
+      });
+    }
+  }
   if (applying) {
     if (result.qq.enabled && !result.botQQ) issue('botQQ', '启用 QQ 连接前请填写控制的 QQ 号', '先在账号配置中填写准备登录 NapCat 的 QQ 号码。');
     if (result.qq.enabled && !hasSecret('napcatToken')) issue('secrets.napcatToken', '请先安装 NapCat 或填写其 OneBot Token', '先在 NapCat 登录此 QQ、启用正向 WebSocket，再填写同一个 OneBot Token 并测试连接。');

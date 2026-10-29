@@ -173,6 +173,10 @@ export function createDashboard({ dataDir = defaultDataDir(), installerFactory, 
         if (request.method === 'GET') {
           if (action === '/state') return json(response, await service.state());
           if (action === '/setup/status') return json(response, service.setupStatus());
+          if (action === '/tools') {
+            const settings = service.store.getConfig().tools || {};
+            return json(response, { tools: service.runtime.listTools?.() || [], enabled: settings.enabled === true, triggers: settings.triggers || ['mention', 'poke', 'name'], prefix: settings.prefix || '/工具' });
+          }
           if (action === '/config/export') {
             response.setHeader('Content-Disposition', 'attachment; filename="qq-service-config.json"');
             return json(response, service.store.getState().draft);
