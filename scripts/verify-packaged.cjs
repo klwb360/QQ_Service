@@ -26,6 +26,8 @@ async function verifyWindowsPackage(appOutDir, expectedVersion) {
     path.join(backend, 'src', 'napcat-settings.mjs'),
     path.join(backend, 'src', 'napcat-native.mjs'),
     path.join(backend, 'src', 'group-events.mjs'),
+    path.join(backend, 'src', 'plugins.mjs'),
+    path.join(backend, 'src', 'plugin-worker.mjs'),
     path.join(backend, 'public', 'index.html'),
     path.join(backend, 'public', 'app.js'),
     path.join(backend, 'public', 'styles.css'),

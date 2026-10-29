@@ -95,7 +95,7 @@ function favoriteText(summary) {
   return [...new Set(pieces)].join('\n').slice(0, 4000) || '[当前接口没有提供可读摘要；未获取收藏全文或附件。]';
 }
 
-export function createRuntime({ getConfig, getSecret, store, installer, log = () => {}, providers = createProviders() }) {
+export function createRuntime({ getConfig, getSecret, store, installer, pluginManager, profileId = '', platform = 'qq', log = () => {}, providers = createProviders() }) {
   let socket = null;
   let connectionPromise = null;
   let wanted = false;
@@ -261,11 +261,18 @@ export function createRuntime({ getConfig, getSecret, store, installer, log = ()
   }
 
   /** Every send, including errors and summary delivery, passes this gate. */
-  function destinationGate(destination, expectedEpoch, { scenario, groupId, provider, triggeredBy } = {}) {
+  function destinationGate(destination, expectedEpoch, { scenario, groupId, provider, triggeredBy, pluginId } = {}) {
     const config = getConfig();
     if (expectedEpoch !== undefined && expectedEpoch !== epoch) throw fail('旧配置下的回复已取消。', 409);
     if (config.permissions?.released !== true) throw fail('账号当前只读；请在选定群与消息权限中明确释放发送权限。', 409);
-    if (!['chat', 'summary', 'favorites'].includes(scenario) || config[scenario]?.enabled !== true) {
+    if (scenario === 'plugin') {
+      const manifest = pluginManager?.get(pluginId);
+      if (!config.plugins?.some(plugin => plugin.id === pluginId && plugin.enabled)
+        || !manifest?.permissions.includes('group.send') || !manifest.events.includes('group.message')
+        || destination.type !== 'group' || destination.id !== groupId || !config.botQQ) {
+        throw fail('插件未启用或没有当前群的回复权限。', 409);
+      }
+    } else if (!['chat', 'summary', 'favorites'].includes(scenario) || config[scenario]?.enabled !== true) {
       throw fail('当前功能场景未启用，禁止发送消息。', 409);
     }
     if (!config.qq?.enabled || !connected) throw fail('QQ 尚未连接，不能发送消息。', 409);
@@ -284,6 +291,7 @@ export function createRuntime({ getConfig, getSecret, store, installer, log = ()
     if (destination.type !== 'group' || !group || group.read !== true || group.send !== true) {
       throw fail('该群未同时获得读取与发送权限，禁止发送消息。', 409);
     }
+    if (scenario === 'plugin') return;
     if (scenario !== 'chat' || provider === 'codex' || provider !== config.chat.provider || !getModelConfig(config, provider)?.enabled) {
       throw fail('群聊回复需要选择已启用的 API 模型；个人 Codex 订阅不用于自动群聊。', 409);
     }
@@ -426,6 +434,71 @@ export function createRuntime({ getConfig, getSecret, store, installer, log = ()
     return providers.deepseek({ messages, config: apiConfig, apiKey: await getSecret('deepseekApiKey'), signal });
   }
 
+  function pluginContext() {
+    return { profileId, platform, expectedQQ: getConfig().botQQ || '', actualQQ: accountId || '' };
+  }
+
+  function pluginGate(pluginId, taskEpoch, groupId) {
+    if (taskEpoch !== epoch) throw fail('插件对应的配置已失效。', 409);
+    const config = getConfig();
+    const entry = config.plugins?.find(plugin => plugin.id === pluginId && plugin.enabled === true);
+    const manifest = pluginManager?.get(pluginId);
+    if (!entry || !manifest) throw fail('请先安装并在当前账号中启用、应用此插件。', 409);
+    if (groupId) {
+      const group = config.groups.find(group => group.id === groupId && group.read === true);
+      if (!config.permissions?.released || !config.qq.enabled || !connected || !config.botQQ || config.botQQ !== accountId
+        || !group || !manifest.events.includes('group.message') || !manifest.permissions.includes('group.read')) {
+        throw fail('插件群事件的账号、连接或读取权限已失效。', 409);
+      }
+    }
+    return { config, entry, manifest };
+  }
+
+  async function runPlugin(pluginId, input = {}) {
+    pluginGate(pluginId, epoch);
+    return enqueue(`plugin:${pluginId}:manual`, async (signal, taskEpoch) => {
+      const { entry } = pluginGate(pluginId, taskEpoch);
+      const result = await pluginManager.execute(pluginId, { handler: 'run', input, settings: entry.settings, context: pluginContext() }, { signal });
+      pluginGate(pluginId, taskEpoch);
+      if (result && Object.hasOwn(result, 'reply')) throw fail('手动执行仅支持本地 text 结果，不允许向 QQ 回复。', 409);
+      report('info', `插件 ${pluginId} 手动执行完成（仅本地结果）。`);
+      return result;
+    });
+  }
+
+  // Only explicitly enabled plugins see normalized text from selected groups.
+  // No raw OneBot packet, history, model key or host callback crosses this API.
+  function dispatchPluginMessage(input, packet, receiptEpoch) {
+    if (!pluginManager || packet.post_type !== 'message' || input.messageType !== 'group' || input.isNotice || !input.text
+      || (input.selfId && input.selfId !== accountId) || input.userId === accountId) return;
+    const config = getConfig();
+    if (!config.permissions?.released || !connected || config.botQQ !== accountId) return;
+    const group = config.groups.find(group => group.id === input.groupId && group.read === true);
+    if (!group) return;
+    for (const entry of config.plugins || []) {
+      const manifest = pluginManager.get(entry.id);
+      if (!entry.enabled || !manifest?.events.includes('group.message') || !manifest.permissions.includes('group.read')) continue;
+      const key = `plugin:${entry.id}:${input.groupId}`;
+      if (Date.now() - (cooldowns.get(key) || 0) < (group.cooldownSeconds ?? 30) * 1000) continue;
+      const event = { groupId: input.groupId, userId: input.userId, messageId: input.messageId,
+        text: input.text.slice(0, 12000), time: input.time, mentioned: Boolean(input.mentioned) };
+      enqueue(key, async (signal, taskEpoch) => {
+        if (receiptEpoch !== taskEpoch) throw fail('插件收到的消息已属于旧配置。', 409);
+        const current = pluginGate(entry.id, taskEpoch, input.groupId);
+        const currentGroup = current.config.groups.find(group => group.id === input.groupId);
+        if (Date.now() - (cooldowns.get(key) || 0) < (currentGroup.cooldownSeconds ?? 30) * 1000) return null;
+        const result = await pluginManager.execute(entry.id, { handler: 'onMessage', event, settings: current.entry.settings, context: pluginContext() }, { signal });
+        pluginGate(entry.id, taskEpoch, input.groupId);
+        if (result?.reply) {
+          cooldowns.set(key, Date.now());
+          await send({ type: 'group', id: input.groupId }, result.reply, taskEpoch, { scenario: 'plugin', pluginId: entry.id, groupId: input.groupId });
+        }
+        if (result?.text) report('info', `插件 ${entry.id}：${result.text}`);
+        return result;
+      }).catch(error => report('warn', `插件 ${entry.id} 执行失败：${error.message}`));
+    }
+  }
+
   async function handleMessage(event) {
     const config = getConfig();
     const receiptEpoch = epoch;
@@ -451,6 +524,7 @@ export function createRuntime({ getConfig, getSecret, store, installer, log = ()
       }
     }
     if (receiptEpoch !== epoch) return;
+    dispatchPluginMessage(input, event, receiptEpoch);
     if (decision.action === 'record_only') return;
     if (decision.action === 'owner_error') {
       await send({ type: 'private', id: config.ownerQQ }, decision.reason, receiptEpoch, { scenario: decision.scenario });
@@ -913,5 +987,5 @@ export function createRuntime({ getConfig, getSecret, store, installer, log = ()
     return status();
   }
 
-  return { reload, connect, stop, status, testDeepSeek, testModel, testGroupMessage, invalidateModelTest: provider => modelChecks.delete(provider), listGroups, runSummary, runFavoritesSummary, syncFavorites, preview };
+  return { reload, connect, stop, status, testDeepSeek, testModel, testGroupMessage, invalidateModelTest: provider => modelChecks.delete(provider), listGroups, runSummary, runFavoritesSummary, syncFavorites, runPlugin, preview };
 }

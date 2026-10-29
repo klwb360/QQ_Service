@@ -174,3 +174,34 @@ html{scrollbar-width:none}html::-webkit-scrollbar{width:0;height:0}
 .module-version.native-path{overflow-wrap:anywhere}
 @media(max-width:760px){.napcat-connect-toolbar{align-items:flex-start;flex-direction:column;gap:12px}}
 @media(max-width:520px){.napcat-path-row{flex-direction:column}.napcat-path-row .button{align-self:flex-start}.napcat-mode-options{gap:24px}}
+/* Custom plugins: the package catalog is global; configuration stays per account. */
+.custom-plugins-section{margin-top:24px}
+.plugin-guide-link{font-size:12px;white-space:nowrap;text-decoration:none}
+.plugin-guide-link:hover{text-decoration:underline}
+.plugin-import-row{display:flex;align-items:flex-end;gap:10px;flex-wrap:wrap}
+.plugin-import-row>.field{flex:1 1 330px;margin:0}
+.plugin-import-row>.button{margin-bottom:0;min-height:39px}
+.plugin-account-note{font-size:12px;color:var(--muted);border-top:1px solid var(--line);padding-top:18px;margin:20px 0 16px}
+.custom-plugin-grid{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:18px}
+.custom-plugin-grid>.empty-state{grid-column:1/-1}
+.custom-plugin-card{border:1px solid var(--line);border-radius:9px;padding:19px;min-width:0;background:#fff}
+.custom-plugin-heading{display:flex;align-items:flex-start;justify-content:space-between;gap:12px}
+.custom-plugin-heading h3{font-size:15px;margin:0 0 4px;overflow-wrap:anywhere}
+.plugin-meta{font-size:11px;color:var(--muted);overflow-wrap:anywhere}
+.plugin-description{font-size:13px;color:#5e7184;line-height:1.7;margin:14px 0 7px;overflow-wrap:anywhere;white-space:pre-wrap}
+.plugin-capabilities{font-size:11px;color:#6b858a;line-height:1.7;overflow-wrap:anywhere;margin:0 0 17px}
+.plugin-settings{padding:0;border:0;margin:0;min-width:0}
+.plugin-settings:disabled{opacity:.6}
+.plugin-settings>.check-field{padding-bottom:14px}
+.plugin-settings small{display:block;font-size:11px;color:var(--muted);margin-top:3px;line-height:1.6}
+.plugin-fields{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:14px;margin-bottom:16px}
+.plugin-fields>.field{margin:0;min-width:0}
+.plugin-setting-toggle{align-self:start;min-height:60px}
+.plugin-run-panel{border-top:1px solid var(--line);padding-top:13px;margin-top:3px}
+.plugin-run-panel>summary{font-size:12px;color:#657b8d;cursor:pointer;list-style-position:inside}
+.plugin-run-panel[open]>summary{margin-bottom:13px}
+.plugin-run-panel textarea{resize:vertical;font:12px/1.6 Consolas,monospace;min-height:78px;max-height:280px}
+.plugin-run-panel .card-actions{margin:12px 0 0}
+.plugin-run-output{font-size:12px;line-height:1.7;padding:12px;background:#f5f8fa;color:#52697c;border-radius:6px;white-space:pre-wrap;overflow-wrap:anywhere;max-height:240px;overflow:auto;margin:13px 0 0}
+@media(max-width:1050px){.custom-plugin-grid{grid-template-columns:minmax(0,1fr)}}
+@media(max-width:560px){.plugin-import-row{align-items:stretch}.plugin-import-row>.field{flex-basis:100%}.plugin-fields{grid-template-columns:minmax(0,1fr)}.custom-plugins-section>.section-heading{align-items:flex-start;gap:10px}.plugin-guide-link{font-size:11px}.custom-plugin-card{padding:15px}}

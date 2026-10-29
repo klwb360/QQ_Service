@@ -488,6 +488,15 @@ function setupWindowHandlers() {
     trusted(event);
     return selection.canceled ? { canceled: true } : { canceled: false, path: selection.filePaths[0] };
   });
+  ipcMain.handle('qqbridge:plugin-choose-directory', async event => {
+    trusted(event);
+    const selection = await dialog.showOpenDialog(window, {
+      title: '选择自定义插件文件夹',
+      properties: ['openDirectory'],
+    });
+    trusted(event);
+    return selection.canceled ? { canceled: true } : { canceled: false, path: selection.filePaths[0] };
+  });
   ipcMain.handle('qqbridge:desktop-settings-update', async (event, value) => {
     trusted(event);
     try {

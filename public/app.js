@@ -14,6 +14,10 @@
     records: ['日志', 'ACTIVITY & EVIDENCE', '', '']
   };
   let accounts = [];
+  let pluginCatalog = [];
+  const pluginRunViews = new Map();
+  let pluginRenderSignature = '';
+  let pluginRenderAccount = '';
   let platforms = [];
   let directoryToken = '';
   let selectedAccountId = '';
@@ -145,6 +149,7 @@
     // A late save response must not erase edits made after that save was submitted.
     const mayReplace = expectedEditVersion === undefined || (editor.editVersion ?? 0) === expectedEditVersion;
     editor.state = next;
+    if (Array.isArray(next.plugins)) pluginCatalog = next.plugins;
     if (!editor.draft || (!editor.dirty && !Object.keys(editor.secretUpdates ?? {}).length) || (replaceDraft && mayReplace)) {
       editor.draft = clone(next.draft);
       editor.dirty = false;
@@ -174,6 +179,7 @@
     const directory = await api('/api/accounts', undefined, 'GET');
     if (!Array.isArray(directory.accounts) || !directory.csrfToken) throw new Error('后台账号目录不完整。');
     accounts = directory.accounts;
+    if (Array.isArray(directory.plugins)) pluginCatalog = directory.plugins;
     platforms = directory.platforms ?? [];
     directoryToken = directory.csrfToken;
     acceptNapcatSettings(directory.napcatSettings ?? await api('/api/napcat/settings', undefined, 'GET'));
@@ -403,6 +409,7 @@
     $('#revoke-permissions').disabled = !state || state.applied?.permissions?.released !== true;
     $$('[data-action], [data-module-action], #add-group, #open-napcat, #napcat-login-token, #export-config, #rollback-config, #preview-policy').forEach((button) => { button.disabled = !state; });
     $$('[data-open-napcat-program]').forEach(button => { button.disabled = !state || Boolean(pendingNapcatSettings) || getJobs().some(job => job.status === 'running'); });
+    updatePluginRunButtons();
   }
   function renderSecrets() {
     [['deepseekApiKey', '#deepseek-secret-state'], ['napcatToken', '#napcat-secret-state']].forEach(([name, selector]) => {
@@ -707,6 +714,100 @@
       const version = napcat && native ? settings.executablePath || '在设置中选择 NapCat 启动文件' : builtin ? '启用功能仍受账号与消息权限约束' : module ? `版本 ${module.version || '未提供'} · ${module.installed ? '已安装' : '未确认安装'}` : '等待此账号的模块检查结果';
       return `<article class="module-card ${builtin ? 'builtin' : 'external'}" data-module-card="${definition.id}"><div class="module-main"><div class="module-top"><span class="module-icon">${definition.icon}</span>${builtin ? `<span class="pill ${enabled ? 'pill-green' : 'pill-neutral'}">${enabled ? '此账号配置已启用' : '内置 · 尚未启用'}</span>` : pill(status)}</div><h2>${escapeHTML(definition.name)}</h2>${napcat ? `<span class="module-napcat-mode">${native ? '本地安装' : 'Docker'}</span>` : ''}<p>${escapeHTML(definition.description)}</p><div class="module-version ${napcat && native ? 'native-path' : ''}">${escapeHTML(version)}</div>${napcat ? `<div class="napcat-help-links"><a href="${napcatInstallUrl(settings.mode)}" target="_blank" rel="noopener noreferrer">${native ? '本地' : 'Docker'}安装说明 ↗</a><a href="#settings">更改方式</a></div>` : ''}</div><div class="module-actions">${actions}</div></article>`;
     }).join('');
+    renderCustomPlugins();
+  }
+  function pluginRunView(pluginId, accountId = selectedAccountId) {
+    const key = `${accountId}:${pluginId}`;
+    if (!pluginRunViews.has(key)) pluginRunViews.set(key, { input: '{}', output: '', running: false, open: false });
+    return pluginRunViews.get(key);
+  }
+  function pluginEntry(pluginId, { create = false } = {}) {
+    if (!draft) return null;
+    draft.plugins ??= [];
+    let entry = draft.plugins.find(item => item.id === pluginId);
+    if (!entry && create) {
+      const plugin = pluginCatalog.find(item => item.id === pluginId);
+      if (!plugin) return null;
+      entry = { id: pluginId, enabled: false, settings: Object.fromEntries((plugin.settingsSchema || []).filter(field => field.default !== undefined).map(field => [field.key, clone(field.default)])) };
+      draft.plugins.push(entry);
+    }
+    return entry;
+  }
+  function pluginCanRun(pluginId, accountId = selectedAccountId) {
+    const editor = editors.get(accountId);
+    return Boolean(editor?.state?.applied?.plugins?.some(entry => entry.id === pluginId && entry.enabled)
+      && !editor.dirty && !editor.state.pendingChanges && !editor.state.secretsPendingChanges
+      && !pluginRunView(pluginId, accountId).running);
+  }
+  function updatePluginRunButtons() {
+    $$('[data-plugin-run]').forEach(button => {
+      const view = pluginRunView(button.dataset.pluginRun);
+      button.disabled = !pluginCanRun(button.dataset.pluginRun);
+      button.textContent = view.running ? '执行中…' : '手动执行';
+      button.title = !state ? '请先选择账号' : view.running ? '插件正在执行' : button.disabled ? '先启用插件并保存、应用当前账号参数' : '执行已应用的插件参数；结果仅显示在本地';
+    });
+  }
+  function renderCustomPlugins({ force = false } = {}) {
+    const container = $('#custom-plugin-cards');
+    if (!container) return;
+    $('#choose-plugin-directory').classList.toggle('hidden', typeof window.qqBridgeDesktop?.choosePluginDirectory !== 'function');
+    $('#plugin-account-note').textContent = state ? `当前账号：${accountName()}。修改启用和参数后，使用上方的“保存”“应用”；应用后恢复只读，群消息自动处理还需启动此账号。` : '插件可以先导入；选择账号后再启用和设置参数。';
+    const signature = JSON.stringify([selectedAccountId, pluginCatalog, draft?.plugins, state?.applied?.plugins, dirty, state?.pendingChanges, state?.secretsPendingChanges]);
+    if (!force && (signature === pluginRenderSignature || pluginRenderAccount === selectedAccountId && container.contains(document.activeElement))) {
+      updatePluginRunButtons(); return;
+    }
+    pluginRenderSignature = signature;
+    pluginRenderAccount = selectedAccountId;
+    if (!pluginCatalog.length) {
+      container.innerHTML = '<div class="empty-state"><strong>尚未导入插件</strong>选择含有 plugin.json 的插件文件夹，导入后即可为各账号配置。</div>';
+      return;
+    }
+    container.innerHTML = pluginCatalog.map(plugin => {
+      const entry = pluginEntry(plugin.id);
+      const view = pluginRunView(plugin.id);
+      const applied = state?.applied?.plugins?.find(item => item.id === plugin.id);
+      const permissions = (plugin.permissions || []).map(value => ({ 'group.read': '读取已授权群消息', 'group.send': '回复当前已授权群' })[value] || value);
+      const fields = (plugin.settingsSchema || []).map(field => {
+        const value = entry?.settings?.[field.key] ?? field.default;
+        const attrs = `data-plugin-setting="${escapeHTML(field.key)}" data-plugin-value-type="${escapeHTML(field.type)}"`;
+        if (field.type === 'boolean') return `<label class="check-field plugin-setting-toggle"><input type="checkbox" ${attrs} ${value === true ? 'checked' : ''}><span>${escapeHTML(field.label || field.key)}${field.description ? `<small>${escapeHTML(field.description)}</small>` : ''}</span></label>`;
+        return `<label class="field">${escapeHTML(field.label || field.key)}<input ${attrs} type="${field.type === 'number' ? 'number' : 'text'}" ${field.type === 'number' ? `step="any"${field.min !== undefined ? ` min="${escapeHTML(field.min)}"` : ''}${field.max !== undefined ? ` max="${escapeHTML(field.max)}"` : ''}` : 'maxlength="6000"'} value="${escapeHTML(value ?? '')}" ${field.required ? 'required' : ''}>${field.description ? `<small>${escapeHTML(field.description)}</small>` : ''}</label>`;
+      }).join('');
+      const status = !state ? '选择账号后配置' : entry?.enabled ? applied?.enabled && JSON.stringify(entry) === JSON.stringify(applied) ? '此账号已应用' : '此账号待应用' : '此账号未启用';
+      return `<article class="custom-plugin-card" data-plugin-id="${escapeHTML(plugin.id)}"><div class="custom-plugin-heading"><div><h3>${escapeHTML(plugin.name)}</h3><span class="plugin-meta">${escapeHTML(plugin.id)} · v${escapeHTML(plugin.version)}</span></div><button type="button" class="button button-quiet button-small" data-plugin-uninstall="${escapeHTML(plugin.id)}">卸载</button></div><p class="plugin-description">${escapeHTML(plugin.description || '未提供说明')}</p><p class="plugin-capabilities">${escapeHTML(permissions.length ? permissions.join(' · ') : '本地手动功能')}${plugin.events?.includes('group.message') ? ' · 群消息触发' : ''}</p><fieldset class="plugin-settings" ${!state ? 'disabled' : ''}><legend class="sr-only">${escapeHTML(plugin.name)} 当前账号参数</legend><label class="check-field"><input type="checkbox" data-plugin-enable ${entry?.enabled ? 'checked' : ''}><span>为当前账号启用<small>${escapeHTML(status)}</small></span></label>${fields ? `<div class="plugin-fields">${fields}</div>` : ''}</fieldset><details class="plugin-run-panel" ${view.open ? 'open' : ''}><summary>手动执行 · 仅本地结果</summary><label class="field">输入 JSON<textarea rows="3" data-plugin-input spellcheck="false" ${!state ? 'disabled' : ''}>${escapeHTML(view.input)}</textarea></label><div class="card-actions"><button type="button" class="button button-secondary button-small" data-plugin-run="${escapeHTML(plugin.id)}">手动执行</button></div><pre class="plugin-run-output ${view.output ? '' : 'hidden'}" aria-live="polite">${escapeHTML(view.output)}</pre></details></article>`;
+    }).join('');
+    updatePluginRunButtons();
+  }
+  async function installCustomPlugin() {
+    const sourcePath = $('#plugin-source-path').value.trim();
+    if (!sourcePath) throw new Error('请先选择或填写插件文件夹完整路径。');
+    await api('/api/plugins/install', { sourcePath });
+    if ($('#plugin-source-path').value.trim() === sourcePath) $('#plugin-source-path').value = '';
+    await refreshState();
+    renderCustomPlugins({ force: true });
+    toast('插件已导入。请为当前账号选择启用，保存并应用参数。', 'info');
+  }
+  async function runCustomPlugin(pluginId) {
+    const id = requireAccount();
+    if (!pluginCanRun(pluginId, id)) throw new Error('请先启用插件并保存、应用当前账号参数。');
+    const view = pluginRunView(pluginId, id);
+    if (new TextEncoder().encode(view.input).length > 16 * 1024) throw new Error('插件输入 JSON 不能超过 16 KiB。');
+    let input;
+    try { input = JSON.parse(view.input); } catch { throw new Error('插件输入不是有效的 JSON。'); }
+    view.running = true; view.output = ''; updatePluginRunButtons();
+    try {
+      const response = await accountApi(`/plugins/${encodeURIComponent(pluginId)}/run`, { input }, 'POST', id);
+      view.output = response.result === null ? '本次未返回内容。' : response.result?.text ?? JSON.stringify(response.result, null, 2);
+      toast(`「${accountName(id)}」插件执行完成；结果仅保存在当前页面。`, 'info');
+    } catch (error) { view.output = `执行失败：${errorMessage(error)}`; throw error; }
+    finally { view.running = false; if (selectedAccountId === id) renderCustomPlugins({ force: true }); }
+  }
+  async function uninstallCustomPlugin(pluginId) {
+    const plugin = pluginCatalog.find(item => item.id === pluginId);
+    if (!plugin || !await openDialog(`卸载插件「${plugin.name}」`, '<p>从本机移除此插件，所有账号将无法再执行它。请先在使用此插件的账号中取消启用，保存并应用。</p>', '卸载插件')) return;
+    await api(`/api/plugins/${encodeURIComponent(pluginId)}/uninstall`, {});
+    await refreshState(); renderCustomPlugins({ force: true });
+    toast('插件已卸载；原始插件文件夹未改动。', 'info');
   }
   function getJobs() {
     const jobs = Array.isArray(state?.jobs) ? state.jobs : Object.values(state?.jobs ?? {});
@@ -1237,7 +1338,7 @@
     const revision = editor.state.revision;
     const config = clone(editor.draft);
     const submittedSecrets = clone(editor.secretUpdates);
-    const confirmed = await openDialog(`还原「${accountName(id)}」功能参数`, '<p>将当前账号的聊天、通知汇总、收藏整理、群列表和消息权限设置还原为默认值，并保存为待应用配置。</p><p>账号身份、QQ 连接、模型参数和密钥会保留，包括本次尚未保存的修改。其他账号不受影响。</p><p>此次操作仅保存；当前运行参数与权限保持不变，需要你再点击“应用参数”后才生效。</p>', '还原并保存');
+    const confirmed = await openDialog(`还原「${accountName(id)}」功能参数`, '<p>将当前账号的聊天、通知汇总、收藏整理、群列表、消息权限和自定义插件参数还原为默认值，并保存为待应用配置。</p><p>账号身份、QQ 连接、模型参数、密钥和本机已安装的插件会保留，包括本次尚未保存的连接和模型修改。其他账号不受影响。</p><p>此次操作仅保存；当前运行参数与权限保持不变，需要你再点击“应用参数”后才生效。</p>', '还原并保存');
     if (!confirmed) return;
     if (!editors.has(id) || editors.get(id).editVersion !== sentVersion || editors.get(id).state.revision !== revision) throw new Error('确认期间此账号的配置发生了变化，请重新检查后再还原。');
     const result = await accountApi('/config/reset-defaults', { revision, config, ...(Object.keys(submittedSecrets).length ? { secretUpdates: submittedSecrets } : {}) }, 'POST', id);
@@ -1474,6 +1575,29 @@
       renderPermissions();
     }
   });
+  document.addEventListener('input', event => {
+    const input = event.target;
+    const card = input.closest('[data-plugin-id]');
+    if (!card) return;
+    const pluginId = card.dataset.pluginId;
+    if (input.hasAttribute('data-plugin-input')) { pluginRunView(pluginId).input = input.value; return; }
+    if (!draft || !input.hasAttribute('data-plugin-setting') && !input.hasAttribute('data-plugin-enable')) return;
+    const entry = pluginEntry(pluginId, { create: true });
+    if (!entry) return;
+    if (input.hasAttribute('data-plugin-enable')) entry.enabled = input.checked;
+    else {
+      entry.settings ??= {};
+      if (input.dataset.pluginValueType === 'number' && input.value === '') delete entry.settings[input.dataset.pluginSetting];
+      else entry.settings[input.dataset.pluginSetting] = input.dataset.pluginValueType === 'boolean' ? input.checked : input.dataset.pluginValueType === 'number' ? Number(input.value) : input.value;
+    }
+    markDirty(input); updatePluginRunButtons();
+  });
+  $('#custom-plugin-cards').addEventListener('focusout', () => setTimeout(() => renderCustomPlugins(), 0));
+  $('#custom-plugin-cards').addEventListener('toggle', event => {
+    const card = event.target.closest('[data-plugin-id]');
+    if (card && event.target.classList.contains('plugin-run-panel')) pluginRunView(card.dataset.pluginId).open = event.target.open;
+  }, true);
+
   document.addEventListener('change', (event) => {
     if (event.target.id === 'account-llm-source' && draft) {
       chooseSingleLlm(draft, event.target.value); markDirty(event.target); populateForm(); renderLiveState(); return;
@@ -1494,6 +1618,8 @@
     }
     const button = event.target.closest('button');
     if (!button) return;
+    if (button.dataset.pluginRun) return withButton(button, () => runCustomPlugin(button.dataset.pluginRun));
+    if (button.dataset.pluginUninstall) return withButton(button, () => uninstallCustomPlugin(button.dataset.pluginUninstall));
     if (button.dataset.openAccount) return withButton(button, async () => {
       const id = button.dataset.openAccount;
       expandedAccountId = expandedAccountId === id ? '' : id;
@@ -1576,6 +1702,14 @@
     withButton(null, () => saveNapcatSettings({ mode: input.value }));
   }));
   $('#choose-napcat-executable').addEventListener('click', (event) => withButton(event.currentTarget, chooseNapcatExecutable));
+  $('#install-custom-plugin').addEventListener('click', event => withButton(event.currentTarget, installCustomPlugin));
+  $('#choose-plugin-directory').addEventListener('click', event => withButton(event.currentTarget, async () => {
+    const select = window.qqBridgeDesktop?.choosePluginDirectory;
+    if (typeof select !== 'function') throw new Error('当前环境不支持选择文件夹，请直接填写路径。');
+    const selection = await select();
+    if (!selection.canceled && selection.path) $('#plugin-source-path').value = selection.path;
+  }));
+
   $('#save-account-profile').addEventListener('click', (event) => withButton(event.currentTarget, saveAccountProfile));
   $('#create-account-entry').addEventListener('click', showCreateAccount);
   $('#cancel-create-account').addEventListener('click', () => $('#new-account-form').classList.add('hidden'));

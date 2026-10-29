@@ -6,7 +6,7 @@ import { createRuntime } from './runtime.mjs';
 
 const fail = (message, statusCode = 409, details) => Object.assign(new Error(message), { statusCode, ...(details ? { details } : {}) });
 
-export function createAccountService({ account, dataDir, csrfToken, installerFactory = createInstaller, runtimeFactory = createRuntime, getNapcatSettings = () => ({ mode: 'docker', executablePath: '', revision: 0 }), redactAll = value => String(value), checkConflicts = () => {}, reserveConfig = () => () => {} }) {
+export function createAccountService({ account, dataDir, csrfToken, installerFactory = createInstaller, runtimeFactory = createRuntime, pluginManager, ensurePluginReady = () => {}, getNapcatSettings = () => ({ mode: 'docker', executablePath: '', revision: 0 }), redactAll = value => String(value), checkConflicts = () => {}, reserveConfig = () => () => {} }) {
   const store = createStore(dataDir);
   const logs = [], jobs = [];
   let environment = null, activeJob = null, applying = false, started = false, closed = false;
@@ -26,7 +26,12 @@ export function createAccountService({ account, dataDir, csrfToken, installerFac
   };
   const safeDetails = value => typeof value === 'string' ? redact(value) : Array.isArray(value) ? value.map(safeDetails) : value && typeof value === 'object' ? Object.fromEntries(Object.entries(value).map(([key, item]) => [key, safeDetails(item)])) : value;
   const installer = installerFactory({ dataDir, platform: account.platform, profileId: account.id, accountId: account.id, legacy: account.id === 'legacy', getConfig: store.getConfig, getNapcatSettings, getSecret: store.getSecret, setSecret: store.setSecret, log });
-  const runtime = runtimeFactory({ platform: account.platform, profileId: account.id, accountId: account.id, getConfig: store.getConfig, getSecret: store.getSecret, store, installer, log });
+  const runtime = runtimeFactory({ platform: account.platform, profileId: account.id, accountId: account.id, getConfig: store.getConfig, getSecret: store.getSecret, store, installer, pluginManager, log });
+  const validatePlugins = config => {
+    if (pluginManager) config.plugins = pluginManager.validateEntries(config.plugins || []);
+    else if (config.plugins?.some(plugin => plugin.enabled)) throw fail('当前后台没有可用的插件管理器。', 400);
+    return config;
+  };
   const summary = () => {
     const config = store.getState();
     return { ...account, qqNumber: config.draft.botQQ, appliedQQ: config.applied.botQQ, runtime: safeDetails(runtime.status()), permissions: config.applied.permissions, pendingChanges: store.pendingChanges(), enabled: config.applied.qq.enabled };
@@ -36,7 +41,7 @@ export function createAccountService({ account, dataDir, csrfToken, installerFac
     try { modules = await installer.status(); } catch (error) { modules = [{ id: 'napcat', name: 'NapCat', state: 'error', description: redact(error.message) }]; }
     const draft = store.getState().draft;
     const secrets = Object.fromEntries(['deepseekApiKey', 'napcatToken', ...(draft.models.apis || []).map(model => apiSecretName(model.id))].map(name => [name, store.hasDraftSecret(name)]));
-    return { csrfToken, account: summary(), ...store.getState(), pendingChanges: store.pendingChanges(), secrets, secretsPendingChanges: store.secretsPending(), codexAuth: safeDetails(codexAuth), runtime: safeDetails(runtime.status()), setup: setupStatus(), modules, jobs: safeDetails(jobs.slice(-20)), logs: safeDetails(logs.slice(-100)), summaries: store.getSummaries(), favorites: store.getFavorites(), environment, metrics: store.metrics(), dataDir };
+    return { csrfToken, account: summary(), ...store.getState(), pendingChanges: store.pendingChanges(), secrets, secretsPendingChanges: store.secretsPending(), codexAuth: safeDetails(codexAuth), runtime: safeDetails(runtime.status()), setup: setupStatus(), modules, plugins: pluginManager?.list() || [], jobs: safeDetails(jobs.slice(-20)), logs: safeDetails(logs.slice(-100)), summaries: store.getSummaries(), favorites: store.getFavorites(), environment, metrics: store.metrics(), dataDir };
   };
   const setupStatus = () => {
     const { draft, applied } = store.getState();
@@ -55,7 +60,7 @@ export function createAccountService({ account, dataDir, csrfToken, installerFac
     });
     const selected = providers.filter(provider => provider.enabled);
     const modelsReady = selected.length > 0 && selected.every(provider => provider.configured);
-    const scenariosReady = ['chat', 'summary', 'favorites'].some(name => draft[name]?.enabled);
+    const scenariosReady = ['chat', 'summary', 'favorites'].some(name => draft[name]?.enabled) || draft.plugins?.some(plugin => plugin.enabled);
     const hasTargets = draft.groups.some(group => group.read) || draft.permissions.privateReplies;
     const released = applied.permissions.released;
     const groupTestNeeded = actual.permissions?.writableGroups?.length > 0;
@@ -95,7 +100,7 @@ export function createAccountService({ account, dataDir, csrfToken, installerFac
     }).finally(() => { item.finishedAt = new Date().toISOString(); activeJob = null; });
     return { job: item };
   };
-  const ensureIdle = () => { ensureOpen(); if (applying || activeJob) throw fail('该账号的配置或模块任务正在执行，请稍后重试。'); };
+  const ensureIdle = () => { ensureOpen(); ensurePluginReady(); if (applying || activeJob) throw fail('该账号的配置或模块任务正在执行，请稍后重试。'); };
   const checkEnvironment = async () => {
     const revision = getNapcatSettings().revision;
     const result = await installer.environment();
@@ -116,7 +121,7 @@ export function createAccountService({ account, dataDir, csrfToken, installerFac
       const candidate = structuredClone(current.draft);
       candidate.permissions ||= { released: false, privateReplies: false };
       candidate.permissions.released = mode === 'release';
-      const config = validateConfig(candidate, { applying: true, hasSecret: store.hasDraftSecret });
+      const config = validatePlugins(validateConfig(candidate, { applying: true, hasSecret: store.hasDraftSecret }));
       checkConflicts(config, account.id);
       if (mode === 'release' && (!config.qq.enabled || (!config.groups.some(group => group.read) && !config.permissions.privateReplies))) throw Object.assign(fail('请先连接 QQ，并在群权限中选择读取范围或私聊范围。'), { code: 'PERMISSION_TARGET_MISSING', field: 'groups', action: '完成 QQ 连接后读取群列表，勾选允许读取的群，再点击启动此账号。', nextStep: 'permissions' });
       releaseReservation = reserveConfig(config, before.applied, account.id);
@@ -169,8 +174,9 @@ export function createAccountService({ account, dataDir, csrfToken, installerFac
   };
   const save = async body => {
     ensureOpen();
+    ensurePluginReady();
     if (applying) throw fail('配置正在应用，请稍后保存。');
-    const config = validateConfig(body.config);
+    const config = validatePlugins(validateConfig(body.config));
     config.permissions.released = false;
     const updates = validateSecretUpdates(body.secretUpdates || {}, config);
     store.stageSecrets(updates); store.saveDraft(config);
@@ -178,6 +184,7 @@ export function createAccountService({ account, dataDir, csrfToken, installerFac
     return state();
   };
   const resetDefaults = async body => {
+    ensurePluginReady();
     ensureIdle();
     if (!body || typeof body !== 'object' || Array.isArray(body) || !Number.isSafeInteger(body.revision) || body.revision < 0) throw fail('请提供当前配置版本后重试。', 400);
     const before = store.getState();
@@ -191,6 +198,7 @@ export function createAccountService({ account, dataDir, csrfToken, installerFac
     const provider = selectedProviders.length === 1 ? selectedProviders[0] : DEFAULT_CONFIG.chat.provider;
     for (const section of ['chat', 'summary', 'favorites']) config[section] = { ...structuredClone(DEFAULT_CONFIG[section]), provider };
     config.groups = structuredClone(DEFAULT_CONFIG.groups);
+    config.plugins = [];
     config.permissions = structuredClone(DEFAULT_CONFIG.permissions);
     const oldSecrets = store.getSecretSnapshot();
     try {
@@ -208,6 +216,14 @@ export function createAccountService({ account, dataDir, csrfToken, installerFac
   };
   const invoke = async (route, body) => {
     ensureOpen();
+    const pluginRun = route.match(/^\/plugins\/([a-z][a-z0-9-]{0,63})\/run$/);
+    if (pluginRun) {
+      ensureIdle();
+      if (Object.keys(body).some(key => key !== 'input')) throw fail('插件执行请求仅支持 input。', 400);
+      if (typeof runtime.runPlugin !== 'function') throw fail('当前运行时不支持自定义插件。', 409);
+      const result = await runtime.runPlugin(pluginRun[1], body.input ?? {});
+      return { value: { pluginId: pluginRun[1], result: safeDetails(result) } };
+    }
     if (route === '/napcat/open') {
       if (!Number.isSafeInteger(body.revision) || Object.keys(body).some(key => key !== 'revision')) throw fail('请提供当前 NapCat 全局设置版本后重试。', 400);
       if (body.revision !== getNapcatSettings().revision) throw fail('NapCat 接入方式已变化，请刷新后再打开。');

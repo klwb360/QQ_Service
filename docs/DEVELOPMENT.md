@@ -1,6 +1,6 @@
 # 开发与发布
 
-[返回首页](../README.md) · [功能实现与架构](ARCHITECTURE.md) · [接口契约](CONTRACT.md) · [验证记录](VALIDATION.md)
+[返回首页](../README.md) · [功能实现与架构](ARCHITECTURE.md) · [接口契约](CONTRACT.md) · [插件开发指南](PLUGIN_DEVELOPMENT.md) · [验证记录](VALIDATION.md)
 
 ## 源码运行
 

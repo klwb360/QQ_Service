@@ -20,6 +20,7 @@ Never report a real login, deployment or Windows interaction as tested without p
   },
   "chat": {"enabled": false, "provider": "deepseek", "persona": "你是一个友好、简洁的群聊助手。", "contextMessages": 12},
   "groups": [],
+  "plugins": [],
   "summary": {"enabled": false, "provider": "deepseek", "scheduleEnabled": false, "time": "18:00", "backgroundAuthorized": false, "sendToOwner": false, "retentionDays": 7, "maxMessages": 200},
   "favorites": {"enabled": false, "provider": "deepseek", "count": 50}
 }
@@ -43,7 +44,7 @@ Group shape:
 
 IDs remain strings. New accounts, model login and credential setup never grant send permissions. New groups default to readable and not writable; unselected/unreadable group messages must not be stored or submitted to models. `mode` labels the workflow: work groups default to `send:false`, but an explicit user grant plus account release may enable conversation through their selected API provider. Sending requires `read:true`.
 
-All output, including errors and summary fragments, MUST pass the final destination gate: current account/epoch, verified connection identity, `permissions.released`, enabled scenario, and matching target permission. A group additionally needs `read && send`, an enabled API model and its selected conversation route. Private sends need `privateReplies` and exactly `ownerQQ`. Work-summary source permissions must still be valid at delivery time.
+All output, including errors and summary fragments, MUST pass the final destination gate: current account/epoch, verified connection identity, `permissions.released`, enabled scenario, and matching target permission. AI group replies additionally need `read && send`, an enabled API model and its selected conversation route. Plugin group replies instead require an enabled installed plugin with declared `group.read`/`group.send`, an authorized current-event group and the same final account/epoch/identity/read/send gate; plugins cannot name a different destination. Private sends need `privateReplies` and exactly `ownerQQ`. Work-summary source permissions must still be valid at delivery time.
 
 Personal `/gpt` invokes Codex; `/ds` invokes DeepSeek; `/summary GROUP_ID` uses the notification model; `/favorites` uses `favorites.provider`. Ordinary personal text uses `chat.provider` (DeepSeek, a configured API ID, or Codex); enabling chat requires the selected provider, not an additional DeepSeek connection. Choosing Codex as default disables automatic group conversation. Commands require their enabled scenario and released private permissions. Codex subscription is for owner-initiated/authorized personal tasks, never public automatic group conversation. Incoming sources remain untrusted data, not instructions.
 
@@ -59,10 +60,13 @@ Secrets are `deepseekApiKey`, `napcatToken`, and `apiKey:<api-ID>`, never return
 
 ## HTTP API
 
-Listen only on `127.0.0.1`. All mutations require `X-Dashboard-Token`. Validate Host/Origin, JSON Content-Type and body size. Reject arbitrary shell commands, download origins and filesystem paths.
+Listen only on `127.0.0.1`. All mutations require `X-Dashboard-Token`. Validate Host/Origin, JSON Content-Type and body size. Reject arbitrary shell commands and download origins. Native NapCat selection and custom-plugin imports are explicit, validated local-path operations; other endpoints do not gain filesystem access.
 
 ```text
-GET  /api/accounts -> {csrfToken, accounts, platforms}
+GET  /api/accounts -> {csrfToken, accounts, platforms, napcatSettings, plugins}
+GET  /api/plugins -> {plugins}
+POST /api/plugins/install {sourcePath}
+POST /api/plugins/:id/uninstall {}
 POST /api/accounts {name, platform:'qq', qqNumber?} -> {account, state}
 GET  /api/accounts/:id/state
 GET  /api/accounts/:id/qq/groups
@@ -83,6 +87,7 @@ POST /api/accounts/:id/codex/status
 POST /api/accounts/:id/runtime/connect
 POST /api/accounts/:id/test/deepseek
 POST /api/accounts/:id/test/model {provider}
+POST /api/accounts/:id/plugins/:pluginId/run {input?}
 POST /api/accounts/:id/qq/test-message {groupId}
 GET  /api/accounts/:id/setup/status
 POST /api/accounts/:id/summary/run {groupId}

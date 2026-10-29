@@ -1,0 +1,28 @@
+{
+  "apiVersion": 1,
+  "id": "hello-group",
+  "name": "群聊问候示例",
+  "version": "1.0.0",
+  "description": "手动检查插件是否可用；在获授权的群里收到 /ping 时回复 Pong!。",
+  "entry": "index.mjs",
+  "events": ["group.message"],
+  "permissions": ["group.read", "group.send"],
+  "settingsSchema": [
+    {
+      "key": "prefix",
+      "label": "命令",
+      "description": "只有消息文字与此命令完全相同时才回复。",
+      "type": "string",
+      "default": "/ping",
+      "required": true
+    },
+    {
+      "key": "response",
+      "label": "回复内容",
+      "type": "string",
+      "default": "Pong!",
+      "required": true
+    }
+  ],
+  "timeoutSeconds": 5
+}

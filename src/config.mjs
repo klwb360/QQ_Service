@@ -11,6 +11,7 @@ export const DEFAULT_CONFIG = {
   },
   chat: { enabled: false, provider: 'deepseek', persona: '你是一个友好、简洁的群聊助手。', contextMessages: 12 },
   groups: [],
+  plugins: [],
   summary: { enabled: false, provider: 'deepseek', scheduleEnabled: false, time: '18:00', backgroundAuthorized: false, sendToOwner: false, retentionDays: 7, maxMessages: 200 },
   favorites: { enabled: false, provider: 'deepseek', count: 50 }
 };
@@ -178,6 +179,33 @@ export function validateConfig(input, { applying = false, hasSecret = () => fals
     if (!getModelConfig(result, selected)) issue(path, `${label}引用了不存在的模型通道`, '请重新选择 DeepSeek、ChatGPT 订阅或已添加的兼容 API 通道。');
     return selected;
   };
+  // Packages are global; activation and plain scalar settings belong to this
+  // account's normal saved/applied configuration transaction.
+  if (input.plugins !== undefined && (!Array.isArray(input.plugins) || input.plugins.length > 50)) {
+    issue('plugins', '插件配置必须为最多 50 项的数组', '请移除不再使用的账号插件配置。');
+  } else if (Array.isArray(input.plugins)) {
+    const seen = new Set();
+    result.plugins = input.plugins.map((entry, index) => {
+      const prefix = `plugins.${index}`;
+      if (!object(entry)) { issue(prefix, '插件配置必须为对象'); entry = {}; }
+      const pluginId = string(entry.id, '', '插件标识', 64, `${prefix}.id`);
+      if (!/^[a-z][a-z0-9-]{0,63}$/.test(pluginId) || seen.has(pluginId)) issue(`${prefix}.id`, '插件标识无效或重复', '请重新选择已安装的插件。');
+      seen.add(pluginId);
+      for (const key of Object.keys(entry)) if (!['id', 'enabled', 'settings'].includes(key)) issue(`${prefix}.${key}`, '不支持的插件配置字段');
+      const settings = {};
+      if (entry.settings !== undefined && !object(entry.settings)) issue(`${prefix}.settings`, '插件参数必须是对象');
+      else if (object(entry.settings)) {
+        if (Object.keys(entry.settings).length > 50) issue(`${prefix}.settings`, '每个插件最多支持 50 个参数');
+        for (const [key, value] of Object.entries(entry.settings)) {
+          if (!/^[A-Za-z][A-Za-z0-9_]{0,63}$/.test(key) || ['constructor', 'prototype', '__proto__'].includes(key)) issue(`${prefix}.settings`, '插件参数名称无效');
+          else if (!['string', 'number', 'boolean'].includes(typeof value) || (typeof value === 'number' && !Number.isFinite(value)) || (typeof value === 'string' && value.length > 6000)) issue(`${prefix}.settings.${key}`, '插件参数仅支持最多 6000 字符的文本、有限数值或开关');
+          else settings[key] = value;
+        }
+      }
+      return { id: pluginId, enabled: bool(entry.enabled, false, '插件启用', `${prefix}.enabled`), settings };
+    });
+    if (Buffer.byteLength(JSON.stringify(result.plugins)) > 64 * 1024) issue('plugins', '账号插件参数总计不能超过 64 KiB');
+  }
   const chat = section('chat');
   result.chat.enabled = bool(chat.enabled, false, '聊天与回复', 'chat.enabled');
   result.chat.provider = provider(chat.provider, 'deepseek', '默认聊天模型', 'chat.provider');

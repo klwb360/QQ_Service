@@ -118,7 +118,14 @@
         </div>
       </section>
 
-      <section class="page-panel hidden" id="page-modules"><div class="notice notice-info">NapCat 负责连接 QQ，Codex CLI 用于 ChatGPT 订阅登录。</div><div id="module-cards" class="module-grid"></div></section>
+      <section class="page-panel hidden" id="page-modules"><div class="notice notice-info">NapCat 负责连接 QQ，Codex CLI 用于 ChatGPT 订阅登录。</div><div id="module-cards" class="module-grid"></div>
+        <section class="card custom-plugins-section" aria-labelledby="custom-plugins-title">
+          <div class="section-heading"><div><h2 id="custom-plugins-title">自定义插件</h2><p>插件安装到本机，各账号分别选择启用和设置参数。</p></div><a class="plugin-guide-link" href="https://github.com/klwb360/QQ_Service/blob/feat/group-permission-toolbar/docs/PLUGIN_DEVELOPMENT.md" target="_blank" rel="noopener noreferrer">开发指南 ↗</a></div>
+          <div class="plugin-import-row"><label class="field" for="plugin-source-path">插件文件夹<input id="plugin-source-path" placeholder="填写包含 plugin.json 的本地文件夹完整路径" spellcheck="false"></label><button type="button" class="button button-secondary hidden" id="choose-plugin-directory">选择文件夹…</button><button type="button" class="button button-primary" id="install-custom-plugin">导入插件</button></div>
+          <p class="field-note">插件代码以当前用户权限运行，请仅导入可信来源。导入后不会自动启用，也不会获得 QQ 发送权限。</p>
+          <p class="plugin-account-note" id="plugin-account-note"></p><div id="custom-plugin-cards" class="custom-plugin-grid"></div>
+        </section>
+      </section>
       <section class="page-panel hidden" id="page-records"><section class="card records-context-card" id="records-context-card"><div id="records-context-slot"></div><div class="record-tabs" role="tablist"><button class="record-tab active" data-record-tab="tasks" role="tab" aria-selected="true">任务记录</button><button class="record-tab" data-record-tab="logs" role="tab" aria-selected="false">运行日志</button></div><section class="record-content" id="record-tasks"><div class="section-heading"><div><h2>任务执行记录</h2><p>安装、授权和执行结果以实际任务状态为准。</p></div></div><div id="all-jobs"></div></section><section class="record-content hidden" id="record-logs"><div class="section-heading"><div><h2>运行日志</h2><p>后台已脱敏；请勿公开分享包含群消息的记录。</p></div></div><pre id="log-records" class="log-view"></pre></section></section></section>
       <section class="page-panel hidden" id="page-settings">
         <section class="card napcat-settings-card" aria-labelledby="napcat-settings-title">
