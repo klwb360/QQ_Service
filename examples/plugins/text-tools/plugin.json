@@ -1,0 +1,28 @@
+{
+  "apiVersion": 1,
+  "id": "text-tools",
+  "name": "文本统计工具",
+  "version": "1.0.0",
+  "description": "让 AI 在获授权的群指令中按需统计给定文本，不访问外部应用或网络。",
+  "entry": "index.mjs",
+  "tools": [
+    {
+      "name": "count_text",
+      "description": "统计用户给定文本的 Unicode 字符数、去除空白后的字符数及行数。只处理参数中明确提供的文字，不读取聊天历史或外部文件。",
+      "effect": "read",
+      "inputSchema": {
+        "type": "object",
+        "properties": {
+          "text": {
+            "type": "string",
+            "description": "需要统计的文字，最多 1000 字符。",
+            "maxLength": 1000
+          }
+        },
+        "required": ["text"],
+        "additionalProperties": false
+      }
+    }
+  ],
+  "timeoutSeconds": 5
+}

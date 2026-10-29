@@ -1,5 +1,13 @@
 import { createHash } from 'node:crypto';
 
+export const DEFAULT_CHAT_SOCIAL = Object.freeze({
+  name: '', aliases: [], interests: '', batchMs: 1500, followUpSeconds: 120, accountCallsPerHour: 30,
+});
+export const DEFAULT_GROUP_SOCIAL = Object.freeze({
+  enabled: false, proactive: false, interests: '', style: '', activeStart: '10:00', activeEnd: '22:00',
+  decisionCallsPerHour: 12, repliesPerHour: 6, proactiveIntervalMinutes: 10, readTools: [],
+});
+
 export const DEFAULT_CONFIG = {
   schemaVersion: 2, ownerQQ: '', botQQ: '',
   permissions: { released: false, privateReplies: false },
@@ -9,8 +17,10 @@ export const DEFAULT_CONFIG = {
     codex: { enabled: false, model: '', timeoutSeconds: 180 },
     apis: []
   },
-  chat: { enabled: false, provider: 'deepseek', persona: '你是一个友好、简洁的群聊助手。', contextMessages: 12 },
+  chat: { enabled: false, provider: 'deepseek', persona: '你是一个友好、简洁的群聊助手。', contextMessages: 12, social: structuredClone(DEFAULT_CHAT_SOCIAL) },
   groups: [],
+  plugins: [],
+  tools: { enabled: false, triggers: ['mention', 'poke', 'name'], aliases: [], prefix: '/工具', skill: '', grants: [] },
   summary: { enabled: false, provider: 'deepseek', scheduleEnabled: false, time: '18:00', backgroundAuthorized: false, sendToOwner: false, retentionDays: 7, maxMessages: 200 },
   favorites: { enabled: false, provider: 'deepseek', count: 50 }
 };
@@ -31,15 +41,24 @@ export const apiSecretName = id => {
   if (!isApiProviderId(id)) throw new TypeError('API 通道标识无效');
   return `apiKey:${id}`;
 };
+export function parsePluginSecretName(value) {
+  const match = typeof value === 'string' && value.match(/^pluginSecret:([a-z][a-z0-9-]{0,63}):([A-Za-z][A-Za-z0-9_]{0,63})$/);
+  return match && !['constructor', 'prototype', '__proto__'].includes(match[2]) ? { pluginId: match[1], key: match[2] } : null;
+}
+export const pluginSecretName = (id, key) => {
+  const name = `pluginSecret:${id}:${key}`;
+  if (!parsePluginSecretName(name)) throw new TypeError('插件凭据名称无效');
+  return name;
+};
 export const isCredentialName = value => value === 'deepseekApiKey' || value === 'napcatToken'
-  || (typeof value === 'string' && value.startsWith('apiKey:') && isApiProviderId(value.slice(7)));
+  || Boolean(parsePluginSecretName(value)) || (typeof value === 'string' && value.startsWith('apiKey:') && isApiProviderId(value.slice(7)));
 export function getModelConfig(config, provider) {
   if (provider === 'deepseek' || provider === 'codex') return config?.models?.[provider];
   return isApiProviderId(provider) && Array.isArray(config?.models?.apis)
     ? config.models.apis.find(api => api.id === provider) : undefined;
 }
 
-export const GROUP_TRIGGER_IDS = Object.freeze(['mention', 'prefix', 'casual', 'poke', 'group_name', 'member_join', 'member_leave', 'admin_change', 'mute', 'recall', 'group_card', 'emoji_like']);
+export const GROUP_TRIGGER_IDS = Object.freeze(['mention', 'prefix', 'casual', 'poke', 'group_name', 'member_join', 'member_leave', 'admin_change', 'mute', 'recall', 'group_card', 'emoji_like', 'name', 'reply']);
 const LEGACY_GROUP_TRIGGERS = ['mention', 'prefix', 'casual'];
 export function effectiveGroupTriggers(group) {
   if (Array.isArray(group?.triggers)) return [...new Set(group.triggers.filter(trigger => GROUP_TRIGGER_IDS.includes(trigger)))];
@@ -178,11 +197,82 @@ export function validateConfig(input, { applying = false, hasSecret = () => fals
     if (!getModelConfig(result, selected)) issue(path, `${label}引用了不存在的模型通道`, '请重新选择 DeepSeek、ChatGPT 订阅或已添加的兼容 API 通道。');
     return selected;
   };
+  // Packages are global; activation and plain scalar settings belong to this
+  // account's normal saved/applied configuration transaction.
+  if (input.plugins !== undefined && (!Array.isArray(input.plugins) || input.plugins.length > 50)) {
+    issue('plugins', '插件配置必须为最多 50 项的数组', '请移除不再使用的账号插件配置。');
+  } else if (Array.isArray(input.plugins)) {
+    const seen = new Set();
+    result.plugins = input.plugins.map((entry, index) => {
+      const prefix = `plugins.${index}`;
+      if (!object(entry)) { issue(prefix, '插件配置必须为对象'); entry = {}; }
+      const pluginId = string(entry.id, '', '插件标识', 64, `${prefix}.id`);
+      if (!/^[a-z][a-z0-9-]{0,63}$/.test(pluginId) || seen.has(pluginId)) issue(`${prefix}.id`, '插件标识无效或重复', '请重新选择已安装的插件。');
+      seen.add(pluginId);
+      for (const key of Object.keys(entry)) if (!['id', 'enabled', 'settings'].includes(key)) issue(`${prefix}.${key}`, '不支持的插件配置字段');
+      const settings = {};
+      if (entry.settings !== undefined && !object(entry.settings)) issue(`${prefix}.settings`, '插件参数必须是对象');
+      else if (object(entry.settings)) {
+        if (Object.keys(entry.settings).length > 50) issue(`${prefix}.settings`, '每个插件最多支持 50 个参数');
+        for (const [key, value] of Object.entries(entry.settings)) {
+          if (!/^[A-Za-z][A-Za-z0-9_]{0,63}$/.test(key) || ['constructor', 'prototype', '__proto__'].includes(key)) issue(`${prefix}.settings`, '插件参数名称无效');
+          else if (!['string', 'number', 'boolean'].includes(typeof value) || (typeof value === 'number' && !Number.isFinite(value)) || (typeof value === 'string' && value.length > 6000)) issue(`${prefix}.settings.${key}`, '插件参数仅支持最多 6000 字符的文本、有限数值或开关');
+          else settings[key] = value;
+        }
+      }
+      return { id: pluginId, enabled: bool(entry.enabled, false, '插件启用', `${prefix}.enabled`), settings };
+    });
+    if (Buffer.byteLength(JSON.stringify(result.plugins)) > 64 * 1024) issue('plugins', '账号插件参数总计不能超过 64 KiB');
+  }
   const chat = section('chat');
   result.chat.enabled = bool(chat.enabled, false, '聊天与回复', 'chat.enabled');
   result.chat.provider = provider(chat.provider, 'deepseek', '默认聊天模型', 'chat.provider');
   result.chat.persona = string(chat.persona, result.chat.persona, '群聊风格', 4000, 'chat.persona');
   result.chat.contextMessages = number(chat.contextMessages, 12, '群聊上下文条数', 0, 50, true, 'chat.contextMessages');
+  if (chat.social !== undefined && !object(chat.social)) issue('chat.social', '自由聊天默认参数必须是对象');
+  const chatSocial = object(chat.social) ? chat.social : {};
+  for (const key of Object.keys(chatSocial)) if (!Object.hasOwn(DEFAULT_CHAT_SOCIAL, key)) issue(`chat.social.${key}`, '不支持的自由聊天默认参数');
+  const aliases = (value, path) => {
+    if (value === undefined) return [];
+    if (!Array.isArray(value) || value.length > 10 || value.some(alias => typeof alias !== 'string' || !alias.trim() || alias.length > 20 || /[\u0000-\u001f\u007f]/u.test(alias))) {
+      issue(path, '最多填写 10 个称呼，每个 1–20 字符，且不能包含换行或控制字符');
+      return [];
+    }
+    return [...new Set(value.map(alias => alias.trim()))];
+  };
+  result.chat.social = {
+    name: string(chatSocial.name, '', '助手名字', 30, 'chat.social.name'),
+    aliases: aliases(chatSocial.aliases, 'chat.social.aliases'),
+    interests: string(chatSocial.interests, '', '助手兴趣', 2000, 'chat.social.interests'),
+    batchMs: number(chatSocial.batchMs, 1500, '连续消息等待毫秒', 0, 3000, true, 'chat.social.batchMs'),
+    followUpSeconds: number(chatSocial.followUpSeconds, 120, '连续对话窗口秒数', 0, 600, true, 'chat.social.followUpSeconds'),
+    accountCallsPerHour: number(chatSocial.accountCallsPerHour, 30, '账号主动判断每小时调用上限', 0, 1000, true, 'chat.social.accountCallsPerHour'),
+  };
+  if (/[\u0000-\u001f\u007f]/u.test(result.chat.social.name)) issue('chat.social.name', '助手名字不能包含换行或控制字符');
+  const groupSocial = (value, index) => {
+    const prefix = `groups.${index}.social`;
+    if (value !== undefined && !object(value)) issue(prefix, '群自由聊天参数必须是对象');
+    const social = object(value) ? value : {};
+    for (const key of Object.keys(social)) if (!Object.hasOwn(DEFAULT_GROUP_SOCIAL, key)) issue(`${prefix}.${key}`, '不支持的群自由聊天参数');
+    const normalized = {
+      enabled: bool(social.enabled, false, '自由聊天', `${prefix}.enabled`),
+      proactive: bool(social.proactive, false, '自主开话题', `${prefix}.proactive`),
+      interests: string(social.interests, '', '群兴趣', 2000, `${prefix}.interests`),
+      style: string(social.style, '', '群聊天风格', 2000, `${prefix}.style`),
+      activeStart: string(social.activeStart, '10:00', '主动活动开始时间', 5, `${prefix}.activeStart`),
+      activeEnd: string(social.activeEnd, '22:00', '主动活动结束时间', 5, `${prefix}.activeEnd`),
+      decisionCallsPerHour: number(social.decisionCallsPerHour, 12, '群主动判断每小时调用上限', 0, 1000, true, `${prefix}.decisionCallsPerHour`),
+      repliesPerHour: number(social.repliesPerHour, 6, '群主动发言每小时上限', 0, 100, true, `${prefix}.repliesPerHour`),
+      proactiveIntervalMinutes: number(social.proactiveIntervalMinutes, 10, '主动素材检查间隔分钟', 1, 1440, true, `${prefix}.proactiveIntervalMinutes`),
+      readTools: [],
+    };
+    for (const key of ['activeStart', 'activeEnd']) if (!/^([01]\d|2[0-3]):[0-5]\d$/.test(normalized[key])) issue(`${prefix}.${key}`, '主动活动时间须为 HH:MM');
+    if (social.readTools !== undefined) {
+      if (!Array.isArray(social.readTools) || social.readTools.length > 20 || social.readTools.some(tool => typeof tool !== 'string' || !/^[a-z][a-z0-9-]{0,63}\/[a-z][a-z0-9_]{0,47}$/.test(tool))) issue(`${prefix}.readTools`, '主动素材只读工具须为最多 20 项的有效工具标识');
+      else normalized.readTools = [...new Set(social.readTools)];
+    }
+    return normalized;
+  };
   if (!Array.isArray(input.groups)) errors.push('群列表必须是数组');
   else if (input.groups.length > 100) errors.push('首版最多配置 100 个群');
   else {
@@ -198,7 +288,7 @@ export function validateConfig(input, { applying = false, hasSecret = () => fals
       const read = bool(g.read, true, `${label}读取权限`);
       const send = bool(g.send, false, `${label}发送权限`);
       if (send && !read) errors.push(`${label}发送消息需要先允许读取`);
-      return { id: groupId, name: string(g.name, '', `${label}名称`, 80), mode: g.mode === 'work' ? 'work' : 'social', read, send, trigger: g.trigger || 'mention', triggers: effectiveGroupTriggers(g), prefix: string(g.prefix, '/ai', `${label}命令前缀`, 30), probability: number(g.probability, 0.03, `${label}插话概率`, 0, 0.25, false), cooldownSeconds: number(g.cooldownSeconds, 30, `${label}冷却秒数`, 5, 3600) };
+      return { id: groupId, name: string(g.name, '', `${label}名称`, 80), mode: g.mode === 'work' ? 'work' : 'social', read, send, trigger: g.trigger || 'mention', triggers: effectiveGroupTriggers(g), prefix: string(g.prefix, '/ai', `${label}命令前缀`, 30), probability: number(g.probability, 0.03, `${label}插话概率`, 0, 0.25, false), cooldownSeconds: number(g.cooldownSeconds, 30, `${label}冷却秒数`, 5, 3600), social: groupSocial(g.social, i) };
     });
     if (result.groups.length !== input.groups.length) errors.push('每个群配置必须是对象');
   }
@@ -213,6 +303,39 @@ export function validateConfig(input, { applying = false, hasSecret = () => fals
   result.favorites.enabled = bool(favorites.enabled, false, '收藏', 'favorites.enabled');
   result.favorites.provider = provider(favorites.provider, 'deepseek', '收藏整理模型通道', 'favorites.provider');
   result.favorites.count = number(favorites.count, 50, '收藏列表条数', 1, 100, true, 'favorites.count');
+  const tools = section('tools');
+  for (const key of Object.keys(tools)) if (!['enabled', 'triggers', 'aliases', 'prefix', 'skill', 'grants'].includes(key)) issue(`tools.${key}`, '不支持的工具配置字段');
+  result.tools.enabled = bool(tools.enabled, false, '群友工具调用', 'tools.enabled');
+  result.tools.prefix = string(tools.prefix, '/工具', '工具指令前缀', 30, 'tools.prefix');
+  if (!result.tools.prefix) issue('tools.prefix', '工具前缀不能为空');
+  result.tools.skill = string(tools.skill, '', '工具 Skill', 8000, 'tools.skill');
+  if (tools.triggers !== undefined) {
+    if (!Array.isArray(tools.triggers) || tools.triggers.length > 4 || tools.triggers.some(value => !['mention', 'poke', 'name', 'command'].includes(value))) issue('tools.triggers', '工具唤醒方式无效');
+    else result.tools.triggers = [...new Set(tools.triggers)];
+  }
+  if (tools.aliases !== undefined) {
+    if (!Array.isArray(tools.aliases) || tools.aliases.length > 10 || tools.aliases.some(value => typeof value !== 'string' || !value.trim() || value.length > 20 || /[\r\n]/.test(value))) issue('tools.aliases', '最多填写 10 个称呼，每个 1–20 字符');
+    else result.tools.aliases = [...new Set(tools.aliases.map(value => value.trim()))];
+  }
+  if (tools.grants !== undefined) {
+    if (!Array.isArray(tools.grants) || tools.grants.length > 20) issue('tools.grants', '每个账号最多授权 20 个工具');
+    else {
+      const seen = new Set();
+      result.tools.grants = tools.grants.map((grant, index) => {
+        const prefix = `tools.grants.${index}`;
+        if (!object(grant)) { issue(prefix, '工具授权必须是对象'); grant = {}; }
+        for (const key of Object.keys(grant)) if (!['tool', 'groupIds', 'userIds', 'allowWrite'].includes(key)) issue(`${prefix}.${key}`, '不支持的工具授权字段');
+        const tool = string(grant.tool, '', '工具标识', 113, `${prefix}.tool`);
+        if (!/^[a-z][a-z0-9-]{0,63}\/[a-z][a-z0-9_]{0,47}$/.test(tool) || seen.has(tool)) issue(`${prefix}.tool`, '工具标识无效或重复');
+        seen.add(tool);
+        const ids = (key, label) => {
+          if (!Array.isArray(grant[key]) || grant[key].length > 100) { issue(`${prefix}.${key}`, `${label}须为最多 100 项的号码数组`); return []; }
+          return [...new Set(grant[key].map(value => id(value, label, `${prefix}.${key}`)))];
+        };
+        return { tool, groupIds: ids('groupIds', '授权群号'), userIds: ids('userIds', '允许调用的 QQ'), allowWrite: bool(grant.allowWrite, false, '外部写入授权', `${prefix}.allowWrite`) };
+      });
+    }
+  }
   if (applying) {
     if (result.qq.enabled && !result.botQQ) issue('botQQ', '启用 QQ 连接前请填写控制的 QQ 号', '先在账号配置中填写准备登录 NapCat 的 QQ 号码。');
     if (result.qq.enabled && !hasSecret('napcatToken')) issue('secrets.napcatToken', '请先安装 NapCat 或填写其 OneBot Token', '先在 NapCat 登录此 QQ、启用正向 WebSocket，再填写同一个 OneBot Token 并测试连接。');

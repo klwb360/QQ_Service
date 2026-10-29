@@ -14,6 +14,11 @@
     records: ['日志', 'ACTIVITY & EVIDENCE', '', '']
   };
   let accounts = [];
+  let pluginCatalog = [];
+  const pluginRunViews = new Map();
+  const toolGrantDrafts = new Map();
+  let pluginRenderSignature = '';
+  let pluginRenderAccount = '';
   let platforms = [];
   let directoryToken = '';
   let selectedAccountId = '';
@@ -39,7 +44,7 @@
     ['permissions', '任务与权限'], ['verification', '启动账号']
   ];
   const groupTriggerOptions = [
-    ['mention', '@ 接入账号'], ['prefix', '命令前缀'], ['casual', '低频主动插话'],
+    ['mention', '@ 接入账号'], ['name', '名字或别名'], ['reply', '引用 AI 回复'], ['prefix', '命令前缀'], ['casual', '低频主动插话'],
     ['poke', '戳一戳'], ['group_name', '修改群名'], ['member_join', '群成员加入'],
     ['member_leave', '群成员退出'], ['admin_change', '管理员变更'], ['mute', '禁言 / 解禁'], ['recall', '撤回消息'], ['group_card', '群名片变化'], ['emoji_like', '消息表情回应']
   ];
@@ -145,6 +150,7 @@
     // A late save response must not erase edits made after that save was submitted.
     const mayReplace = expectedEditVersion === undefined || (editor.editVersion ?? 0) === expectedEditVersion;
     editor.state = next;
+    if (Array.isArray(next.plugins)) pluginCatalog = next.plugins;
     if (!editor.draft || (!editor.dirty && !Object.keys(editor.secretUpdates ?? {}).length) || (replaceDraft && mayReplace)) {
       editor.draft = clone(next.draft);
       editor.dirty = false;
@@ -174,6 +180,7 @@
     const directory = await api('/api/accounts', undefined, 'GET');
     if (!Array.isArray(directory.accounts) || !directory.csrfToken) throw new Error('后台账号目录不完整。');
     accounts = directory.accounts;
+    if (Array.isArray(directory.plugins)) pluginCatalog = directory.plugins;
     platforms = directory.platforms ?? [];
     directoryToken = directory.csrfToken;
     acceptNapcatSettings(directory.napcatSettings ?? await api('/api/napcat/settings', undefined, 'GET'));
@@ -252,6 +259,7 @@
       button.setAttribute('aria-selected', String(selected));
     });
     $$('.scenario-content').forEach((panel) => panel.classList.toggle('hidden', panel.id !== `scenario-${currentScenarioTab}`));
+    if (currentScenarioTab === 'permissions') renderGroups();
   }
   function populateForm() {
     $('#account-profile-name').value = editors.get(selectedAccountId)?.profileName ?? accountName();
@@ -268,6 +276,9 @@
       input.value = secretUpdates[input.dataset.secret] ?? '';
       input.disabled = !draft;
     });
+    const aliases = $('#chat-social-aliases');
+    aliases.value = draft?.chat?.social?.aliases?.join(', ') ?? '';
+    aliases.disabled = !draft;
     renderProviderOptions();
     renderGroups();
   }
@@ -396,13 +407,14 @@
     if (currentPage === 'connections') $('#config-label').textContent = dirty ? '有未保存的修改' : pending ? '已保存，等待应用' : '已保存';
     renderPageContext();
     $('#discard-draft').disabled = !dirty;
-    $('#save-draft').disabled = !state || !dirty;
-    $('#apply-config').disabled = !state || (!dirty && !pending);
+    $$('#save-draft, #group-save').forEach(button => { button.disabled = !state || !dirty; });
+    $$('#apply-config, #group-apply').forEach(button => { button.disabled = !state || (!dirty && !pending); });
     $('#release-permissions').disabled = !state;
     $('#reset-account-defaults').disabled = !state;
     $('#revoke-permissions').disabled = !state || state.applied?.permissions?.released !== true;
     $$('[data-action], [data-module-action], #add-group, #open-napcat, #napcat-login-token, #export-config, #rollback-config, #preview-policy').forEach((button) => { button.disabled = !state; });
     $$('[data-open-napcat-program]').forEach(button => { button.disabled = !state || Boolean(pendingNapcatSettings) || getJobs().some(job => job.status === 'running'); });
+    updatePluginRunButtons();
   }
   function renderSecrets() {
     [['deepseekApiKey', '#deepseek-secret-state'], ['napcatToken', '#napcat-secret-state']].forEach(([name, selector]) => {
@@ -426,7 +438,9 @@
       error: ['失败', 'red'], failed: ['失败', 'red'], missing: ['未安装', 'orange'], not_installed: ['未安装', 'orange'],
       disconnected: ['未连接', 'neutral'], stopped: ['已停止', 'neutral'], disabled: ['未启用', 'neutral'],
       unknown: ['待检查', 'neutral'], idle: ['待运行', 'neutral'], cancelled: ['已取消', 'neutral'],
-      configured: ['已选启动文件', 'neutral'], not_configured: ['待选择启动文件', 'orange']
+      configured: ['已选启动文件', 'neutral'], not_configured: ['待选择启动文件', 'orange'],
+      model_missing: ['未配置', 'orange'], model_pending: ['待应用', 'orange'], model_untested: ['未测试', 'neutral'],
+      model_stale: ['需重测', 'orange'], testing: ['测试中', 'orange']
     };
     return table[raw] ?? [String(value ?? '待检查'), 'neutral'];
   }
@@ -510,11 +524,22 @@
   function effectiveTriggers(group) {
     return Array.isArray(group.triggers) ? group.triggers : [group.trigger || 'mention'];
   }
+  const groupSocialDefaults = { enabled: false, proactive: false, interests: '', style: '', activeStart: '10:00', activeEnd: '22:00', decisionCallsPerHour: 12, repliesPerHour: 6, proactiveIntervalMinutes: 10, readTools: [] };
+  function socialReadTools() {
+    return pluginCatalog.flatMap(plugin => (plugin.tools || []).filter(tool => tool.effect === 'read').map(tool => ({ id: `${plugin.id}/${tool.name}`, label: `${plugin.name || plugin.id} · ${tool.name}`, enabled: draft?.plugins?.some(entry => entry.id === plugin.id && entry.enabled) === true })));
+  }
+  function renderGroupSocial(group, index) {
+    const social = { ...groupSocialDefaults, ...group.social };
+    const tools = socialReadTools();
+    const readTools = Array.isArray(social.readTools) ? social.readTools : [];
+    const missing = readTools.filter(id => !tools.some(tool => tool.id === id));
+    return `<tr class="group-social-row" data-group-index="${index}"><td colspan="6"><details class="group-social-settings" data-record-id="social:${escapeHTML(group.id || index)}"><summary><span>自由聊天与主动话题</span><span class="group-social-state ${social.enabled ? 'enabled' : ''}" data-group-social-status>${social.enabled ? social.proactive ? '自由聊天 · 可主动分享' : '自由聊天已开启' : '未开启'}</span></summary><div class="group-social-content"><div class="group-social-options"><label class="check-field"><input type="checkbox" data-group-social="enabled" ${social.enabled ? 'checked' : ''}><span>自由聊天</span></label><label class="check-field"><input type="checkbox" data-group-social="proactive" ${social.proactive ? 'checked' : ''}><span>允许主动开话题与分享</span></label></div><div class="form-grid"><label class="field">这个群感兴趣的内容<textarea data-group-social="interests" rows="2" maxlength="2000" placeholder="留空沿用账号兴趣；例如：独立游戏、科普、搞笑视频。">${escapeHTML(social.interests)}</textarea></label><label class="field">在这个群的说话风格<textarea data-group-social="style" rows="2" maxlength="2000" placeholder="留空沿用账号人设">${escapeHTML(social.style)}</textarea></label></div><p class="field-note">AI 根据话题和新鲜内容决定接话或保持安静。有值得分享的内容时再开启话题；仍需允许读取、发送并启动账号。</p><details class="group-social-advanced" data-record-id="social-advanced:${escapeHTML(group.id || index)}"><summary>活动时段、调用预算与素材工具</summary><div class="form-grid"><label class="field">主动参与开始时间<input type="time" data-group-social="activeStart" value="${escapeHTML(social.activeStart)}"></label><label class="field">主动参与结束时间<input type="time" data-group-social="activeEnd" value="${escapeHTML(social.activeEnd)}"><small>按本机当地时间；开始和结束相同表示全天。直接提问不受此时段限制。</small></label><label class="field">每小时主动模型调用<input type="number" data-group-social="decisionCallsPerHour" min="0" max="1000" value="${escapeHTML(social.decisionCallsPerHour)}"><small>每轮调用都计入预算；0 暂停自主判断，正常回答和连续追问单独处理。</small></label><label class="field">每小时主动发言上限<input type="number" data-group-social="repliesPerHour" min="0" max="100" value="${escapeHTML(social.repliesPerHour)}"></label><label class="field">素材检查间隔（分钟）<input type="number" data-group-social="proactiveIntervalMinutes" min="1" max="1440" value="${escapeHTML(social.proactiveIntervalMinutes)}"><small>只是检查机会，不会按时间固定发言。</small></label></div><p class="field-note">主动话题可用的只读工具</p><div class="group-social-tool-options">${tools.map(tool => `<label class="${tool.enabled ? '' : 'group-social-unavailable'}"><input type="checkbox" data-group-social-tool="${escapeHTML(tool.id)}" ${readTools.includes(tool.id) ? 'checked' : ''}><span>${escapeHTML(tool.label)}${tool.enabled ? '' : '（需先启用插件）'}</span></label>`).join('') || '<p class="field-note">还没有只读工具。可先在模块中导入并启用插件；不选工具也可以围绕群内话题聊天。</p>'}${missing.map(id => `<label class="group-social-unavailable"><input type="checkbox" data-group-social-tool="${escapeHTML(id)}" checked><span>${escapeHTML(id)}（暂不可用，可取消）</span></label>`).join('')}</div><p class="field-note">这里单独授权背景读取，不继承群友工具权限；不会主动调用评论等写入工具。群友记忆在「设置 → 群友记忆」逐群启用和确认。</p></details></div></details></td></tr>`;
+  }
   function renderGroups() {
     const groups = draft?.groups ?? [];
     const html = groups.length ? groups.map((group, index) => {
       const triggers = effectiveTriggers(group);
-      return `<tr data-group-index="${index}"><td><input data-group-field="name" value="${escapeHTML(group.name)}" aria-label="群名称"><input class="group-id" data-group-field="id" value="${escapeHTML(group.id)}" inputmode="numeric" aria-label="QQ群号"></td><td><select data-group-field="mode" aria-label="群用途"><option value="social" ${group.mode !== 'work' ? 'selected' : ''}>社交群</option><option value="work" ${group.mode === 'work' ? 'selected' : ''}>工作通知群</option></select><small class="field-note">${group.mode === 'work' ? '可用于通知汇总' : '按聊天功能参数处理'}</small></td><td><details class="group-trigger-picker" data-record-id="triggers:${escapeHTML(group.id || index)}"><summary aria-haspopup="dialog" aria-controls="group-trigger-panel-${index}" aria-expanded="false">${triggers.length ? `已选择 ${triggers.length} 项触发事件` : '尚未选择触发事件'}</summary><div id="group-trigger-panel-${index}" class="group-trigger-panel" popover="auto" role="dialog" aria-label="${escapeHTML(group.name || group.id || `第 ${index + 1} 个群`)}的触发事件"><div class="group-trigger-tools"><button type="button" data-group-triggers-all="${index}">全选</button><button type="button" data-group-triggers-clear="${index}">全部取消</button></div><div class="group-trigger-options" role="group" aria-label="选择触发事件">${groupTriggerOptions.map(([id,label]) => `<label><input type="checkbox" data-group-trigger="${id}" ${triggers.includes(id) ? 'checked' : ''}><span>${label}</span></label>`).join('')}</div><p>只处理当前群实际收到的事件；全选也需发送授权，概率及冷却仍生效。群名变更取决于 NapCat 是否上报。</p></div></details></td><td><div class="group-parameter">${triggers.includes('prefix') ? `<label>前缀 <input data-group-field="prefix" value="${escapeHTML(group.prefix ?? '/ai')}" aria-label="命令前缀"></label>` : ''}${triggers.includes('casual') ? `<label>插话概率 <input type="number" data-group-field="probability" min="0" max="0.25" step="0.01" value="${escapeHTML(group.probability ?? 0.03)}" aria-label="插话概率"></label>` : ''}<label>冷却秒 <input type="number" data-group-field="cooldownSeconds" min="5" max="3600" value="${escapeHTML(group.cooldownSeconds ?? 30)}" aria-label="冷却秒数"></label></div></td><td><label class="group-permission-check"><input type="checkbox" data-group-field="read" ${group.read === true ? 'checked' : ''}>允许读取</label><label class="group-permission-check"><input type="checkbox" data-group-field="send" ${group.send === true ? 'checked' : ''} ${group.read === true ? '' : 'disabled title="先允许读取，才能授权回复"'}>允许发送</label><small class="field-note">仍需启动并确认授权范围</small></td><td><button class="remove-group" data-remove-group="${index}" aria-label="移除 ${escapeHTML(group.name || group.id)}">×</button></td></tr>`;
+      return `<tr data-group-index="${index}"><td><input data-group-field="name" value="${escapeHTML(group.name)}" aria-label="群名称"><input class="group-id" data-group-field="id" value="${escapeHTML(group.id)}" inputmode="numeric" aria-label="QQ群号"></td><td><select data-group-field="mode" aria-label="群用途"><option value="social" ${group.mode !== 'work' ? 'selected' : ''}>社交群</option><option value="work" ${group.mode === 'work' ? 'selected' : ''}>工作通知群</option></select><small class="field-note">${group.mode === 'work' ? '可用于通知汇总' : '按聊天功能参数处理'}</small></td><td><details class="group-trigger-picker" data-record-id="triggers:${escapeHTML(group.id || index)}"><summary aria-haspopup="dialog" aria-controls="group-trigger-panel-${index}" aria-expanded="false">${triggers.length ? `已选择 ${triggers.length} 项触发事件` : '尚未选择触发事件'}</summary><div id="group-trigger-panel-${index}" class="group-trigger-panel" popover="auto" role="dialog" aria-label="${escapeHTML(group.name || group.id || `第 ${index + 1} 个群`)}的触发事件"><div class="group-trigger-tools"><button type="button" data-group-triggers-all="${index}">全选</button><button type="button" data-group-triggers-clear="${index}">全部取消</button></div><div class="group-trigger-options" role="group" aria-label="选择触发事件">${groupTriggerOptions.map(([id,label]) => `<label><input type="checkbox" data-group-trigger="${id}" ${triggers.includes(id) ? 'checked' : ''}><span>${label}</span></label>`).join('')}</div><p>只处理当前群实际收到的事件；全选也需发送授权，概率及冷却仍生效。群名变更取决于 NapCat 是否上报。</p></div></details></td><td><div class="group-parameter">${triggers.includes('prefix') ? `<label>前缀 <input data-group-field="prefix" value="${escapeHTML(group.prefix ?? '/ai')}" aria-label="命令前缀"></label>` : ''}${triggers.includes('casual') ? `<label>插话概率 <input type="number" data-group-field="probability" min="0" max="0.25" step="0.01" value="${escapeHTML(group.probability ?? 0.03)}" aria-label="插话概率"></label>` : ''}<label>冷却秒 <input type="number" data-group-field="cooldownSeconds" min="5" max="3600" value="${escapeHTML(group.cooldownSeconds ?? 30)}" aria-label="冷却秒数"></label></div></td><td><label class="group-permission-check"><input type="checkbox" data-group-field="read" ${group.read === true ? 'checked' : ''}>允许读取</label><label class="group-permission-check"><input type="checkbox" data-group-field="send" ${group.send === true ? 'checked' : ''} ${group.read === true ? '' : 'disabled title="先允许读取，才能授权回复"'}>允许发送</label><small class="field-note">仍需启动并确认授权范围</small></td><td><button class="remove-group" data-remove-group="${index}" aria-label="移除 ${escapeHTML(group.name || group.id)}">×</button></td></tr>${renderGroupSocial(group, index)}`;
     }).join('') : '<tr><td colspan="6"><div class="empty-state"><strong>添加这个账号允许处理的 QQ 群</strong>新群默认允许读取、禁止发送；选择触发事件后，最后确认启动。</div></td></tr>';
     const rows = $('#group-rows');
     if (rows.dataset.renderedHTML === html) return;
@@ -705,6 +730,163 @@
       const version = napcat && native ? settings.executablePath || '在设置中选择 NapCat 启动文件' : builtin ? '启用功能仍受账号与消息权限约束' : module ? `版本 ${module.version || '未提供'} · ${module.installed ? '已安装' : '未确认安装'}` : '等待此账号的模块检查结果';
       return `<article class="module-card ${builtin ? 'builtin' : 'external'}" data-module-card="${definition.id}"><div class="module-main"><div class="module-top"><span class="module-icon">${definition.icon}</span>${builtin ? `<span class="pill ${enabled ? 'pill-green' : 'pill-neutral'}">${enabled ? '此账号配置已启用' : '内置 · 尚未启用'}</span>` : pill(status)}</div><h2>${escapeHTML(definition.name)}</h2>${napcat ? `<span class="module-napcat-mode">${native ? '本地安装' : 'Docker'}</span>` : ''}<p>${escapeHTML(definition.description)}</p><div class="module-version ${napcat && native ? 'native-path' : ''}">${escapeHTML(version)}</div>${napcat ? `<div class="napcat-help-links"><a href="${napcatInstallUrl(settings.mode)}" target="_blank" rel="noopener noreferrer">${native ? '本地' : 'Docker'}安装说明 ↗</a><a href="#settings">更改方式</a></div>` : ''}</div><div class="module-actions">${actions}</div></article>`;
     }).join('');
+    renderCustomPlugins();
+  }
+  function pluginRunView(pluginId, accountId = selectedAccountId) {
+    const key = `${accountId}:${pluginId}`;
+    if (!pluginRunViews.has(key)) pluginRunViews.set(key, { input: '{}', output: '', running: false, open: false });
+    return pluginRunViews.get(key);
+  }
+  function pluginEntry(pluginId, { create = false } = {}) {
+    if (!draft) return null;
+    draft.plugins ??= [];
+    let entry = draft.plugins.find(item => item.id === pluginId);
+    if (!entry && create) {
+      const plugin = pluginCatalog.find(item => item.id === pluginId);
+      if (!plugin) return null;
+      entry = { id: pluginId, enabled: false, settings: Object.fromEntries((plugin.settingsSchema || []).filter(field => field.default !== undefined).map(field => [field.key, clone(field.default)])) };
+      draft.plugins.push(entry);
+    }
+    return entry;
+  }
+  function toolGrant(toolId, { create = false } = {}) {
+    if (!draft) return null;
+    const entries = draft.tools?.grants || [];
+    let grant = entries.find(item => item.tool === toolId);
+    if (!grant && create) {
+      draft.tools ??= { enabled: false, triggers: ['mention', 'poke', 'name'], aliases: [], prefix: '/工具', skill: '', grants: [] };
+      draft.tools.grants ??= [];
+      grant = clone(toolGrantDrafts.get(`${selectedAccountId}:${toolId}`) || { tool: toolId, groupIds: [], userIds: [], allowWrite: false });
+      draft.tools.grants.push(grant);
+    }
+    return grant;
+  }
+  function renderPluginSecrets(plugin) {
+    if (!plugin.secretsSchema?.length) return '';
+    return `<section class="plugin-secrets"><h4>插件登录凭据</h4><p>与普通参数分开加密保存在本机，只按声明传给这个插件；不会传入其他插件的参数。</p>${plugin.secretsSchema.map(field => {
+      const name = `pluginSecret:${plugin.id}:${field.key}`;
+      const saved = state?.secrets?.[name] === true;
+      const pending = Boolean(secretUpdates[name]);
+      return `<label class="field">${escapeHTML(field.label || field.key)}<span class="plugin-secret-state" data-plugin-secret-state="${escapeHTML(name)}">${pending ? '新值待保存、应用' : saved ? '已保存，留空保留' : '尚未保存'}</span><input type="password" data-plugin-secret="${escapeHTML(field.key)}" autocomplete="new-password" spellcheck="false" maxlength="2000" placeholder="${saved ? '留空保留已保存的凭据' : '填写插件自身的登录凭据'}" ${!state ? 'disabled' : ''}>${field.description ? `<small>${escapeHTML(field.description)}</small>` : ''}</label>`;
+    }).join('')}</section>`;
+  }
+  function renderPluginTools(plugin) {
+    if (!plugin.tools?.length) return '';
+    return `<section class="plugin-tools-list"><h4>可用工具</h4>${plugin.tools.map(tool => {
+      const toolId = `${plugin.id}/${tool.name}`;
+      const grant = toolGrant(toolId);
+      const buffered = grant || toolGrantDrafts.get(`${selectedAccountId}:${toolId}`);
+      const write = tool.effect === 'write';
+      return `<div class="plugin-tool" data-plugin-tool="${escapeHTML(toolId)}"><div class="plugin-tool-title"><label class="check-field"><input type="checkbox" data-tool-grant-enable ${grant ? 'checked' : ''} ${!state ? 'disabled' : ''}><span>${escapeHTML(tool.name)}</span></label><span class="pill ${write ? 'pill-orange' : 'pill-neutral'}">${write ? '修改数据' : '只读查询'}</span></div><p>${escapeHTML(tool.description || '')}</p><fieldset class="plugin-tool-grant-fields" ${!state || !grant ? 'disabled' : ''}><legend class="sr-only">${escapeHTML(tool.name)} 调用范围</legend><label class="field">允许的群号<input data-tool-grant-field="groupIds" inputmode="numeric" placeholder="多个群号用逗号分隔" value="${escapeHTML(buffered?.groupIds?.join(', ') || '')}" maxlength="2200"><small>还需在群与消息权限中允许读取和发送。</small></label><label class="field">允许调用的 QQ<input data-tool-grant-field="userIds" inputmode="numeric" placeholder="${write ? '写入工具必须指定调用人' : '留空表示这些群内的成员'}" value="${escapeHTML(buffered?.userIds?.join(', ') || '')}" maxlength="2200"><small>${write ? '必须指定 QQ，多个号码用逗号分隔。' : '多个 QQ 用逗号分隔；留空表示所选群内的成员。'}</small></label>${write ? `<label class="check-field tool-write-grant"><input type="checkbox" data-tool-grant-write ${buffered?.allowWrite ? 'checked' : ''}><span>允许修改外部应用数据</span></label>` : ''}</fieldset></div>`;
+    }).join('')}</section>`;
+  }
+  function renderAccountTools() {
+    $('#account-tools-settings').disabled = !state;
+    const toggle = $('#tool-call-enabled');
+    const prefix = $('#tool-call-prefix');
+    const skill = $('#tool-call-skill');
+    const aliases = $('#tool-call-aliases');
+    const triggers = draft?.tools?.triggers ?? ['mention', 'poke', 'name'];
+    if (document.activeElement !== toggle) toggle.checked = draft?.tools?.enabled === true;
+    if (document.activeElement !== prefix) prefix.value = draft?.tools?.prefix ?? '/工具';
+    if (document.activeElement !== skill) skill.value = draft?.tools?.skill ?? '';
+    if (document.activeElement !== aliases) aliases.value = draft?.tools?.aliases?.join(', ') ?? '';
+    $$('[data-tool-trigger]').forEach(input => { if (document.activeElement !== input) input.checked = triggers.includes(input.dataset.toolTrigger); });
+    $('#tool-call-prefix-field').classList.toggle('hidden', !triggers.includes('command'));
+    $('#tool-call-trigger-note').textContent = triggers.length
+      ? '按所选方式唤醒接入账号，再说明需求；名字／别名需放在消息开头，真实 @ 不能用手打“@QQ号”替代。戳一戳只打招呼，外部操作仍需明确提出需求。保存、应用并启动账号后生效。'
+      : '尚未选择唤醒方式。启用插件并授权具体工具后，保存、应用并启动账号。';
+  }
+  function pluginCanRun(pluginId, accountId = selectedAccountId) {
+    const editor = editors.get(accountId);
+    return Boolean(editor?.state?.applied?.plugins?.some(entry => entry.id === pluginId && entry.enabled)
+      && !editor.dirty && !editor.state.pendingChanges && !editor.state.secretsPendingChanges
+      && !pluginRunView(pluginId, accountId).running);
+  }
+  function updatePluginRunButtons() {
+    $$('[data-plugin-run]').forEach(button => {
+      const view = pluginRunView(button.dataset.pluginRun);
+      button.disabled = !pluginCanRun(button.dataset.pluginRun);
+      button.textContent = view.running ? '执行中…' : '手动执行';
+      button.title = !state ? '请先选择账号' : view.running ? '插件正在执行' : button.disabled ? '先启用插件并保存、应用当前账号参数' : '执行已应用的插件参数；结果仅显示在本地';
+    });
+  }
+  function renderCustomPlugins({ force = false } = {}) {
+    const container = $('#custom-plugin-cards');
+    if (!container) return;
+    renderAccountTools();
+    $('#choose-plugin-directory').classList.toggle('hidden', typeof window.qqBridgeDesktop?.choosePluginDirectory !== 'function');
+    $('#plugin-account-note').textContent = state ? `当前账号：${accountName()}。修改启用和参数后，使用上方的“保存”“应用”；应用后恢复只读，群消息处理和工具调用还需启动此账号。` : '插件可以先导入；选择账号后再启用和设置参数。';
+    const signature = JSON.stringify([selectedAccountId, pluginCatalog, draft?.plugins, state?.applied?.plugins, draft?.tools, state?.applied?.tools, state?.secrets, Object.keys(secretUpdates), dirty, state?.pendingChanges, state?.secretsPendingChanges]);
+    if (!force && (signature === pluginRenderSignature || pluginRenderAccount === selectedAccountId && container.contains(document.activeElement))) {
+      updatePluginRunButtons(); return;
+    }
+    pluginRenderSignature = signature;
+    pluginRenderAccount = selectedAccountId;
+    if (!pluginCatalog.length) {
+      container.innerHTML = '<div class="empty-state"><strong>尚未导入插件</strong>选择含有 plugin.json 的插件文件夹，导入后即可为各账号配置。</div>';
+      return;
+    }
+    container.innerHTML = pluginCatalog.map(plugin => {
+      const entry = pluginEntry(plugin.id);
+      const view = pluginRunView(plugin.id);
+      const applied = state?.applied?.plugins?.find(item => item.id === plugin.id);
+      const permissions = (plugin.permissions || []).map(value => ({ 'group.read': '读取已授权群消息', 'group.send': '回复当前已授权群' })[value] || value);
+      const fields = (plugin.settingsSchema || []).map(field => {
+        const value = entry?.settings?.[field.key] ?? field.default;
+        const attrs = `data-plugin-setting="${escapeHTML(field.key)}" data-plugin-value-type="${escapeHTML(field.type)}"`;
+        if (field.type === 'boolean') return `<label class="check-field plugin-setting-toggle"><input type="checkbox" ${attrs} ${value === true ? 'checked' : ''}><span>${escapeHTML(field.label || field.key)}${field.description ? `<small>${escapeHTML(field.description)}</small>` : ''}</span></label>`;
+        return `<label class="field">${escapeHTML(field.label || field.key)}<input ${attrs} type="${field.type === 'number' ? 'number' : 'text'}" ${field.type === 'number' ? `step="any"${field.min !== undefined ? ` min="${escapeHTML(field.min)}"` : ''}${field.max !== undefined ? ` max="${escapeHTML(field.max)}"` : ''}` : 'maxlength="6000"'} value="${escapeHTML(value ?? '')}" ${field.required ? 'required' : ''}>${field.description ? `<small>${escapeHTML(field.description)}</small>` : ''}</label>`;
+      }).join('');
+      const status = !state ? '选择账号后配置' : entry?.enabled ? applied?.enabled && JSON.stringify(entry) === JSON.stringify(applied) ? '此账号已应用' : '此账号待应用' : '此账号未启用';
+      return `<article class="custom-plugin-card" data-plugin-id="${escapeHTML(plugin.id)}"><div class="custom-plugin-heading"><div><h3>${escapeHTML(plugin.name)}</h3><span class="plugin-meta">${escapeHTML(plugin.id)} · v${escapeHTML(plugin.version)}</span></div><button type="button" class="button button-quiet button-small" data-plugin-uninstall="${escapeHTML(plugin.id)}">卸载</button></div><p class="plugin-description">${escapeHTML(plugin.description || '未提供说明')}</p><p class="plugin-capabilities">${escapeHTML(permissions.length ? permissions.join(' · ') : '本地手动功能')}${plugin.events?.includes('group.message') ? ' · 群消息触发' : ''}</p><fieldset class="plugin-settings" ${!state ? 'disabled' : ''}><legend class="sr-only">${escapeHTML(plugin.name)} 当前账号参数</legend><label class="check-field"><input type="checkbox" data-plugin-enable ${entry?.enabled ? 'checked' : ''}><span>为当前账号启用<small>${escapeHTML(status)}</small></span></label>${fields ? `<div class="plugin-fields">${fields}</div>` : ''}</fieldset>${renderPluginSecrets(plugin)}${renderPluginTools(plugin)}<details class="plugin-run-panel" ${view.open ? 'open' : ''}><summary>手动执行 · 仅本地结果</summary><label class="field">输入 JSON<textarea rows="3" data-plugin-input spellcheck="false" ${!state ? 'disabled' : ''}>${escapeHTML(view.input)}</textarea></label><div class="card-actions"><button type="button" class="button button-secondary button-small" data-plugin-run="${escapeHTML(plugin.id)}">手动执行</button></div><pre class="plugin-run-output ${view.output ? '' : 'hidden'}" aria-live="polite">${escapeHTML(view.output)}</pre></details></article>`;
+    }).join('');
+    updatePluginRunButtons();
+  }
+  async function importToolSkill(file) {
+    const id = requireAccount();
+    const version = editVersion;
+    if (!/\.(md|txt)$/i.test(file.name)) throw new Error('请选择 .md 或 .txt 文本文件。');
+    if (file.size > 24 * 1024) throw new Error('Skill 文件不能超过 24 KiB。');
+    const text = (await file.text()).replace(/^\uFEFF/, '');
+    if (text.length > 8000) throw new Error('Skill 内容不能超过 8000 字符。');
+    if (selectedAccountId !== id || editVersion !== version) throw new Error('读取期间账号或配置发生了变化，请重新导入。');
+    draft.tools ??= { enabled: false, triggers: ['mention', 'poke', 'name'], aliases: [], prefix: '/工具', skill: '', grants: [] };
+    draft.tools.skill = text;
+    $('#tool-call-skill').value = text;
+    markDirty();
+    toast('Skill 已导入当前账号；保存并应用后生效。', 'info');
+  }
+  async function installCustomPlugin() {
+    const sourcePath = $('#plugin-source-path').value.trim();
+    if (!sourcePath) throw new Error('请先选择或填写插件文件夹完整路径。');
+    await api('/api/plugins/install', { sourcePath });
+    if ($('#plugin-source-path').value.trim() === sourcePath) $('#plugin-source-path').value = '';
+    await refreshState();
+    renderCustomPlugins({ force: true });
+    toast('插件已导入。请为当前账号选择启用，保存并应用参数。', 'info');
+  }
+  async function runCustomPlugin(pluginId) {
+    const id = requireAccount();
+    if (!pluginCanRun(pluginId, id)) throw new Error('请先启用插件并保存、应用当前账号参数。');
+    const view = pluginRunView(pluginId, id);
+    if (new TextEncoder().encode(view.input).length > 16 * 1024) throw new Error('插件输入 JSON 不能超过 16 KiB。');
+    let input;
+    try { input = JSON.parse(view.input); } catch { throw new Error('插件输入不是有效的 JSON。'); }
+    view.running = true; view.output = ''; updatePluginRunButtons();
+    try {
+      const response = await accountApi(`/plugins/${encodeURIComponent(pluginId)}/run`, { input }, 'POST', id);
+      view.output = response.result === null ? '本次未返回内容。' : response.result?.text ?? JSON.stringify(response.result, null, 2);
+      toast(`「${accountName(id)}」插件执行完成；结果仅保存在当前页面。`, 'info');
+    } catch (error) { view.output = `执行失败：${errorMessage(error)}`; throw error; }
+    finally { view.running = false; if (selectedAccountId === id) renderCustomPlugins({ force: true }); }
+  }
+  async function uninstallCustomPlugin(pluginId) {
+    const plugin = pluginCatalog.find(item => item.id === pluginId);
+    if (!plugin || !await openDialog(`卸载插件「${plugin.name}」`, '<p>从本机移除此插件，所有账号将无法再执行它。请先在使用此插件的账号中取消启用，保存并应用。</p>', '卸载插件')) return;
+    await api(`/api/plugins/${encodeURIComponent(pluginId)}/uninstall`, {});
+    await refreshState(); renderCustomPlugins({ force: true });
+    toast('插件已卸载；原始插件文件夹未改动。', 'info');
   }
   function getJobs() {
     const jobs = Array.isArray(state?.jobs) ? state.jobs : Object.values(state?.jobs ?? {});
@@ -935,18 +1117,22 @@
     return state?.codexAuth?.loggedIn !== undefined && state?.codexAuth?.loggedIn !== null ? state.codexAuth : codexLoginStatus;
   }
   function modelEvidence(provider) {
-    if (provider.id === 'codex') return JSON.stringify(provider.config) !== JSON.stringify(state?.applied?.models?.codex) ? ['订阅模型参数尚未应用，授权状态仍可在下方检查', 'pending'] : authStatus()?.loggedIn === true ? ['官方 CLI 已确认授权', 'logged_in'] : ['尚未确认官方订阅授权', 'waiting_login'];
-    if (secretUpdates[provider.secret]) return ['密钥已修改，需要保存并重新测试', 'pending'];
+    if (provider.id === 'codex') return JSON.stringify(provider.config) !== JSON.stringify(state?.applied?.models?.codex) ? ['订阅模型参数尚未应用，请先保存并应用', 'model_pending'] : authStatus()?.loggedIn === true ? ['官方 CLI 已确认授权', 'logged_in'] : ['尚未确认官方订阅授权，请在账号与 AI 中登录或检查状态', 'waiting_login'];
+    if (!provider.config?.model) return ['请先填写模型名称', 'model_missing'];
+    if (!secretUpdates[provider.secret] && !state?.secrets?.[provider.secret]) return ['尚未填写 API Key', 'model_missing'];
+    if (secretUpdates[provider.secret]) return ['密钥已修改，需要保存、应用并重新测试', 'model_pending'];
     const appliedProvider = provider.id === 'deepseek' ? state?.applied?.models?.deepseek : state?.applied?.models?.apis?.find((entry) => entry.id === provider.id);
-    if (JSON.stringify(provider.config) !== JSON.stringify(appliedProvider)) return ['模型参数尚未应用，需要保存并实际测试', 'pending'];
+    if (JSON.stringify(provider.config) !== JSON.stringify(appliedProvider)) return ['模型参数尚未应用，需要保存、应用并测试', 'model_pending'];
     const evidence = state?.setup?.models?.providers?.find((entry) => entry.id === provider.id);
-    if (evidence?.tested === true) return [`实际测试通过${evidence.testedAt ? ` · ${formatTime(evidence.testedAt)}` : ''}`, 'passed'];
+    if (evidence?.credentialPending) return ['当前模型的密钥已保存但尚未应用，需要应用后重新测试', 'model_pending'];
     const tests = state?.runtime?.modelTests ?? {};
     const test = Array.isArray(tests) ? tests.find((entry) => entry.provider === provider.id) : tests[provider.id];
+    if (test?.status === 'testing' || evidence?.status === 'testing') return ['正在进行模型连接测试，请等待本次请求完成', 'testing'];
+    if (evidence?.tested === true) return [`实际测试通过${evidence.testedAt ? ` · ${formatTime(evidence.testedAt)}` : ''}`, 'passed'];
     if (evidence?.tested !== false && (test?.tested === true || test?.success === true || test?.status === 'success' || test?.ok === true)) return [`实际测试通过${test.testedAt || test.at ? ` · ${formatTime(test.testedAt || test.at)}` : ''}`, 'passed'];
-    if (test?.success === false || test?.ok === false || test?.status === 'failed') return [test.message || test.error || '最近一次实际测试失败，请查看输出', 'failed'];
-    if (secretUpdates[provider.secret]) return ['密钥已输入，尚未保存与测试', 'pending'];
-    return state?.secrets?.[provider.secret] ? ['密钥已保存，尚未通过实际模型测试', 'unknown'] : ['尚未填写 API Key', 'missing'];
+    if (test?.success === false || test?.ok === false || test?.status === 'failed' || evidence?.status === 'failed') return [test?.message || test?.error || evidence?.message || '最近一次模型测试失败，请查看日志', 'failed'];
+    if (test?.status === 'stale' || evidence?.status === 'stale' || evidence?.tested === false && test?.tested === true) return ['模型参数或密钥已变化，请重新测试', 'model_stale'];
+    return ['API Key 已保存，本次运行尚未测试；可点击“测试连接”验证', 'model_untested'];
   }
   function setFlowDisclosure(element, open, { animate = false, force = false, duration = 280 } = {}) {
     if (!force && element.dataset.flowOpen === String(open)) return;
@@ -997,7 +1183,7 @@
     renderCustomApis();
     const providers = configuredProviders();
     const selectedProvider = providers.length === 1 ? providers[0] : null;
-    const modelsReady = Boolean(selectedProvider && ['passed', 'logged_in'].includes(modelEvidence(selectedProvider)[1]));
+    const [modelDescription, modelState] = selectedProvider ? modelEvidence(selectedProvider) : ['请先选择 AI', 'model_missing'];
     const applied = state.applied ?? {};
     const hasTask = ['chat', 'summary', 'favorites'].some((name) => applied[name]?.enabled);
     const released = applied.permissions?.released === true;
@@ -1035,9 +1221,21 @@
     const draftSends = (draft.groups ?? []).filter(group => group.send).length;
     $('#setup-permission-summary').textContent = draftReads || draftSends ? `${draftReads} 个可读群 · ${draftSends} 个可发送群` : '设置可读取和回复的群';
     const permissionSummary = `${readTargets.length} 个可读群 · ${(applied.groups ?? []).filter(group => group.send).length} 个可发送群`;
-    $('#setup-verification-checks').innerHTML = checkRow('QQ 连接', verified ? `QQ ${actualQQ}` : '请先连接 QQ', verified ? 'passed' : 'pending') + checkRow('AI', modelsReady ? selectedProvider.label : selectedProvider ? `${selectedProvider.label} · 尚未测试或登录` : '请先选择 AI', modelsReady ? 'passed' : 'pending') + checkRow('任务与权限', hasTask ? `${permissionSummary} · ${released ? '已启动' : '启动前保持只读'}` : '请先选择要启用的功能', hasTask ? released ? 'running' : 'ready' : 'pending');
+    $('#setup-verification-checks').innerHTML = checkRow('QQ 连接', verified ? `QQ ${actualQQ}` : '请先连接 QQ', verified ? 'passed' : 'pending') + checkRow('AI', selectedProvider ? `${selectedProvider.label} · ${modelDescription}` : modelDescription, modelState) + checkRow('任务与权限', hasTask ? `${permissionSummary} · ${released ? '已启动' : '启动前保持只读'}` : '请先选择要启用的功能', hasTask ? released ? 'running' : 'ready' : 'pending');
+    const modelAction = document.createElement('button');
+    modelAction.type = 'button'; modelAction.className = 'button button-quiet button-small';
+    if (!selectedProvider || modelState === 'model_missing' || selectedProvider.id === 'codex' && modelState !== 'logged_in') {
+      modelAction.dataset.setupStep = 'identity'; modelAction.textContent = '配置 AI';
+    } else if (selectedProvider.id === 'codex') {
+      modelAction.dataset.action = 'codex-status'; modelAction.textContent = '检查登录';
+    } else {
+      modelAction.dataset.setupModelTest = selectedProvider.id;
+      modelAction.textContent = modelState === 'passed' ? '重新测试' : '测试连接'; modelAction.disabled = modelState === 'testing';
+    }
+    const modelRow = $$('#setup-verification-checks .check-row')[1];
+    modelRow.insertBefore(modelAction, $('.pill', modelRow));
     const writable = (applied.groups ?? []).find((group) => group.read && group.send);
-    const testText = !verified ? '当前应先完成 QQ 连接：确认 NapCat 已扫码并启用正向 WebSocket 服务，再验证实际 QQ 身份。' : !hasTask ? 'QQ 已连接。请先启用一个功能：聊天、通知汇总或收藏整理，并保存应用。' : !released ? '任务已配置。下一步在“选定群与消息权限”选择群、设定读取 / 发送，再确认“启动此账号”。' : applied.chat?.enabled && writable ? `现在可在群 ${writable.name || writable.id} 中，用其他群成员账号${effectiveTriggers(writable).includes('prefix') ? `发送“${writable.prefix || '/ai'} 你好”` : effectiveTriggers(writable).includes('casual') && !effectiveTriggers(writable).includes('mention') ? '发一条普通消息（概率参与可能不会立即回复，首次验证推荐改为 @ 触发）' : `@ QQ ${actualQQ} 并发送“你好”`}。查看下方接收、模型和发送计数，再核对群中回复。` : applied.summary?.enabled ? '现在可在“账号功能参数”中，选择已应用的可读工作群并运行一次通知汇总。需先在群中产生可读消息。未授权私聊发送时，结果在任务与记录中查看。' : applied.favorites?.enabled ? '现在可在“账号功能参数”中点击“读取此账号收藏”，然后整理已读取收藏。结果可在任务与记录中核对。' : '此账号已启动。请按已授权的触发条件发送测试消息，并查看任务与记录。';
+    const testText = !verified ? '当前应先完成 QQ 连接：确认 NapCat 已扫码并启用正向 WebSocket 服务，再验证实际 QQ 身份。' : !hasTask ? 'QQ 已连接。请先启用一个功能：聊天、通知汇总或收藏整理，并保存应用。' : !released ? '任务已配置。下一步在“选定群与消息权限”选择群、设定读取 / 发送，再确认“启动此账号”。' : applied.chat?.enabled && applied.chat?.provider === 'codex' ? '当前使用 ChatGPT 订阅，仅处理本人请求及授权整理，不自动回复群消息。需要群内自动回复时，请改选 DeepSeek 等 API；需要私聊时，请使用已配置的私聊接收 QQ 发起请求。' : applied.chat?.enabled && writable ? `现在可在群 ${writable.name || writable.id} 中，用其他群成员账号${effectiveTriggers(writable).includes('prefix') ? `发送“${writable.prefix || '/ai'} 你好”` : effectiveTriggers(writable).includes('casual') && !effectiveTriggers(writable).includes('mention') ? '发一条普通消息（概率参与可能不会立即回复，首次验证推荐改为 @ 触发）' : `@ QQ ${actualQQ} 并发送“你好”`}。查看下方接收、模型和发送计数，再核对群中回复。` : applied.summary?.enabled ? '现在可在“账号功能参数”中，选择已应用的可读工作群并运行一次通知汇总。需先在群中产生可读消息。未授权私聊发送时，结果在任务与记录中查看。' : applied.favorites?.enabled ? '现在可在“账号功能参数”中点击“读取此账号收藏”，然后整理已读取收藏。结果可在任务与记录中核对。' : '此账号已启动。请按已授权的触发条件发送测试消息，并查看任务与记录。';
     $('#setup-test-guide').textContent = testText;
     const metrics = runtime.metrics ?? {};
     $('#setup-live-metrics').innerHTML = [['received','已接收消息'],['selected','命中处理规则'],['modelCalls','模型调用'],['sent','已发送消息']].map(([key,label]) => `<div><strong>${Number(metrics[key] || 0)}</strong><span>${label}</span></div>`).join('');
@@ -1057,8 +1255,15 @@
   }
   async function testSetupModel(provider) {
     const id = requireAccount();
-    if (!await openDialog(`测试 ${providerLabel(provider)}`, '<p>将保存并应用这个账号当前参数，再向所选模型发送一次小型请求。可能消耗 API 费用或订阅额度。</p><p>应用后账号恢复只读，测试不向 QQ 发送消息。</p>', '保存并测试')) return;
-    await applyConfig(id, { advanceSetup: false });
+    rememberEditor();
+    const editor = editors.get(id);
+    const version = editor.editVersion, revision = editor.state.revision, appliedRevision = editor.state.appliedRevision;
+    const needsApply = editor.dirty || editor.state.pendingChanges || editor.state.secretsPendingChanges || taskModelNeedsSync(editor.draft);
+    const preparation = needsApply ? '<p>将保存并应用这个账号当前参数；应用后账号恢复只读，发送需要重新启动账号授权。</p>' : '<p>将使用当前已应用的模型参数测试，不改变账号发送权限。</p>';
+    if (!await openDialog(`测试 ${providerLabel(provider)}`, `${preparation}<p>向所选模型发送一次小型请求，可能消耗 API 费用或订阅额度；测试不向 QQ 发送消息。</p>`, needsApply ? '保存并测试' : '开始测试')) return;
+    const current = editors.get(id);
+    if (!current || current.editVersion !== version || current.state.revision !== revision || current.state.appliedRevision !== appliedRevision) throw new Error('确认期间账号参数发生变化，请重新检查后再测试。');
+    if (needsApply) await applyConfig(id, { advanceSetup: false });
     const result = await mutate('/test/model', { provider }, undefined, id);
     await openDialog('模型实际测试结果', `<pre class="result-box">${escapeHTML(JSON.stringify(result, null, 2))}</pre><p>模型测试成功仍需单独完成 QQ 连接及群权限设置。</p>`, '知道了');
     renderSetupGuide();
@@ -1212,7 +1417,7 @@
     const revision = editor.state.revision;
     const config = clone(editor.draft);
     const submittedSecrets = clone(editor.secretUpdates);
-    const confirmed = await openDialog(`还原「${accountName(id)}」功能参数`, '<p>将当前账号的聊天、通知汇总、收藏整理、群列表和消息权限设置还原为默认值，并保存为待应用配置。</p><p>账号身份、QQ 连接、模型参数和密钥会保留，包括本次尚未保存的修改。其他账号不受影响。</p><p>此次操作仅保存；当前运行参数与权限保持不变，需要你再点击“应用参数”后才生效。</p>', '还原并保存');
+    const confirmed = await openDialog(`还原「${accountName(id)}」功能参数`, '<p>将当前账号的聊天、通知汇总、收藏整理、群列表、消息权限、自定义插件参数和工具调用授权还原为默认值，并保存为待应用配置。</p><p>账号身份、QQ 连接、模型参数、密钥和本机已安装的插件会保留，包括本次尚未保存的连接和模型修改。其他账号不受影响。</p><p>此次操作仅保存；当前运行参数与权限保持不变，需要你再点击“应用参数”后才生效。</p>', '还原并保存');
     if (!confirmed) return;
     if (!editors.has(id) || editors.get(id).editVersion !== sentVersion || editors.get(id).state.revision !== revision) throw new Error('确认期间此账号的配置发生了变化，请重新检查后再还原。');
     const result = await accountApi('/config/reset-defaults', { revision, config, ...(Object.keys(submittedSecrets).length ? { secretUpdates: submittedSecrets } : {}) }, 'POST', id);
@@ -1423,6 +1628,24 @@
   document.addEventListener('input', (event) => {
     const input = event.target;
     if (input.id === 'account-profile-name') { if (selectedAccountId) { const editor = editors.get(selectedAccountId); if (editor) editor.profileName = input.value; } return; }
+    if (input.hasAttribute('data-social-aliases') && draft) {
+      setPath(draft, 'chat.social.aliases', [...new Set(input.value.split(/[,，]+/).map(value => value.trim()).filter(Boolean))]);
+      markDirty(input); return;
+    }
+    if ((input.dataset.groupSocial || input.hasAttribute('data-group-social-tool')) && draft) {
+      const index = Number(input.closest('[data-group-index]').dataset.groupIndex);
+      const group = draft.groups[index];
+      group.social = { ...groupSocialDefaults, ...group.social };
+      if (input.hasAttribute('data-group-social-tool')) {
+        const tools = new Set(group.social.readTools || []);
+        if (input.checked) tools.add(input.dataset.groupSocialTool); else tools.delete(input.dataset.groupSocialTool);
+        group.social.readTools = [...tools];
+      } else group.social[input.dataset.groupSocial] = input.type === 'checkbox' ? input.checked : input.type === 'number' ? (input.value === '' ? null : Number(input.value)) : input.value;
+      const status = $('[data-group-social-status]', input.closest('.group-social-settings'));
+      status.textContent = group.social.enabled ? group.social.proactive ? '自由聊天 · 可主动分享' : '自由聊天已开启' : '未开启';
+      status.classList.toggle('enabled', group.social.enabled === true);
+      markDirty(input); return;
+    }
     if (input.dataset.config && draft) {
       const value = input.type === 'checkbox' ? input.checked : input.type === 'number' ? (input.value === '' ? null : Number(input.value)) : input.value;
       setPath(draft, input.dataset.config, value);
@@ -1449,6 +1672,72 @@
       renderPermissions();
     }
   });
+  document.addEventListener('input', event => {
+    const input = event.target;
+    const card = input.closest('[data-plugin-id]');
+    if (!card) return;
+    const pluginId = card.dataset.pluginId;
+    if (input.hasAttribute('data-plugin-input')) { pluginRunView(pluginId).input = input.value; return; }
+    if (input.hasAttribute('data-plugin-secret') && draft) {
+      const key = input.dataset.pluginSecret;
+      const plugin = pluginCatalog.find(item => item.id === pluginId);
+      if (!plugin?.secretsSchema?.some(field => field.key === key)) return;
+      pluginEntry(pluginId, { create: true });
+      const name = `pluginSecret:${pluginId}:${key}`;
+      if (input.value.trim()) secretUpdates[name] = input.value.trim();
+      else delete secretUpdates[name];
+      const hint = $('[data-plugin-secret-state]', input.parentElement);
+      if (hint) hint.textContent = secretUpdates[name] ? '新值待保存、应用' : state?.secrets?.[name] ? '已保存，留空保留' : '尚未保存';
+      markDirty(input); updatePluginRunButtons(); return;
+    }
+    const toolRow = input.closest('[data-plugin-tool]');
+    if (toolRow && draft) {
+      const toolId = toolRow.dataset.pluginTool;
+      if (input.hasAttribute('data-tool-grant-enable')) {
+        if (input.checked) toolGrant(toolId, { create: true });
+        else {
+          const previous = toolGrant(toolId);
+          if (previous) toolGrantDrafts.set(`${selectedAccountId}:${toolId}`, clone(previous));
+          if (draft.tools?.grants) draft.tools.grants = draft.tools.grants.filter(item => item.tool !== toolId);
+        }
+        $('.plugin-tool-grant-fields', toolRow).disabled = !input.checked;
+      } else {
+        const grant = toolGrant(toolId);
+        if (!grant) return;
+        if (input.hasAttribute('data-tool-grant-write')) grant.allowWrite = input.checked;
+        else if (input.dataset.toolGrantField) grant[input.dataset.toolGrantField] = [...new Set(input.value.split(/[,，\s]+/).map(value => value.trim()).filter(Boolean))];
+        else return;
+      }
+      markDirty(input); updatePluginRunButtons(); return;
+    }
+    if (!draft || !input.hasAttribute('data-plugin-setting') && !input.hasAttribute('data-plugin-enable')) return;
+    const entry = pluginEntry(pluginId, { create: true });
+    if (!entry) return;
+    if (input.hasAttribute('data-plugin-enable')) entry.enabled = input.checked;
+    else {
+      entry.settings ??= {};
+      if (input.dataset.pluginValueType === 'number' && input.value === '') delete entry.settings[input.dataset.pluginSetting];
+      else entry.settings[input.dataset.pluginSetting] = input.dataset.pluginValueType === 'boolean' ? input.checked : input.dataset.pluginValueType === 'number' ? Number(input.value) : input.value;
+    }
+    markDirty(input); updatePluginRunButtons();
+  });
+  document.addEventListener('input', event => {
+    const input = event.target;
+    if (!draft || !input.hasAttribute('data-tool-trigger') && !input.hasAttribute('data-tool-aliases')) return;
+    draft.tools ??= { enabled: false, triggers: ['mention', 'poke', 'name'], aliases: [], prefix: '/工具', skill: '', grants: [] };
+    if (input.hasAttribute('data-tool-trigger')) {
+      const triggers = new Set(draft.tools.triggers ?? ['mention', 'poke', 'name']);
+      if (input.checked) triggers.add(input.dataset.toolTrigger); else triggers.delete(input.dataset.toolTrigger);
+      draft.tools.triggers = ['mention', 'poke', 'name', 'command'].filter(value => triggers.has(value));
+    } else draft.tools.aliases = [...new Set(input.value.split(/[,，]+/).map(value => value.trim()).filter(Boolean))];
+    markDirty(input); renderAccountTools();
+  });
+  $('#custom-plugin-cards').addEventListener('focusout', () => setTimeout(() => renderCustomPlugins(), 0));
+  $('#custom-plugin-cards').addEventListener('toggle', event => {
+    const card = event.target.closest('[data-plugin-id]');
+    if (card && event.target.classList.contains('plugin-run-panel')) pluginRunView(card.dataset.pluginId).open = event.target.open;
+  }, true);
+
   document.addEventListener('change', (event) => {
     if (event.target.id === 'account-llm-source' && draft) {
       chooseSingleLlm(draft, event.target.value); markDirty(event.target); populateForm(); renderLiveState(); return;
@@ -1469,6 +1758,8 @@
     }
     const button = event.target.closest('button');
     if (!button) return;
+    if (button.dataset.pluginRun) return withButton(button, () => runCustomPlugin(button.dataset.pluginRun));
+    if (button.dataset.pluginUninstall) return withButton(button, () => uninstallCustomPlugin(button.dataset.pluginUninstall));
     if (button.dataset.openAccount) return withButton(button, async () => {
       const id = button.dataset.openAccount;
       expandedAccountId = expandedAccountId === id ? '' : id;
@@ -1551,14 +1842,32 @@
     withButton(null, () => saveNapcatSettings({ mode: input.value }));
   }));
   $('#choose-napcat-executable').addEventListener('click', (event) => withButton(event.currentTarget, chooseNapcatExecutable));
+  $('#choose-tool-skill').addEventListener('click', () => $('#tool-skill-file').click());
+  $('#tool-skill-file').addEventListener('change', event => {
+    const input = event.currentTarget;
+    const file = input.files?.[0];
+    if (!file) return;
+    withButton($('#choose-tool-skill'), async () => {
+      try { await importToolSkill(file); } finally { input.value = ''; }
+    });
+  });
+  $('#install-custom-plugin').addEventListener('click', event => withButton(event.currentTarget, installCustomPlugin));
+  $('#choose-plugin-directory').addEventListener('click', event => withButton(event.currentTarget, async () => {
+    const select = window.qqBridgeDesktop?.choosePluginDirectory;
+    if (typeof select !== 'function') throw new Error('当前环境不支持选择文件夹，请直接填写路径。');
+    const selection = await select();
+    if (!selection.canceled && selection.path) $('#plugin-source-path').value = selection.path;
+  }));
+
   $('#save-account-profile').addEventListener('click', (event) => withButton(event.currentTarget, saveAccountProfile));
   $('#create-account-entry').addEventListener('click', showCreateAccount);
   $('#cancel-create-account').addEventListener('click', () => $('#new-account-form').classList.add('hidden'));
   $('#new-account-form').addEventListener('submit', (event) => { event.preventDefault(); withButton($('#submit-create-account'), createAccount); });
-  $('#refresh-state').addEventListener('click', (event) => withButton(event.currentTarget, () => refreshState({ notify: true })));
-  $('#save-draft').addEventListener('click', (event) => withButton(event.currentTarget, () => saveDraft()));
+  $$('#refresh-state, #group-refresh').forEach(button => button.addEventListener('click', (event) => withButton(event.currentTarget, () => refreshState({ notify: true }))));
+  $$('#save-draft, #group-save').forEach(button => button.addEventListener('click', (event) => withButton(event.currentTarget, () => saveDraft())));
   $('#reset-account-defaults').addEventListener('click', (event) => withButton(event.currentTarget, resetAccountDefaults));
   $('#apply-config').addEventListener('click', (event) => withButton(event.currentTarget, () => applyConfig()));
+  $('#group-apply').addEventListener('click', (event) => withButton(event.currentTarget, () => applyConfig(selectedAccountId, { advanceSetup: false })));
   $('#release-permissions').addEventListener('click', (event) => withButton(event.currentTarget, () => releasePermissions()));
   $('#revoke-permissions').addEventListener('click', (event) => withButton(event.currentTarget, async () => {
     const id = requireAccount();
@@ -1638,6 +1947,12 @@
     $('.page-footer span').textContent = 'QQ_Service · Windows 桌面应用';
     $('.page-footer span:last-child').textContent = '模型授权 ≠ 发送授权 · 关闭窗口留在托盘';
   }
+  window.QQMemoryUI?.create({
+    getAccounts: () => accounts,
+    getSelectedAccountId: () => selectedAccountId,
+    request: (id, path, body, method = 'POST') => api(`/api/accounts/${encodeURIComponent(id)}${path}`, body, method, editors.get(id)?.state?.csrfToken ?? directoryToken),
+    notify: message => toast(message)
+  });
   initializeWindowControls().catch((error) => toast(errorMessage(error), 'error'));
   if (!window.qqBridgeDesktop?.isDesktop) initializeDesktopSettings().catch((error) => toast(errorMessage(error), 'error'));
   navigate(location.hash.slice(1));

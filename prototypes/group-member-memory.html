@@ -1,0 +1,2574 @@
+<!doctype html>
+<html lang="zh-CN">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>QQ_Service · 群友记忆原型</title>
+    <style>
+      /* Theme: adjust these tokens to change the entire prototype. */
+      :root {
+        --nav: #102337;
+        --bg: #f4f6f9;
+        --text: #233144;
+        --muted: #748194;
+        --line: #e7ebf0;
+        --primary: #087f83;
+        --primary-hover: #05676c;
+        --green-bg: #e7f4ef;
+        --green: #26826c;
+        --amber-bg: #fff3df;
+        --amber: #ac792b;
+        --red: #b35f5c;
+        --purple: #7461b8;
+        font-family:
+          Inter,
+          -apple-system,
+          BlinkMacSystemFont,
+          "Segoe UI",
+          "Microsoft YaHei",
+          sans-serif;
+        color: var(--text);
+        font-synthesis: none;
+      }
+      * {
+        box-sizing: border-box;
+      }
+      body {
+        margin: 0;
+        background: var(--bg);
+        font-size: 14px;
+        line-height: 1.6;
+      }
+      button,
+      input,
+      select,
+      textarea {
+        font: inherit;
+      }
+      button {
+        cursor: pointer;
+      }
+      button:disabled {
+        opacity: 0.45;
+        cursor: not-allowed;
+      }
+      button,
+      a,
+      input,
+      select,
+      textarea {
+        outline-offset: 3px;
+      }
+      input,
+      select,
+      textarea {
+        min-width: 0;
+        color: var(--text);
+        border: 1px solid #dfe5ec;
+        border-radius: 6px;
+        background: white;
+        padding: 9px 11px;
+        font-size: 12px;
+      }
+      input:focus,
+      select:focus,
+      textarea:focus {
+        outline: 2px solid #77bab5;
+        outline-offset: 1px;
+      }
+      textarea {
+        resize: vertical;
+        min-height: 110px;
+        line-height: 1.8;
+      }
+      .icon {
+        width: 18px;
+        height: 18px;
+        fill: none;
+        stroke: currentColor;
+        stroke-width: 1.6;
+        stroke-linecap: round;
+        stroke-linejoin: round;
+        flex-shrink: 0;
+      }
+      .hidden,
+      [hidden] {
+        display: none !important;
+      }
+      .sidebar {
+        position: fixed;
+        inset: 0 auto 0 0;
+        width: 228px;
+        background: var(--nav);
+        color: #e5edf4;
+        padding: 32px 18px 18px;
+        display: flex;
+        flex-direction: column;
+      }
+      .brand {
+        display: flex;
+        align-items: center;
+        gap: 12px;
+        padding: 0 10px;
+        color: white;
+        font-size: 21px;
+        font-weight: 650;
+        letter-spacing: 0.5px;
+      }
+      .brand-mark {
+        display: grid;
+        place-items: center;
+        width: 43px;
+        height: 43px;
+        border-radius: 12px;
+        background: linear-gradient(135deg, #28a8a1, #408aaa);
+        font-size: 23px;
+      }
+      .brand small {
+        display: block;
+        font-size: 8px;
+        letter-spacing: 1.3px;
+        font-weight: 500;
+        color: #94b0c4;
+        margin-top: 4px;
+      }
+      .sidebar-label {
+        color: #7590a5;
+        font-size: 10px;
+        margin: 43px 14px 14px;
+        letter-spacing: 1px;
+      }
+      .nav-link {
+        display: flex;
+        align-items: center;
+        gap: 14px;
+        padding: 13px 15px;
+        border-radius: 8px;
+        color: #a9bece;
+        margin-bottom: 6px;
+        font-size: 13px;
+      }
+      .nav-link .icon {
+        width: 21px;
+        height: 21px;
+      }
+      .nav-link.active {
+        background: #17464f;
+        color: #a4e5db;
+        box-shadow: inset 3px 0 #41beb0;
+      }
+      .sidebar-note {
+        margin-top: auto;
+        border: 1px solid #2a3b4d;
+        border-radius: 9px;
+        padding: 13px 12px;
+        font-size: 11px;
+        color: #c2cfdb;
+      }
+      .sidebar-note small {
+        display: block;
+        color: #7f96a9;
+        font-size: 10px;
+        margin-top: 6px;
+      }
+      .sidebar-version {
+        font-size: 9px;
+        color: #718b9f;
+        letter-spacing: 1.3px;
+        margin: 20px 12px 0;
+      }
+      .main-shell {
+        margin-left: 228px;
+      }
+      .topbar {
+        height: 66px;
+        padding: 0 38px;
+        background: white;
+        border-bottom: 1px solid var(--line);
+        display: flex;
+        align-items: center;
+        justify-content: space-between;
+        color: #7c8796;
+        font-size: 12px;
+      }
+      .topbar-left {
+        display: flex;
+        align-items: center;
+        gap: 12px;
+      }
+      .workspace-dot {
+        width: 7px;
+        height: 7px;
+        border-radius: 50%;
+        background: #4bb8aa;
+      }
+      .topbar-slash {
+        color: #ccd4dd;
+      }
+      .demo-label {
+        color: #92743f;
+        background: #fff6e7;
+        border: 1px solid #f1e7d4;
+        border-radius: 5px;
+        padding: 4px 9px;
+        font-size: 10px;
+      }
+      main {
+        padding: 32px 38px;
+        max-width: 1450px;
+      }
+      .card {
+        background: white;
+        border: 1px solid var(--line);
+        border-radius: 11px;
+        padding: 23px;
+        margin-bottom: 22px;
+        box-shadow: 0 4px 18px #1c2e4509;
+        max-width: 980px;
+      }
+      h1,
+      h2,
+      h3,
+      p {
+        margin: 0;
+      }
+      h2 {
+        font-size: 16px;
+        font-weight: 650;
+        line-height: 1.5;
+      }
+      .section-heading {
+        display: flex;
+        align-items: flex-start;
+        justify-content: space-between;
+        gap: 18px;
+        margin-bottom: 17px;
+      }
+      .section-heading p {
+        font-size: 11px;
+        color: var(--muted);
+        margin-top: 5px;
+      }
+      .button {
+        display: inline-flex;
+        align-items: center;
+        justify-content: center;
+        gap: 7px;
+        border: 1px solid transparent;
+        border-radius: 6px;
+        padding: 8px 13px;
+        font-size: 12px;
+        font-weight: 550;
+        line-height: 1.5;
+        white-space: nowrap;
+        text-decoration: none;
+        background: transparent;
+        color: var(--text);
+      }
+      .button .icon {
+        width: 15px;
+        height: 15px;
+      }
+      .button-primary {
+        background: var(--primary);
+        border-color: var(--primary);
+        color: white;
+      }
+      .button-primary:hover {
+        background: var(--primary-hover);
+      }
+      .button-secondary {
+        border-color: #dce3e9;
+        background: white;
+        color: #4a5d71;
+      }
+      .button-secondary:hover {
+        background: #f5f8fb;
+        border-color: #b9c8d4;
+      }
+      .button-quiet {
+        color: #708095;
+      }
+      .button-quiet:hover {
+        background: #edf2f6;
+        color: var(--text);
+      }
+      .button-danger {
+        color: var(--red);
+        border-color: #eed3d3;
+        background: white;
+      }
+      .button-danger:hover {
+        background: #fff3f2;
+      }
+      .button-small {
+        padding: 6px 10px;
+        font-size: 11px;
+      }
+      .icon-button {
+        border: 0;
+        border-radius: 6px;
+        background: transparent;
+        display: grid;
+        place-items: center;
+        padding: 7px;
+        color: #8291a2;
+      }
+      .icon-button:hover {
+        background: #eef2f6;
+        color: #3f596c;
+      }
+      .field {
+        display: flex;
+        flex-direction: column;
+        gap: 7px;
+        color: #556377;
+        font-size: 12px;
+      }
+      .field-note {
+        font-size: 10px;
+        color: #919bab;
+        margin-top: 13px;
+        line-height: 1.8;
+      }
+      .settings-modes {
+        display: flex;
+        gap: 20px;
+        font-size: 12px;
+        color: #556b7a;
+        margin-bottom: 18px;
+      }
+      .settings-modes label {
+        display: flex;
+        gap: 8px;
+        align-items: center;
+      }
+      .settings-modes input {
+        accent-color: var(--primary);
+        margin: 0;
+      }
+      .path-control {
+        display: flex;
+        gap: 9px;
+      }
+      .path-control input {
+        flex: 1;
+        background: #f8fafb;
+        color: #8d9aa6;
+      }
+      .link-preview {
+        font-size: 11px;
+        color: var(--primary);
+        display: inline-block;
+        margin-top: 13px;
+      }
+      .settings-options {
+        display: grid;
+        grid-template-columns: 1fr 1fr;
+        gap: 14px;
+      }
+      .settings-options label {
+        display: flex;
+        gap: 12px;
+        border: 1px solid #e2e9ed;
+        border-radius: 8px;
+        padding: 15px;
+        font-size: 12px;
+        color: #536f7e;
+      }
+      .settings-options input {
+        accent-color: var(--primary);
+        margin: 4px 0 0;
+      }
+      .settings-options small {
+        display: block;
+        color: #8e9eac;
+        font-size: 11px;
+        margin-top: 4px;
+      }
+      .settings-actions {
+        margin-top: 17px;
+      }
+      .memory-card {
+        display: flex;
+        align-items: center;
+        justify-content: space-between;
+        gap: 24px;
+      }
+      .memory-card .section-heading {
+        margin: 0;
+      }
+      .memory-card .section-heading p {
+        max-width: 590px;
+        line-height: 1.9;
+      }
+      .memory-mark {
+        display: grid;
+        place-items: center;
+        width: 38px;
+        height: 38px;
+        border-radius: 10px;
+        background: #e9f5f2;
+        color: #238f84;
+        flex-shrink: 0;
+      }
+      .memory-intro {
+        display: flex;
+        align-items: center;
+        gap: 15px;
+      }
+      .page-footer {
+        display: flex;
+        justify-content: space-between;
+        color: #99a4b2;
+        font-size: 10px;
+        border-top: 1px solid #e3e8ef;
+        padding-top: 18px;
+        max-width: 980px;
+        margin-top: 32px;
+      }
+      .muted {
+        color: var(--muted);
+      }
+      .demo-footnote {
+        font-size: 11px;
+        color: #8d99a8;
+        margin: 24px 0 0;
+        max-width: 980px;
+      }
+      dialog {
+        color: var(--text);
+        border: 1px solid #dfe7ed;
+        border-radius: 14px;
+        box-shadow: 0 25px 100px #12293b44;
+        padding: 0;
+      }
+      dialog::backdrop {
+        background: #13233778;
+        backdrop-filter: blur(3px);
+      }
+      #memory-dialog {
+        width: min(1260px, calc(100vw - 48px));
+        max-width: none;
+        height: min(790px, calc(100dvh - 64px));
+        max-height: none;
+        overflow: hidden;
+      }
+      #memory-dialog[open] {
+        display: flex;
+        flex-direction: column;
+      }
+      .manager-heading {
+        display: flex;
+        align-items: center;
+        justify-content: space-between;
+        padding: 19px 24px;
+        border-bottom: 1px solid var(--line);
+        gap: 20px;
+      }
+      .manager-title {
+        display: flex;
+        align-items: center;
+        gap: 11px;
+      }
+      .manager-title > .icon {
+        color: var(--primary);
+        width: 22px;
+        height: 22px;
+      }
+      .manager-title h1 {
+        font-size: 18px;
+        font-weight: 650;
+      }
+      .manager-title small {
+        font-size: 11px;
+        color: var(--muted);
+        display: block;
+        margin-top: 2px;
+      }
+      .manager-heading-right {
+        display: flex;
+        gap: 14px;
+        align-items: center;
+      }
+      .manager-body {
+        display: grid;
+        grid-template-columns: 222px minmax(0, 1fr);
+        min-height: 0;
+        flex: 1;
+      }
+      .directory {
+        background: #f8fafc;
+        border-right: 1px solid var(--line);
+        padding: 18px 10px;
+        overflow: auto;
+      }
+      .directory-heading {
+        display: flex;
+        align-items: center;
+        justify-content: space-between;
+        color: #8b99a7;
+        letter-spacing: 1px;
+        font-size: 10px;
+        padding: 0 10px 14px;
+      }
+      .directory-heading .icon {
+        width: 13px;
+        height: 13px;
+      }
+      .tree-row {
+        display: flex;
+        align-items: center;
+        gap: 7px;
+        border-radius: 6px;
+        padding: 8px 9px;
+        margin: 2px 0;
+        font-size: 12px;
+        min-width: 0;
+      }
+      .tree-row.selected {
+        background: #e3f1ee;
+        color: #147e75;
+      }
+      .tree-row:hover {
+        background: #edf3f6;
+      }
+      .tree-row.selected:hover {
+        background: #deeeea;
+      }
+      .tree-toggle {
+        display: grid;
+        place-items: center;
+        width: 15px;
+        height: 22px;
+        padding: 0;
+        background: transparent;
+        border: 0;
+        color: #8b9ba8;
+        flex-shrink: 0;
+      }
+      .tree-toggle .icon {
+        width: 12px;
+        height: 12px;
+        transition: transform 0.16s;
+      }
+      .tree-toggle[aria-expanded="true"] .icon {
+        transform: rotate(90deg);
+      }
+      .tree-select {
+        display: flex;
+        align-items: center;
+        gap: 8px;
+        flex: 1;
+        min-width: 0;
+        padding: 0;
+        background: transparent;
+        border: 0;
+        color: inherit;
+        text-align: left;
+        font-size: 12px;
+      }
+      .tree-select .icon {
+        width: 15px;
+        height: 15px;
+        color: #7e95a4;
+      }
+      .tree-name {
+        overflow: hidden;
+        text-overflow: ellipsis;
+        white-space: nowrap;
+        flex: 1;
+      }
+      .tree-count {
+        color: #9aa8b4;
+        font-size: 10px;
+      }
+      .tree-children {
+        margin-left: 15px;
+        border-left: 1px solid #e4eaf0;
+        padding-left: 5px;
+      }
+      .tree-account {
+        font-weight: 600;
+      }
+      .tree-member {
+        font-size: 11px;
+        font-weight: 400;
+      }
+      .tree-member .icon {
+        width: 14px;
+        height: 14px;
+      }
+      .directory-note {
+        padding: 20px 10px 0;
+        border-top: 1px solid #e8edf2;
+        margin-top: 22px;
+        font-size: 10px;
+        color: #91a1ae;
+        line-height: 1.9;
+      }
+      .workspace {
+        min-width: 0;
+        display: flex;
+        flex-direction: column;
+        overflow: hidden;
+      }
+      .location-bar {
+        padding: 18px 22px 13px;
+        border-bottom: 1px solid var(--line);
+      }
+      .breadcrumbs {
+        display: flex;
+        align-items: center;
+        gap: 7px;
+        flex-wrap: wrap;
+        font-size: 11px;
+        color: #8593a3;
+        margin-bottom: 14px;
+      }
+      .breadcrumbs .icon {
+        width: 12px;
+        height: 12px;
+        color: #a8b2bd;
+      }
+      .breadcrumb-button {
+        font-size: 11px;
+        border: 0;
+        padding: 0;
+        background: none;
+        color: #718798;
+      }
+      .breadcrumb-button:hover {
+        color: var(--primary);
+        text-decoration: underline;
+      }
+      .breadcrumb-current {
+        color: #314b5e;
+        font-weight: 550;
+      }
+      .group-context {
+        display: flex;
+        align-items: center;
+        justify-content: space-between;
+        gap: 18px;
+      }
+      .group-title-line {
+        display: flex;
+        gap: 9px;
+        align-items: center;
+        flex-wrap: wrap;
+      }
+      .group-title-line h2 {
+        font-size: 16px;
+      }
+      .scope-note {
+        font-size: 10px;
+        color: #8c9aa8;
+        margin-top: 4px;
+      }
+      .group-switch {
+        display: flex;
+        align-items: center;
+        gap: 8px;
+        font-size: 11px;
+        color: #5e7b82;
+        white-space: nowrap;
+      }
+      .toggle {
+        display: flex;
+        align-items: center;
+        width: 31px;
+        height: 18px;
+        padding: 3px;
+        background: #ccd7e1;
+        border: 0;
+        border-radius: 20px;
+        transition: background 0.18s;
+      }
+      .toggle:before {
+        content: "";
+        width: 12px;
+        height: 12px;
+        border-radius: 50%;
+        background: white;
+        box-shadow: 0 1px 3px #0001;
+        transform: translateX(0);
+        transition: transform 0.18s;
+      }
+      .toggle[aria-pressed="true"] {
+        background: #3aa596;
+      }
+      .toggle[aria-pressed="true"]:before {
+        transform: translateX(13px);
+      }
+      .group-paused {
+        font-size: 10px;
+        color: #a48043;
+        background: #fff7e9;
+        padding: 8px 12px;
+        margin-top: 12px;
+        border-radius: 5px;
+      }
+      .toolbar {
+        display: flex;
+        gap: 9px;
+        padding: 14px 22px;
+        align-items: center;
+      }
+      .search-field {
+        position: relative;
+        flex: 1;
+        min-width: 100px;
+      }
+      .search-field > .icon {
+        position: absolute;
+        width: 15px;
+        height: 15px;
+        left: 10px;
+        top: 11px;
+        color: #9aabb8;
+      }
+      .search-field input {
+        width: 100%;
+        padding-left: 33px;
+        min-height: 36px;
+      }
+      .toolbar select {
+        width: 113px;
+        min-height: 36px;
+        font-size: 11px;
+      }
+      .toolbar .button {
+        min-height: 36px;
+      }
+      .memory-content {
+        display: grid;
+        grid-template-columns: minmax(0, 1fr) 314px;
+        min-height: 0;
+        flex: 1;
+        border-top: 1px solid var(--line);
+      }
+      .memory-list-pane {
+        min-width: 0;
+        overflow: auto;
+      }
+      .list-heading {
+        display: flex;
+        align-items: center;
+        justify-content: space-between;
+        gap: 10px;
+        padding: 11px 21px;
+        background: #f9fbfc;
+        color: #8998a7;
+        font-size: 10px;
+        border-bottom: 1px solid #edf1f4;
+        position: sticky;
+        top: 0;
+        z-index: 1;
+      }
+      .memory-row {
+        display: block;
+        border: 0;
+        border-bottom: 1px solid #edf1f5;
+        padding: 17px 21px;
+        text-align: left;
+        width: 100%;
+        background: white;
+        color: var(--text);
+        border-left: 3px solid transparent;
+      }
+      .memory-row:hover {
+        background: #f8fbfb;
+      }
+      .memory-row.selected {
+        background: #f0f8f6;
+        border-left-color: #2f9d8e;
+      }
+      .row-main {
+        display: flex;
+        justify-content: space-between;
+        align-items: center;
+        gap: 14px;
+      }
+      .member-label {
+        display: flex;
+        align-items: center;
+        gap: 7px;
+        font-size: 11px;
+        color: #60798a;
+      }
+      .member-avatar {
+        width: 23px;
+        height: 23px;
+        border-radius: 7px;
+        background: #edf2f8;
+        color: #6b87a0;
+        display: grid;
+        place-items: center;
+        font-size: 10px;
+      }
+      .memory-text {
+        font-size: 12px;
+        line-height: 1.9;
+        margin: 9px 0 10px;
+        overflow-wrap: anywhere;
+      }
+      .row-meta {
+        display: flex;
+        align-items: center;
+        justify-content: space-between;
+        gap: 10px;
+        font-size: 10px;
+        color: #93a1ae;
+      }
+      .row-manual {
+        color: #7d75a2;
+      }
+      .badge {
+        display: inline-flex;
+        align-items: center;
+        gap: 4px;
+        border-radius: 20px;
+        padding: 2px 8px;
+        font-size: 10px;
+        font-weight: 500;
+        white-space: nowrap;
+      }
+      .badge-pending {
+        color: var(--amber);
+        background: var(--amber-bg);
+      }
+      .badge-confirmed {
+        color: var(--green);
+        background: var(--green-bg);
+      }
+      .badge-rejected {
+        color: #89939f;
+        background: #edf1f4;
+      }
+      .badge .icon {
+        width: 11px;
+        height: 11px;
+      }
+      .detail-pane {
+        border-left: 1px solid var(--line);
+        background: #fcfdfd;
+        padding: 19px 21px;
+        overflow: auto;
+        min-width: 0;
+      }
+      .detail-top {
+        display: flex;
+        justify-content: space-between;
+        align-items: center;
+        margin-bottom: 17px;
+        font-size: 11px;
+        color: #91a0ad;
+      }
+      .detail-top strong {
+        color: #526a7a;
+        font-size: 11px;
+        font-weight: 550;
+      }
+      .detail-person {
+        display: flex;
+        align-items: center;
+        gap: 10px;
+        margin-bottom: 20px;
+      }
+      .detail-avatar {
+        display: grid;
+        place-items: center;
+        width: 36px;
+        height: 36px;
+        border-radius: 10px;
+        color: #70938c;
+        background: #e7f3ef;
+        font-size: 14px;
+      }
+      .detail-person strong {
+        font-size: 13px;
+        font-weight: 600;
+      }
+      .detail-person small {
+        display: block;
+        color: #96a2af;
+        font-size: 10px;
+        margin-top: 1px;
+      }
+      .detail-label {
+        font-size: 10px;
+        color: #91a0ad;
+        margin-bottom: 7px;
+        letter-spacing: 0.3px;
+      }
+      .detail-text {
+        font-size: 13px;
+        line-height: 1.9;
+        overflow-wrap: anywhere;
+        margin-bottom: 17px;
+      }
+      .detail-section {
+        border-top: 1px solid #e9eef2;
+        padding-top: 15px;
+        margin-top: 17px;
+      }
+      .source-message {
+        border-left: 2px solid #cadbd7;
+        border-radius: 0 5px 5px 0;
+        padding: 10px 11px;
+        background: #f2f7f6;
+        margin-bottom: 8px;
+      }
+      .source-message p {
+        font-size: 11px;
+        line-height: 1.9;
+        overflow-wrap: anywhere;
+        color: #547270;
+      }
+      .source-message small {
+        display: block;
+        color: #99aaa7;
+        font-size: 9px;
+        margin-top: 6px;
+      }
+      .detail-guidance {
+        font-size: 10px;
+        color: #8d9ea9;
+        line-height: 1.9;
+        margin-top: 9px;
+      }
+      .detail-actions {
+        display: flex;
+        gap: 7px;
+        flex-wrap: wrap;
+        margin-top: 19px;
+      }
+      .detail-meta {
+        font-size: 10px;
+        color: #95a3b0;
+        line-height: 1.9;
+      }
+      .detail-footer {
+        display: flex;
+        align-items: center;
+        justify-content: space-between;
+        border-top: 1px solid #e9eef2;
+        margin-top: 17px;
+        padding-top: 10px;
+      }
+      .empty-state {
+        padding: 65px 25px;
+        text-align: center;
+        color: #95a3ae;
+        font-size: 11px;
+        line-height: 1.9;
+      }
+      .empty-state > .icon {
+        width: 29px;
+        height: 29px;
+        margin-bottom: 12px;
+        color: #adbdc6;
+      }
+      .empty-state strong {
+        display: block;
+        color: #718794;
+        font-size: 13px;
+        font-weight: 500;
+        margin-bottom: 5px;
+      }
+      .manager-footer {
+        display: flex;
+        justify-content: space-between;
+        align-items: center;
+        padding: 11px 22px;
+        border-top: 1px solid var(--line);
+        font-size: 10px;
+        color: #8b9ca9;
+        background: white;
+        gap: 20px;
+      }
+      .manager-footer .icon {
+        width: 12px;
+        height: 12px;
+        color: #7fa49c;
+        vertical-align: -2px;
+        margin-right: 4px;
+      }
+      .directory-toggle {
+        display: none;
+      }
+      .edit-dialog {
+        width: min(480px, calc(100vw - 32px));
+        padding: 24px;
+      }
+      .edit-heading {
+        display: flex;
+        align-items: center;
+        justify-content: space-between;
+        margin-bottom: 17px;
+        gap: 15px;
+      }
+      .edit-heading h2 {
+        font-size: 17px;
+      }
+      .edit-dialog .field {
+        margin-bottom: 16px;
+      }
+      .edit-dialog .field small {
+        font-size: 10px;
+        color: #91a0ad;
+      }
+      .form-note {
+        font-size: 11px;
+        color: #79908f;
+        background: #eff7f5;
+        padding: 10px 12px;
+        border-radius: 6px;
+        line-height: 1.8;
+        margin-bottom: 18px;
+      }
+      .dialog-actions {
+        display: flex;
+        justify-content: flex-end;
+        gap: 8px;
+        margin-top: 22px;
+      }
+      .delete-text {
+        color: #6e8290;
+        font-size: 12px;
+        line-height: 1.9;
+      }
+      .delete-preview {
+        margin-top: 15px;
+        padding: 12px;
+        background: #f6f8fa;
+        border-radius: 6px;
+        font-size: 12px;
+        overflow-wrap: anywhere;
+        max-height: 170px;
+        overflow: auto;
+      }
+      .toast {
+        position: absolute;
+        bottom: 48px;
+        left: 50%;
+        transform: translateX(-50%);
+        background: #173c40;
+        color: #e6f5f1;
+        font-size: 12px;
+        padding: 11px 18px;
+        border-radius: 8px;
+        box-shadow: 0 8px 30px #13273924;
+        z-index: 20;
+        max-width: calc(100vw - 36px);
+      }
+      .toast[hidden] {
+        display: none;
+      }
+      .error {
+        color: var(--red);
+        font-size: 11px;
+        margin-top: 9px;
+      }
+      .sr-only {
+        position: absolute;
+        width: 1px;
+        height: 1px;
+        padding: 0;
+        overflow: hidden;
+        clip: rect(0, 0, 0, 0);
+        white-space: nowrap;
+        border: 0;
+      }
+      @media (max-width: 1120px) {
+        .sidebar {
+          width: 190px;
+        }
+        .main-shell {
+          margin-left: 190px;
+        }
+        .brand {
+          font-size: 18px;
+          padding: 0 6px;
+          gap: 9px;
+        }
+        .brand-mark {
+          width: 35px;
+          height: 35px;
+        }
+        .topbar {
+          padding: 0 26px;
+        }
+        main {
+          padding: 27px;
+        }
+        .manager-body {
+          grid-template-columns: 195px minmax(0, 1fr);
+        }
+        .memory-content {
+          grid-template-columns: minmax(0, 1fr) 284px;
+        }
+        .detail-pane {
+          padding: 18px;
+        }
+        .memory-row {
+          padding: 16px;
+        }
+        .toolbar,
+        .location-bar {
+          padding-left: 18px;
+          padding-right: 18px;
+        }
+      }
+      @media (max-width: 920px) {
+        .memory-content {
+          grid-template-columns: minmax(0, 1fr);
+          overflow: auto;
+        }
+        .memory-list-pane {
+          overflow: visible;
+        }
+        .detail-pane {
+          overflow: visible;
+          border-left: 0;
+          border-top: 1px solid var(--line);
+        }
+        .memory-row {
+          padding: 13px 18px;
+        }
+        .manager-body {
+          grid-template-columns: 190px minmax(0, 1fr);
+        }
+        .manager-heading {
+          padding: 17px 20px;
+        }
+        .manager-heading-right .demo-label {
+          display: none;
+        }
+        .detail-text {
+          max-width: 650px;
+        }
+        .settings-options {
+          grid-template-columns: 1fr;
+        }
+        .memory-card {
+          align-items: flex-start;
+          flex-direction: column;
+          gap: 18px;
+        }
+        .memory-card > .button {
+          margin-left: 53px;
+        }
+        .group-context {
+          gap: 10px;
+        }
+        .manager-footer {
+          padding: 10px 17px;
+        }
+        .manager-footer > span:last-child {
+          display: none;
+        }
+      }
+      @media (max-width: 660px) {
+        .sidebar {
+          width: 64px;
+          padding: 21px 9px;
+        }
+        .brand {
+          padding: 0;
+          justify-content: center;
+        }
+        .brand > span:last-child,
+        .sidebar-label,
+        .nav-link > span,
+        .sidebar-note,
+        .sidebar-version {
+          display: none;
+        }
+        .nav-link {
+          justify-content: center;
+          padding: 12px 0;
+          gap: 0;
+          margin-bottom: 10px;
+        }
+        .nav-link:first-of-type {
+          margin-top: 35px;
+        }
+        .brand-mark {
+          width: 36px;
+          height: 36px;
+          font-size: 20px;
+        }
+        .main-shell {
+          margin-left: 64px;
+        }
+        .topbar {
+          height: 57px;
+          padding: 0 19px;
+        }
+        .topbar .demo-label {
+          font-size: 9px;
+          padding: 3px 5px;
+        }
+        .topbar-slash,
+        .topbar-context {
+          display: none;
+        }
+        main {
+          padding: 20px 16px;
+        }
+        .card {
+          padding: 19px;
+          margin-bottom: 17px;
+        }
+        .path-control {
+          flex-wrap: wrap;
+        }
+        .path-control input {
+          flex-basis: 100%;
+        }
+        .memory-intro {
+          align-items: flex-start;
+        }
+        .memory-card .section-heading p {
+          font-size: 11px;
+        }
+        .memory-card > .button {
+          margin-left: 0;
+        }
+        .page-footer {
+          gap: 10px;
+          font-size: 9px;
+        }
+        .page-footer > span:last-child {
+          display: none;
+        }
+        #memory-dialog {
+          width: calc(100vw - 20px);
+          height: calc(100dvh - 24px);
+          border-radius: 11px;
+        }
+        .manager-heading {
+          padding: 15px 16px;
+          gap: 9px;
+        }
+        .manager-title h1 {
+          font-size: 16px;
+        }
+        .manager-title small {
+          font-size: 10px;
+        }
+        .manager-heading-right {
+          gap: 4px;
+        }
+        .manager-body {
+          display: flex;
+          flex-direction: column;
+          overflow: hidden;
+        }
+        .directory {
+          display: none;
+          border-right: 0;
+          border-bottom: 1px solid var(--line);
+          max-height: 225px;
+          flex-shrink: 0;
+          padding: 12px;
+        }
+        .directory.mobile-open {
+          display: block;
+        }
+        .directory-heading {
+          padding-bottom: 7px;
+        }
+        .directory-note {
+          display: none;
+        }
+        .workspace {
+          flex: 1;
+          min-height: 0;
+        }
+        .directory-toggle {
+          display: inline-flex;
+          font-size: 10px;
+          padding: 5px 8px;
+        }
+        .location-bar {
+          padding: 13px 15px;
+        }
+        .breadcrumbs {
+          font-size: 10px;
+          margin-bottom: 10px;
+          gap: 5px;
+        }
+        .breadcrumb-button {
+          font-size: 10px;
+        }
+        .group-title-line h2 {
+          font-size: 14px;
+        }
+        .scope-note {
+          font-size: 9px;
+        }
+        .group-switch {
+          font-size: 10px;
+          gap: 5px;
+        }
+        .toolbar {
+          padding: 11px 14px;
+          gap: 6px;
+          flex-wrap: wrap;
+        }
+        .search-field {
+          flex-basis: 100%;
+        }
+        .toolbar select {
+          flex: 1;
+        }
+        .toolbar > .button {
+          flex: 1;
+        }
+        .manager-footer {
+          font-size: 9px;
+          padding: 10px 13px;
+        }
+        .detail-pane {
+          padding: 19px;
+        }
+        .manager-heading .icon-button {
+          padding: 5px;
+        }
+        .settings-modes {
+          gap: 12px;
+        }
+        .edit-dialog {
+          padding: 20px;
+        }
+        .edit-dialog .dialog-actions {
+          flex-wrap: wrap;
+        }
+        .demo-footnote {
+          font-size: 10px;
+        }
+      }
+      @media (prefers-reduced-motion: reduce) {
+        *,
+        *:before {
+          transition: none !important;
+          scroll-behavior: auto !important;
+        }
+      }
+    </style>
+  </head>
+  <body>
+    <svg
+      aria-hidden="true"
+      width="0"
+      height="0"
+      style="position: absolute; overflow: hidden"
+    >
+      <defs>
+        <symbol id="i-grid" viewBox="0 0 24 24">
+          <rect x="3" y="3" width="7" height="7" rx="1.5" />
+          <rect x="14" y="3" width="7" height="7" rx="1.5" />
+          <rect x="3" y="14" width="7" height="7" rx="1.5" />
+          <rect x="14" y="14" width="7" height="7" rx="1.5" />
+        </symbol>
+        <symbol id="i-user" viewBox="0 0 24 24">
+          <circle cx="12" cy="8" r="3.5" />
+          <path d="M5 21v-2a7 7 0 0 1 14 0v2" />
+        </symbol>
+        <symbol id="i-group" viewBox="0 0 24 24">
+          <circle cx="9" cy="8" r="3" />
+          <path
+            d="M3 20v-2a6 6 0 0 1 12 0v2m2-15a3 3 0 0 1 0 6m1 3a5 5 0 0 1 3 5v1"
+          />
+        </symbol>
+        <symbol id="i-shield" viewBox="0 0 24 24">
+          <path d="m12 3 8 3v5c0 5-4 8-8 10-4-2-8-5-8-10V6l8-3Z" />
+          <path d="m8 12 3 3 5-6" />
+        </symbol>
+        <symbol id="i-box" viewBox="0 0 24 24">
+          <path d="m12 3 9 5-9 5-9-5 9-5Zm-9 5v10l9 4 9-4V8M12 13v9" />
+        </symbol>
+        <symbol id="i-list" viewBox="0 0 24 24">
+          <rect x="4" y="3" width="16" height="18" rx="2" />
+          <path d="M8 8h8M8 12h8M8 16h5" />
+        </symbol>
+        <symbol id="i-settings" viewBox="0 0 24 24">
+          <path
+            d="m10 3-1 3-3 1-3-1-1 4 2 2-1 3 3 3 3-1 2 3h4l1-3 3-1 2-3-1-3 1-3-3-2-3 1-2-3Z"
+          />
+          <circle cx="12" cy="12" r="3" />
+        </symbol>
+        <symbol id="i-memory" viewBox="0 0 24 24">
+          <path
+            d="M8 3H5a2 2 0 0 0-2 2v14a2 2 0 0 0 2 2h14a2 2 0 0 0 2-2v-3M8 8H7m0 5h5m-5 4h8"
+          />
+          <path
+            d="m17 2 1.4 4.6L23 8l-4.6 1.4L17 14l-1.4-4.6L11 8l4.6-1.4L17 2Z"
+          />
+        </symbol>
+        <symbol id="i-chevron" viewBox="0 0 24 24">
+          <path d="m9 5 7 7-7 7" />
+        </symbol>
+        <symbol id="i-folder" viewBox="0 0 24 24">
+          <path
+            d="M3 7V5a2 2 0 0 1 2-2h5l2 3h7a2 2 0 0 1 2 2v11a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V7Z"
+          />
+        </symbol>
+        <symbol id="i-search" viewBox="0 0 24 24">
+          <circle cx="10.5" cy="10.5" r="6.5" />
+          <path d="m16 16 5 5" />
+        </symbol>
+        <symbol id="i-plus" viewBox="0 0 24 24">
+          <path d="M12 5v14M5 12h14" />
+        </symbol>
+        <symbol id="i-close" viewBox="0 0 24 24">
+          <path d="m6 6 12 12M6 18 18 6" />
+        </symbol>
+        <symbol id="i-check" viewBox="0 0 24 24">
+          <path d="m5 12 4 4L19 6" />
+        </symbol>
+        <symbol id="i-edit" viewBox="0 0 24 24">
+          <path
+            d="m15 4 5 5M4 20l1-6L16 3a2 2 0 0 1 3 0l2 2a2 2 0 0 1 0 3L10 19l-6 1Z"
+          />
+        </symbol>
+        <symbol id="i-trash" viewBox="0 0 24 24">
+          <path d="M3 6h18M9 6V3h6v3M5 6l1 15h12l1-15M10 10v7m4-7v7" />
+        </symbol>
+        <symbol id="i-info" viewBox="0 0 24 24">
+          <circle cx="12" cy="12" r="9" />
+          <path d="M12 11v6m0-10v.1" />
+        </symbol>
+      </defs>
+    </svg>
+    <aside class="sidebar" aria-label="应用导航预览">
+      <div class="brand">
+        <span class="brand-mark">⇄</span
+        ><span>QQ_Service<small>YOUR LOCAL AI WORKSPACE</small></span>
+      </div>
+      <p class="sidebar-label">工作空间</p>
+      <div class="nav-link">
+        <svg class="icon"><use href="#i-grid" /></svg><span>总览</span>
+      </div>
+      <div class="nav-link">
+        <svg class="icon"><use href="#i-user" /></svg><span>账号控制</span>
+      </div>
+      <div class="nav-link">
+        <svg class="icon"><use href="#i-shield" /></svg><span>场景与权限</span>
+      </div>
+      <div class="nav-link">
+        <svg class="icon"><use href="#i-box" /></svg><span>模块</span>
+      </div>
+      <div class="nav-link">
+        <svg class="icon"><use href="#i-list" /></svg><span>日志</span>
+      </div>
+      <div class="nav-link active" aria-current="page">
+        <svg class="icon"><use href="#i-settings" /></svg><span>设置</span>
+      </div>
+      <div class="sidebar-note">
+        前端原型预览<small>仅演示群友记忆界面<br />未连接 QQ 或模型服务</small>
+      </div>
+      <div class="sidebar-version">QQ_SERVICE · PROTOTYPE</div>
+    </aside>
+    <div class="main-shell">
+      <header class="topbar">
+        <div class="topbar-left">
+          <span class="workspace-dot"></span><span>本地工作空间</span
+          ><span class="topbar-slash">/</span
+          ><span class="topbar-context">设置</span>
+        </div>
+        <span class="demo-label">界面演示，刷新后重置</span>
+      </header>
+      <main>
+        <section class="card" aria-labelledby="napcat-title">
+          <div class="section-heading">
+            <h2 id="napcat-title">NapCat 接入方式</h2>
+          </div>
+          <div class="settings-modes" aria-label="现有设置示意">
+            <label><input type="radio" checked disabled />本地安装</label
+            ><label><input type="radio" disabled />Docker</label>
+          </div>
+          <label class="field"
+            >NapCat 启动文件
+            <div class="path-control">
+              <input
+                readonly
+                value="C:\NapCat\napcat.bat"
+                tabindex="-1"
+              /><button class="button button-secondary" disabled>
+                选择文件…
+              </button>
+            </div></label
+          >
+          <span class="link-preview">本地安装说明 ↗</span>
+          <p class="field-note">
+            接入方式与启动文件作用于全部账号；每个账号的连接信息和消息权限分别配置。
+          </p>
+        </section>
+        <section class="card memory-card" aria-labelledby="memory-card-title">
+          <div class="memory-intro">
+            <div class="memory-mark">
+              <svg class="icon"><use href="#i-memory" /></svg>
+            </div>
+            <div class="section-heading">
+              <div>
+                <h2 id="memory-card-title">群友记忆</h2>
+                <p>
+                  按账号、群和群友整理事实与偏好。查看 AI
+                  提出的记忆，确认后再用于后续聊天。
+                </p>
+              </div>
+            </div>
+          </div>
+          <button class="button button-primary" id="open-memory">
+            <svg class="icon"><use href="#i-folder" /></svg>查看记忆
+          </button>
+        </section>
+        <section class="card" aria-labelledby="close-title">
+          <div class="section-heading">
+            <div>
+              <h2 id="close-title">关闭窗口时</h2>
+              <p>选择右上角关闭按钮和 Alt + F4 的行为；此设置保存在本机。</p>
+            </div>
+          </div>
+          <div class="settings-options">
+            <label
+              ><input type="radio" checked disabled /><span
+                >最小化到系统托盘<small
+                  >窗口收起，已启动的 QQ
+                  任务继续运行；可以从托盘重新打开。</small
+                ></span
+              ></label
+            ><label
+              ><input type="radio" disabled /><span
+                >完全退出应用<small
+                  >停止这个应用管理的所有账号任务和后台服务。</small
+                ></span
+              ></label
+            >
+          </div>
+          <div class="settings-actions">
+            <button class="button button-secondary" disabled>
+              立即完全退出应用
+            </button>
+          </div>
+          <p class="field-note">
+            外部启动的 NapCat 由你自行管理。应用设置不改变任何 QQ
+            账号的消息权限。
+          </p>
+        </section>
+        <p class="demo-footnote">
+          本文件只演示「群友记忆」。其余设置仅作位置参考；全部示例记录只保存在当前页面，未写入应用数据。
+        </p>
+        <footer class="page-footer">
+          <span>QQ_Service · 本地 AI 工作空间</span
+          ><span>设置 / 群友记忆原型</span>
+        </footer>
+      </main>
+    </div>
+    <dialog id="memory-dialog" aria-labelledby="memory-title">
+      <header class="manager-heading">
+        <div class="manager-title">
+          <svg class="icon"><use href="#i-memory" /></svg>
+          <div>
+            <h1 id="memory-title">群友记忆</h1>
+            <small>记住有依据的信息，让每次聊天接得上。</small>
+          </div>
+        </div>
+        <div class="manager-heading-right">
+          <span class="demo-label">界面演示，刷新后重置</span
+          ><button
+            class="button button-secondary directory-toggle"
+            id="toggle-directory"
+            aria-expanded="false"
+            aria-controls="directory"
+          >
+            目录</button
+          ><button
+            class="icon-button"
+            id="close-memory"
+            aria-label="关闭群友记忆"
+          >
+            <svg class="icon"><use href="#i-close" /></svg>
+          </button>
+        </div>
+      </header>
+      <div class="manager-body">
+        <nav class="directory" id="directory" aria-label="账号、群和群友目录">
+          <div class="directory-heading">
+            <span>记忆目录</span
+            ><svg class="icon"><use href="#i-folder" /></svg>
+          </div>
+          <div id="tree"></div>
+          <p class="directory-note">
+            每个群独立保存。<br />同一位群友在不同群里的记忆不会互相串用。
+          </p>
+        </nav>
+        <section class="workspace" aria-label="记忆管理">
+          <div class="location-bar">
+            <nav
+              class="breadcrumbs"
+              id="breadcrumbs"
+              aria-label="当前位置"
+            ></nav>
+            <div class="group-context">
+              <div>
+                <div class="group-title-line">
+                  <h2 id="scope-title"></h2>
+                  <span id="scope-count" class="badge badge-rejected"></span>
+                </div>
+                <p class="scope-note" id="scope-note"></p>
+              </div>
+              <div class="group-switch" id="group-switch">
+                <span id="group-switch-label">群记忆已启用</span
+                ><button
+                  class="toggle"
+                  id="toggle-group"
+                  aria-pressed="true"
+                  aria-label="启用当前群记忆"
+                ></button>
+              </div>
+            </div>
+            <p class="group-paused" id="paused-notice" hidden>
+              已暂停这个群的记忆使用与新候选整理；已有记忆保留，可随时继续。
+            </p>
+          </div>
+          <div class="toolbar">
+            <label class="search-field"
+              ><span class="sr-only">搜索当前目录的记忆或群友</span
+              ><svg class="icon"><use href="#i-search" /></svg
+              ><input
+                id="search"
+                type="search"
+                placeholder="搜索记忆或群友…"
+                autocomplete="off" /></label
+            ><label
+              ><span class="sr-only">按记忆状态筛选</span
+              ><select id="status-filter">
+                <option value="all">全部状态</option>
+                <option value="pending">待确认</option>
+                <option value="confirmed">已确认</option>
+                <option value="rejected">已拒绝</option>
+              </select></label
+            ><button class="button button-secondary" id="add-memory">
+              <svg class="icon"><use href="#i-plus" /></svg>新增记忆
+            </button>
+          </div>
+          <div class="memory-content">
+            <section class="memory-list-pane" aria-label="记忆列表">
+              <div class="list-heading">
+                <span id="list-summary"></span><span>最近更新</span>
+              </div>
+              <div id="memory-list"></div>
+            </section>
+            <aside
+              class="detail-pane"
+              id="memory-detail"
+              aria-label="记忆详情"
+            ></aside>
+          </div>
+        </section>
+      </div>
+      <div class="toast" id="toast" role="status" hidden></div>
+      <footer class="manager-footer">
+        <span
+          ><svg class="icon"><use href="#i-info" /></svg>AI
+          随已有回复整理候选，由你确认后使用；只记录明确事实与偏好。</span
+        ><span>示例内容 · 无额外模型调用</span>
+      </footer>
+    </dialog>
+    <dialog class="edit-dialog" id="edit-dialog" aria-labelledby="edit-title">
+      <form id="memory-form">
+        <div class="edit-heading">
+          <h2 id="edit-title">新增记忆</h2>
+          <button
+            type="button"
+            class="icon-button"
+            id="close-edit"
+            aria-label="关闭记忆编辑"
+          >
+            <svg class="icon"><use href="#i-close" /></svg>
+          </button>
+        </div>
+        <p class="form-note" id="edit-note"></p>
+        <label class="field" id="member-field"
+          >所属群友<select id="edit-member"></select></label
+        ><label class="field"
+          >记忆内容<textarea
+            id="edit-content"
+            required
+            maxlength="1000"
+            placeholder="例如：喜欢用文字交流，不喜欢语音消息。"
+          ></textarea
+          ><small
+            >写具体事实或明确表达的偏好，不填写猜测、指令或敏感信息。</small
+          ></label
+        >
+        <p class="error" id="edit-error" role="alert" hidden></p>
+        <div class="dialog-actions">
+          <button type="button" class="button button-quiet" id="cancel-edit">
+            取消</button
+          ><button type="submit" class="button button-primary" id="save-memory">
+            保存并确认
+          </button>
+        </div>
+      </form>
+    </dialog>
+    <dialog
+      class="edit-dialog"
+      id="delete-dialog"
+      aria-labelledby="delete-title"
+    >
+      <div class="edit-heading">
+        <h2 id="delete-title">删除这条记忆？</h2>
+        <button class="icon-button" id="close-delete" aria-label="取消删除">
+          <svg class="icon"><use href="#i-close" /></svg>
+        </button>
+      </div>
+      <p class="delete-text">
+        删除后将从当前示例中移除。只影响这条记忆，不会删除群友或其他群的内容。
+      </p>
+      <p class="delete-preview" id="delete-preview"></p>
+      <div class="dialog-actions">
+        <button class="button button-quiet" id="cancel-delete">取消</button
+        ><button class="button button-danger" id="confirm-delete">
+          确认删除
+        </button>
+      </div>
+    </dialog>
+
+    <script>
+      "use strict";
+      // Demo fixtures: all IDs with leading zeros are fictional, non-login identifiers.
+      // Data stays in this page's memory; reloading restores these examples.
+      const accounts = [
+        {
+          id: "daily",
+          name: "日常助手",
+          qq: "00000001",
+          groups: [
+            {
+              id: "lounge",
+              name: "闲聊小屋",
+              number: "00000101",
+              enabled: true,
+              members: [
+                { id: "00001001", name: "小林" },
+                { id: "00001002", name: "阿禾" },
+                { id: "00001003", name: "阿远" },
+              ],
+            },
+            {
+              id: "photo",
+              name: "摄影交流群",
+              number: "00000102",
+              enabled: false,
+              members: [
+                { id: "00001001", name: "小林" },
+                { id: "00001004", name: "明月" },
+              ],
+            },
+          ],
+        },
+        {
+          id: "work",
+          name: "工作助手",
+          qq: "00000002",
+          groups: [
+            {
+              id: "project",
+              name: "项目协作群",
+              number: "00000201",
+              enabled: true,
+              members: [
+                { id: "00002001", name: "陈一" },
+                { id: "00002002", name: "周周" },
+              ],
+            },
+          ],
+        },
+      ];
+      let records = [
+        {
+          id: "m1",
+          account: "daily",
+          group: "lounge",
+          member: "00001001",
+          text: "周末通常去爬山，偏好轻松的短途路线。",
+          status: "pending",
+          updated: "2026-10-29 15:42",
+          created: "2026-10-29 15:42",
+          manual: false,
+          sources: [
+            {
+              text: "我周末一般都去爬山，不过还是喜欢轻松一点的短线，走走看看就挺好。",
+              at: "2026-10-29 15:38",
+              message: "demo-1042",
+            },
+          ],
+        },
+        {
+          id: "m2",
+          account: "daily",
+          group: "lounge",
+          member: "00001001",
+          text: "不喝咖啡，平时更喜欢喝茶。",
+          status: "confirmed",
+          updated: "2026-10-28 19:26",
+          created: "2026-10-28 19:20",
+          manual: false,
+          sources: [
+            {
+              text: "咖啡我就不喝啦，我平时还是喝茶多一些。",
+              at: "2026-10-28 19:18",
+              message: "demo-0986",
+            },
+          ],
+        },
+        {
+          id: "m3",
+          account: "daily",
+          group: "lounge",
+          member: "00001002",
+          text: "更喜欢文字交流，不方便接收语音消息。",
+          status: "confirmed",
+          updated: "2026-10-28 11:05",
+          created: "2026-10-27 17:32",
+          manual: true,
+          sources: [
+            {
+              text: "大家有事给我打字就好，我上班不方便听语音。",
+              at: "2026-10-27 17:30",
+              message: "demo-0931",
+            },
+          ],
+        },
+        {
+          id: "m4",
+          account: "daily",
+          group: "lounge",
+          member: "00001003",
+          text: "正在学习做意大利面。",
+          status: "pending",
+          updated: "2026-10-27 20:15",
+          created: "2026-10-27 20:15",
+          manual: false,
+          sources: [
+            {
+              text: "最近在学做意面，刚刚终于把番茄肉酱做成功了。",
+              at: "2026-10-27 20:12",
+              message: "demo-0948",
+            },
+          ],
+        },
+        {
+          id: "m5",
+          account: "daily",
+          group: "lounge",
+          member: "00001002",
+          text: "计划这周六去看展览。",
+          status: "rejected",
+          updated: "2026-10-26 16:40",
+          created: "2026-10-26 16:32",
+          manual: false,
+          sources: [
+            {
+              text: "周六可能去看看展吧，还没确定。",
+              at: "2026-10-26 16:29",
+              message: "demo-0879",
+            },
+          ],
+        },
+        {
+          id: "m6",
+          account: "daily",
+          group: "photo",
+          member: "00001001",
+          text: "使用富士 X-S20，主要拍街景。",
+          status: "confirmed",
+          updated: "2026-10-28 21:18",
+          created: "2026-10-28 21:12",
+          manual: false,
+          sources: [
+            {
+              text: "我用的是 X-S20，平时主要出门扫街。",
+              at: "2026-10-28 21:10",
+              message: "demo-p021",
+            },
+          ],
+        },
+        {
+          id: "m7",
+          account: "daily",
+          group: "photo",
+          member: "00001004",
+          text: "希望收到照片原图，便于后期处理。",
+          status: "pending",
+          updated: "2026-10-27 09:30",
+          created: "2026-10-27 09:30",
+          manual: false,
+          sources: [
+            {
+              text: "以后发照片可以发原图吗，我想留着后期调一下。",
+              at: "2026-10-27 09:26",
+              message: "demo-p019",
+            },
+          ],
+        },
+        {
+          id: "m8",
+          account: "work",
+          group: "project",
+          member: "00002001",
+          text: "每周二、周四下午处理设计稿反馈。",
+          status: "confirmed",
+          updated: "2026-10-28 14:20",
+          created: "2026-10-28 14:15",
+          manual: false,
+          sources: [
+            {
+              text: "设计稿的反馈我固定周二、周四下午看，其他时间可能回得慢。",
+              at: "2026-10-28 14:11",
+              message: "demo-w052",
+            },
+          ],
+        },
+        {
+          id: "m9",
+          account: "work",
+          group: "project",
+          member: "00002002",
+          text: "希望任务通知同时写明截止日期。",
+          status: "pending",
+          updated: "2026-10-27 10:06",
+          created: "2026-10-27 10:06",
+          manual: false,
+          sources: [
+            {
+              text: "以后任务通知能一起写一下截止日期吗，这样我比较好安排。",
+              at: "2026-10-27 10:02",
+              message: "demo-w047",
+            },
+          ],
+        },
+      ];
+      const $ = (id) => document.getElementById(id);
+      const stateNames = {
+        pending: "待确认",
+        confirmed: "已确认",
+        rejected: "已拒绝",
+      };
+      let scope = { account: "daily", group: "lounge", member: null };
+      let selectedId = "m1",
+        editingId = null,
+        deletingId = null,
+        toastTimer;
+      const expanded = new Set(["a:daily", "g:daily:lounge"]);
+      // View helpers: text is always assigned with textContent, including edited memory.
+      function el(tag, className, text) {
+        const node = document.createElement(tag);
+        if (className) node.className = className;
+        if (text !== undefined) node.textContent = text;
+        return node;
+      }
+      function icon(name) {
+        const node = document.createElementNS(
+          "http://www.w3.org/2000/svg",
+          "svg",
+        );
+        node.setAttribute("class", "icon");
+        node.setAttribute("aria-hidden", "true");
+        const use = document.createElementNS(
+          "http://www.w3.org/2000/svg",
+          "use",
+        );
+        use.setAttribute("href", "#i-" + name);
+        node.append(use);
+        return node;
+      }
+      function accountFor(id = scope.account) {
+        return accounts.find((a) => a.id === id);
+      }
+      function groupFor(account = scope.account, id = scope.group) {
+        return accountFor(account)?.groups.find((g) => g.id === id);
+      }
+      function memberFor(record) {
+        return groupFor(record.account, record.group)?.members.find(
+          (m) => m.id === record.member,
+        );
+      }
+      function inScope(record, current = scope) {
+        return (
+          record.account === current.account &&
+          (!current.group || record.group === current.group) &&
+          (!current.member || record.member === current.member)
+        );
+      }
+      function scopedRecords(current = scope) {
+        return records.filter((r) => inScope(r, current));
+      }
+      function visibleRecords() {
+        const query = $("search").value.trim().toLocaleLowerCase();
+        const status = $("status-filter").value;
+        return scopedRecords()
+          .filter(
+            (r) =>
+              (status === "all" || r.status === status) &&
+              (!query ||
+                [r.text, memberFor(r).name, r.member].some((s) =>
+                  s.toLocaleLowerCase().includes(query),
+                )),
+          )
+          .sort((a, b) => b.updated.localeCompare(a.updated));
+      }
+      function sameScope(other) {
+        return (
+          scope.account === other.account &&
+          scope.group === other.group &&
+          scope.member === other.member
+        );
+      }
+      function now() {
+        const d = new Date();
+        return (
+          d.getFullYear() +
+          "-" +
+          String(d.getMonth() + 1).padStart(2, "0") +
+          "-" +
+          String(d.getDate()).padStart(2, "0") +
+          " " +
+          String(d.getHours()).padStart(2, "0") +
+          ":" +
+          String(d.getMinutes()).padStart(2, "0")
+        );
+      }
+      function notify(text) {
+        clearTimeout(toastTimer);
+        $("toast").textContent = text;
+        $("toast").hidden = false;
+        toastTimer = setTimeout(() => ($("toast").hidden = true), 2800);
+      }
+      function badge(status) {
+        const b = el("span", "badge badge-" + status);
+        if (status === "confirmed") b.append(icon("check"));
+        b.append(document.createTextNode(stateNames[status]));
+        return b;
+      }
+      function selectScope(next) {
+        scope = next;
+        selectedId = null;
+        render();
+        if (innerWidth <= 660) {
+          $("directory").classList.remove("mobile-open");
+          $("toggle-directory").setAttribute("aria-expanded", "false");
+        }
+      }
+      function treeRow(label, next, kind, count, key) {
+        const row = el(
+          "div",
+          "tree-row" +
+            (sameScope(next) ? " selected" : "") +
+            (kind === "account"
+              ? " tree-account"
+              : kind === "member"
+                ? " tree-member"
+                : ""),
+        );
+        if (key) {
+          const toggle = el("button", "tree-toggle");
+          toggle.type = "button";
+          toggle.setAttribute("aria-expanded", String(expanded.has(key)));
+          toggle.setAttribute(
+            "aria-label",
+            (expanded.has(key) ? "收起" : "展开") + label,
+          );
+          toggle.append(icon("chevron"));
+          toggle.addEventListener("click", () => {
+            expanded.has(key) ? expanded.delete(key) : expanded.add(key);
+            renderTree();
+          });
+          row.append(toggle);
+        } else {
+          const space = el("span");
+          space.style.width = "15px";
+          space.style.flexShrink = "0";
+          row.append(space);
+        }
+        const select = el("button", "tree-select");
+        select.type = "button";
+        select.dataset.scope = [
+          next.account,
+          next.group || "",
+          next.member || "",
+        ].join("/");
+        select.setAttribute("aria-label", "查看" + label + "的记忆");
+        if (sameScope(next)) select.setAttribute("aria-current", "true");
+        select.append(
+          icon(
+            kind === "account" ? "user" : kind === "group" ? "folder" : "user",
+          ),
+          el("span", "tree-name", label),
+          el("span", "tree-count", String(count)),
+        );
+        select.addEventListener("click", () => {
+          if (key) expanded.add(key);
+          selectScope(next);
+        });
+        row.append(select);
+        return row;
+      }
+      function renderTree() {
+        const root = $("tree");
+        root.replaceChildren();
+        for (const account of accounts) {
+          const aKey = "a:" + account.id;
+          root.append(
+            treeRow(
+              account.name,
+              { account: account.id, group: null, member: null },
+              "account",
+              scopedRecords({ account: account.id }).length,
+              aKey,
+            ),
+          );
+          if (!expanded.has(aKey)) continue;
+          const groupList = el("div", "tree-children");
+          for (const group of account.groups) {
+            const gKey = "g:" + account.id + ":" + group.id;
+            groupList.append(
+              treeRow(
+                group.name,
+                { account: account.id, group: group.id, member: null },
+                "group",
+                scopedRecords({ account: account.id, group: group.id }).length,
+                gKey,
+              ),
+            );
+            if (expanded.has(gKey)) {
+              const memberList = el("div", "tree-children");
+              for (const member of group.members)
+                memberList.append(
+                  treeRow(
+                    member.name,
+                    { account: account.id, group: group.id, member: member.id },
+                    "member",
+                    scopedRecords({
+                      account: account.id,
+                      group: group.id,
+                      member: member.id,
+                    }).length,
+                  ),
+                );
+              groupList.append(memberList);
+            }
+          }
+          root.append(groupList);
+        }
+      }
+      function breadcrumb(label, next) {
+        const button = el("button", "breadcrumb-button", label);
+        button.type = "button";
+        button.addEventListener("click", () => selectScope(next));
+        return button;
+      }
+      function renderLocation() {
+        const account = accountFor();
+        const group = groupFor();
+        const member = group?.members.find((m) => m.id === scope.member);
+        const crumbs = $("breadcrumbs");
+        crumbs.replaceChildren(
+          icon("folder"),
+          breadcrumb(account.name, {
+            account: account.id,
+            group: null,
+            member: null,
+          }),
+        );
+        if (group)
+          crumbs.append(
+            icon("chevron"),
+            breadcrumb(group.name, {
+              account: account.id,
+              group: group.id,
+              member: null,
+            }),
+          );
+        if (member)
+          crumbs.append(
+            icon("chevron"),
+            el("span", "breadcrumb-current", member.name),
+          );
+        $("scope-title").textContent = member
+          ? member.name
+          : group
+            ? group.name
+            : account.name;
+        $("scope-count").textContent = scopedRecords().length + " 条记忆";
+        $("scope-note").textContent = member
+          ? "QQ " + member.id + " · 仅用于「" + group.name + "」"
+          : group
+            ? "群号 " + group.number + " · " + group.members.length + " 位群友"
+            : "QQ " + account.qq + " · 选择一个群，管理独立的群友记忆";
+        $("group-switch").hidden = !group;
+        $("paused-notice").hidden = !group || group.enabled;
+        if (group) {
+          $("toggle-group").setAttribute("aria-pressed", String(group.enabled));
+          $("toggle-group").setAttribute(
+            "aria-label",
+            (group.enabled ? "暂停" : "启用") +
+              "「" +
+              group.name +
+              "」的群记忆",
+          );
+          $("group-switch-label").textContent = group.enabled
+            ? "群记忆已启用"
+            : "群记忆已暂停";
+        }
+        $("add-memory").disabled = !group;
+        $("add-memory").title = group
+          ? "为这个群新增一条记忆"
+          : "请先在左侧选择一个群";
+      }
+      function renderList() {
+        const list = $("memory-list");
+        const visible = visibleRecords();
+        if (!visible.some((r) => r.id === selectedId))
+          selectedId = visible[0]?.id || null;
+        const pending = scopedRecords().filter(
+          (r) => r.status === "pending",
+        ).length;
+        $("list-summary").textContent =
+          "显示 " +
+          visible.length +
+          " 条" +
+          (pending ? " · " + pending + " 条待确认" : "");
+        list.replaceChildren();
+        if (!visible.length) {
+          const empty = el("div", "empty-state");
+          empty.append(
+            icon("memory"),
+            el(
+              "strong",
+              "",
+              scopedRecords().length ? "没有匹配的记忆" : "这个目录还没有记忆",
+            ),
+            el(
+              "p",
+              "",
+              scopedRecords().length
+                ? "试试其他关键词或状态筛选。"
+                : "选择群后，可以手动新增一条。",
+            ),
+          );
+          list.append(empty);
+        }
+        for (const record of visible) {
+          const member = memberFor(record);
+          const row = el(
+            "button",
+            "memory-row" + (selectedId === record.id ? " selected" : ""),
+          );
+          row.type = "button";
+          row.dataset.memoryId = record.id;
+          row.setAttribute("aria-pressed", String(selectedId === record.id));
+          const top = el("div", "row-main");
+          const person = el("span", "member-label");
+          person.append(
+            el("span", "member-avatar", member.name.slice(-1)),
+            document.createTextNode(member.name),
+          );
+          top.append(person, badge(record.status));
+          const meta = el("div", "row-meta");
+          meta.append(
+            el(
+              "span",
+              record.manual ? "row-manual" : "",
+              record.manual
+                ? "手动修订"
+                : record.sources.length
+                  ? "来自群聊原文"
+                  : "手动添加",
+            ),
+            el("time", "", record.updated.slice(5)),
+          );
+          row.append(top, el("p", "memory-text", record.text), meta);
+          row.addEventListener("click", () => {
+            selectedId = record.id;
+            renderList();
+            renderDetail();
+          });
+          list.append(row);
+        }
+        renderDetail();
+      }
+      function action(label, kind, handler, extra = "button-secondary") {
+        const button = el("button", "button button-small " + extra);
+        button.type = "button";
+        if (kind) button.append(icon(kind));
+        button.append(document.createTextNode(label));
+        button.addEventListener("click", handler);
+        return button;
+      }
+      function changeStatus(record, status) {
+        record.status = status;
+        record.updated = now();
+        render();
+        notify(
+          status === "confirmed"
+            ? "已确认，后续聊天可使用这条记忆"
+            : "已拒绝，这条记忆不会用于聊天",
+        );
+      }
+      function renderDetail() {
+        const pane = $("memory-detail");
+        const record = records.find((r) => r.id === selectedId);
+        pane.replaceChildren();
+        if (!record) {
+          const empty = el("div", "empty-state");
+          empty.append(
+            icon("list"),
+            el("strong", "", "选择一条记忆"),
+            el("p", "", "在这里核对内容与来源。"),
+          );
+          pane.append(empty);
+          return;
+        }
+        const member = memberFor(record);
+        const group = groupFor(record.account, record.group);
+        const top = el("div", "detail-top");
+        top.append(el("strong", "", "记忆详情"), badge(record.status));
+        const person = el("div", "detail-person");
+        const title = el("div");
+        title.append(
+          el("strong", "", member.name),
+          el("small", "", "QQ " + member.id + " · " + group.name),
+        );
+        person.append(
+          el("span", "detail-avatar", member.name.slice(-1)),
+          title,
+        );
+        pane.append(
+          top,
+          person,
+          el("p", "detail-label", "记忆内容"),
+          el("p", "detail-text", record.text),
+        );
+        const meta = el("div", "detail-meta");
+        meta.append(
+          el("p", "", "创建于 " + record.created),
+          el(
+            "p",
+            "",
+            "更新于 " + record.updated + (record.manual ? " · 手动修订" : ""),
+          ),
+        );
+        pane.append(meta);
+        const source = el("section", "detail-section");
+        source.append(el("p", "detail-label", "原文依据"));
+        if (record.sources.length) {
+          for (const item of record.sources) {
+            const quote = el("div", "source-message");
+            quote.append(
+              el("p", "", item.text),
+              el("small", "", member.name + " · " + item.at),
+              el("small", "", "示例消息 " + item.message),
+            );
+            source.append(quote);
+          }
+        } else
+          source.append(
+            el("p", "detail-guidance", "由你手动添加，没有关联群聊原文。"),
+          );
+        source.append(
+          el(
+            "p",
+            "detail-guidance",
+            record.status === "pending"
+              ? "请核对原文。确认后才会用于这个群的后续聊天。"
+              : record.status === "confirmed"
+                ? "仅用于这个群；记忆内容不会改变账号权限或成为执行指令。"
+                : "已拒绝的内容保留供核对，不会用于后续聊天。",
+          ),
+        );
+        pane.append(source);
+        const actions = el("div", "detail-actions");
+        if (record.status !== "confirmed")
+          actions.append(
+            action(
+              "确认记忆",
+              "check",
+              () => changeStatus(record, "confirmed"),
+              "button-primary",
+            ),
+          );
+        actions.append(action("编辑", "edit", () => openEdit(record)));
+        if (record.status !== "rejected")
+          actions.append(
+            action(
+              "拒绝",
+              null,
+              () => changeStatus(record, "rejected"),
+              "button-quiet",
+            ),
+          );
+        pane.append(actions);
+        const footer = el("div", "detail-footer");
+        footer.append(
+          el(
+            "span",
+            "detail-guidance",
+            group.enabled ? "群记忆已启用" : "该群已暂停使用记忆",
+          ),
+          action("删除", "trash", () => openDelete(record), "button-quiet"),
+        );
+        pane.append(footer);
+      }
+      function render() {
+        renderTree();
+        renderLocation();
+        renderList();
+      }
+      function openEdit(record = null) {
+        editingId = record?.id || null;
+        const group = record
+          ? groupFor(record.account, record.group)
+          : groupFor();
+        if (!group) return;
+        $("edit-title").textContent = record ? "编辑记忆" : "新增记忆";
+        $("edit-note").textContent = record
+          ? "编辑后保留当前确认状态；修改已确认内容会标记为“手动修订”。"
+          : "新增到「" +
+            group.name +
+            "」。你填写并保存的内容将直接标为已确认。";
+        $("member-field").hidden = !!record;
+        const select = $("edit-member");
+        select.replaceChildren();
+        for (const member of group.members) {
+          const option = el("option", "", member.name + " · " + member.id);
+          option.value = member.id;
+          select.append(option);
+        }
+        select.value = record?.member || scope.member || group.members[0].id;
+        $("edit-content").value = record?.text || "";
+        $("save-memory").textContent = record ? "保存修改" : "保存并确认";
+        $("edit-error").hidden = true;
+        $("edit-dialog").showModal();
+        $("edit-content").focus();
+      }
+      function openDelete(record) {
+        deletingId = record.id;
+        $("delete-preview").textContent = record.text;
+        $("delete-dialog").showModal();
+      }
+      $("open-memory").addEventListener("click", () => {
+        render();
+        $("memory-dialog").showModal();
+      });
+      $("close-memory").addEventListener("click", () =>
+        $("memory-dialog").close(),
+      );
+      $("toggle-directory").addEventListener("click", () => {
+        const open = $("directory").classList.toggle("mobile-open");
+        $("toggle-directory").setAttribute("aria-expanded", String(open));
+      });
+      $("toggle-group").addEventListener("click", () => {
+        const group = groupFor();
+        if (!group) return;
+        group.enabled = !group.enabled;
+        renderLocation();
+        renderDetail();
+        notify(
+          group.enabled ? "已继续使用这个群的记忆" : "已暂停，已有记忆保留",
+        );
+      });
+      $("search").addEventListener("input", renderList);
+      $("status-filter").addEventListener("change", renderList);
+      $("add-memory").addEventListener("click", () => openEdit());
+      for (const id of ["close-edit", "cancel-edit"])
+        $(id).addEventListener("click", () => $("edit-dialog").close());
+      $("memory-form").addEventListener("submit", (event) => {
+        event.preventDefault();
+        const text = $("edit-content").value.trim();
+        if (!text) {
+          $("edit-error").textContent = "请填写记忆内容。";
+          $("edit-error").hidden = false;
+          return;
+        }
+        const record = records.find((r) => r.id === editingId);
+        if (record) {
+          record.text = text;
+          record.updated = now();
+          if (record.status === "confirmed") record.manual = true;
+        } else {
+          const added = {
+            id:
+              "manual-" +
+              Date.now() +
+              "-" +
+              Math.random().toString(16).slice(2),
+            account: scope.account,
+            group: scope.group,
+            member: $("edit-member").value,
+            text,
+            status: "confirmed",
+            created: now(),
+            updated: now(),
+            manual: false,
+            sources: [],
+          };
+          records.push(added);
+          selectedId = added.id;
+          if (scope.member && scope.member !== added.member)
+            scope = { ...scope, member: added.member };
+          $("search").value = "";
+          $("status-filter").value = "all";
+        }
+        const wasEditing = !!editingId;
+        $("edit-dialog").close();
+        render();
+        notify(wasEditing ? "记忆已保存" : "记忆已添加并确认");
+      });
+      for (const id of ["close-delete", "cancel-delete"])
+        $(id).addEventListener("click", () => $("delete-dialog").close());
+      $("confirm-delete").addEventListener("click", () => {
+        records = records.filter((r) => r.id !== deletingId);
+        if (selectedId === deletingId) selectedId = null;
+        deletingId = null;
+        $("delete-dialog").close();
+        render();
+        notify("记忆已删除");
+      });
+      for (const dialog of [
+        $("memory-dialog"),
+        $("edit-dialog"),
+        $("delete-dialog"),
+      ]) {
+        let pointerStartedOutside = false;
+        dialog.addEventListener("pointerdown", (event) => {
+          const r = dialog.getBoundingClientRect();
+          pointerStartedOutside =
+            event.clientX < r.left ||
+            event.clientX > r.right ||
+            event.clientY < r.top ||
+            event.clientY > r.bottom;
+        });
+        dialog.addEventListener("click", (event) => {
+          const r = dialog.getBoundingClientRect();
+          if (
+            pointerStartedOutside &&
+            (event.clientX < r.left ||
+              event.clientX > r.right ||
+              event.clientY < r.top ||
+              event.clientY > r.bottom)
+          )
+            dialog.close();
+          pointerStartedOutside = false;
+        });
+      }
+      render();
+    </script>
+  </body>
+</html>

@@ -7,6 +7,7 @@ import { randomBytes, timingSafeEqual } from 'node:crypto';
 import { createAccountCatalog, PLATFORMS } from './accounts.mjs';
 import { createAccountService } from './account-service.mjs';
 import { createNapcatSettings } from './napcat-settings.mjs';
+import { createPluginManager } from './plugins.mjs';
 
 const projectDir = fileURLToPath(new URL('../', import.meta.url));
 const fail = (message, statusCode = 409) => Object.assign(new Error(message), { statusCode });
@@ -19,10 +20,13 @@ export function defaultDataDir() {
 export function createDashboard({ dataDir = defaultDataDir(), installerFactory, runtimeFactory } = {}) {
   const csrfToken = randomBytes(32).toString('hex');
   const catalog = createAccountCatalog(dataDir);
+  const plugins = createPluginManager({ dataDir });
   const napcatSettings = createNapcatSettings({ dataDir, accountDirectories: catalog.list().map(account => catalog.directory(account.id)) });
   const services = new Map();
   const reservations = new Map();
   let started = false, closing = false;
+  let pluginMutation = false;
+  const ensurePluginReady = () => { if (pluginMutation) throw fail('插件正在安装或卸载，请稍后修改账号配置。'); };
   const redactAll = value => {
     let text = String(value ?? '');
     for (const service of services.values()) for (const secret of Object.values(service.store.getSecretSnapshot())) if (secret) text = text.split(secret).join('[已隐藏]');
@@ -53,7 +57,7 @@ export function createDashboard({ dataDir = defaultDataDir(), installerFactory, 
   };
   const buildService = account => {
     if (services.has(account.id)) return services.get(account.id);
-    const service = createAccountService({ account, dataDir: catalog.directory(account.id), csrfToken, installerFactory, runtimeFactory, getNapcatSettings: napcatSettings.get, redactAll, checkConflicts, reserveConfig });
+    const service = createAccountService({ account, dataDir: catalog.directory(account.id), csrfToken, installerFactory, runtimeFactory, pluginManager: plugins, ensurePluginReady, getNapcatSettings: napcatSettings.get, redactAll, checkConflicts, reserveConfig });
     services.set(account.id, service);
     return service;
   };
@@ -74,7 +78,7 @@ export function createDashboard({ dataDir = defaultDataDir(), installerFactory, 
     Object.assign(services.get('legacy').account, account);
     return services.get('legacy');
   };
-  const directory = () => ({ csrfToken, accounts: catalog.list().map(account => resolve(account.id).summary()), platforms: PLATFORMS, napcatSettings: napcatSettings.get() });
+  const directory = () => ({ csrfToken, accounts: catalog.list().map(account => resolve(account.id).summary()), platforms: PLATFORMS, napcatSettings: napcatSettings.get(), plugins: plugins.list() });
   const json = (response, value, code = 200) => {
     response.writeHead(code, { 'Content-Type': 'application/json; charset=utf-8', 'Cache-Control': 'no-store' });
     response.end(JSON.stringify(value));
@@ -112,6 +116,29 @@ export function createDashboard({ dataDir = defaultDataDir(), installerFactory, 
       if (closing && request.method !== 'GET' && request.method !== 'HEAD') throw fail('应用正在退出，请重新启动后操作。', 503);
       const url = new URL(request.url, `http://${request.headers.host}`), route = url.pathname;
       if (request.method === 'GET' && route === '/api/accounts') return json(response, directory());
+      if (request.method === 'GET' && route === '/api/plugins') return json(response, { plugins: plugins.list() });
+      const pluginUninstall = route.match(/^\/api\/plugins\/([a-z][a-z0-9-]{0,63})\/uninstall$/);
+      if (request.method === 'POST' && (route === '/api/plugins/install' || pluginUninstall)) {
+        const body = await readBody(request);
+        ensurePluginReady();
+        for (const service of services.values()) service.ensureIdle();
+        if (pluginUninstall) {
+          if (Object.keys(body).length) throw fail('卸载插件无需其他参数。', 400);
+          const pluginId = pluginUninstall[1];
+          for (const service of services.values()) {
+            const current = service.store.getState();
+            if ([current.draft, current.applied].some(config => config.plugins?.some(plugin => plugin.id === pluginId && plugin.enabled))) {
+              throw fail('此插件仍在账号配置中启用，请先在相关账号中关闭、保存并应用后再卸载。');
+            }
+          }
+        } else if (typeof body.sourcePath !== 'string' || Object.keys(body).some(key => key !== 'sourcePath')) throw fail('请提供本地插件文件夹 sourcePath。', 400);
+        pluginMutation = true;
+        try {
+          if (pluginUninstall) await plugins.uninstall(pluginUninstall[1]);
+          else await plugins.install(body.sourcePath);
+          return json(response, { plugins: plugins.list() }, pluginUninstall ? 200 : 201);
+        } finally { pluginMutation = false; }
+      }
       if (request.method === 'GET' && route === '/api/napcat/settings') return json(response, napcatSettings.get());
       if (request.method === 'POST' && route === '/api/napcat/settings') {
         const body = await readBody(request);
@@ -146,6 +173,12 @@ export function createDashboard({ dataDir = defaultDataDir(), installerFactory, 
         if (request.method === 'GET') {
           if (action === '/state') return json(response, await service.state());
           if (action === '/setup/status') return json(response, service.setupStatus());
+          if (action === '/memory') return json(response, service.memoryRead(Object.fromEntries(url.searchParams)));
+          if (action === '/memory/tree') return json(response, service.memoryTree());
+          if (action === '/tools') {
+            const settings = service.store.getConfig().tools || {};
+            return json(response, { tools: service.runtime.listTools?.() || [], enabled: settings.enabled === true, triggers: settings.triggers || ['mention', 'poke', 'name'], prefix: settings.prefix || '/工具' });
+          }
           if (action === '/config/export') {
             response.setHeader('Content-Disposition', 'attachment; filename="qq-service-config.json"');
             return json(response, service.store.getState().draft);
@@ -165,7 +198,7 @@ export function createDashboard({ dataDir = defaultDataDir(), installerFactory, 
         }
         throw fail('接口不存在。', 404);
       }
-      const files = { '/': ['index.html', 'text/html'], '/index.html': ['index.html', 'text/html'], '/styles.css': ['styles.css', 'text/css'], '/app.js': ['app.js', 'text/javascript'] };
+      const files = { '/': ['index.html', 'text/html'], '/index.html': ['index.html', 'text/html'], '/styles.css': ['styles.css', 'text/css'], '/app.js': ['app.js', 'text/javascript'], '/memory-ui.js': ['memory-ui.js', 'text/javascript'] };
       if (request.method === 'GET' && files[route]) {
         const [file, type] = files[route];
         response.writeHead(200, { 'Content-Type': `${type}; charset=utf-8`, 'Cache-Control': 'no-cache' });
@@ -178,7 +211,7 @@ export function createDashboard({ dataDir = defaultDataDir(), installerFactory, 
     }
   });
   return {
-    server, accounts: services, catalog,
+    server, accounts: services, catalog, plugins,
     get store() { return single().store; },
     get runtime() { return single().runtime; },
     get installer() { return single().installer; },
@@ -195,6 +228,7 @@ export function createDashboard({ dataDir = defaultDataDir(), installerFactory, 
       // Stop accepting new mutations before dismantling the profile runtimes.
       const stopped = server.listening ? new Promise(resolve => server.close(resolve)) : Promise.resolve();
       const results = await Promise.allSettled([...services.values()].map(service => service.close()));
+      await plugins.close();
       await stopped;
       const failure = results.find(result => result.status === 'rejected');
       if (failure) throw failure.reason;

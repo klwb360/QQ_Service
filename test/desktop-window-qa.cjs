@@ -98,7 +98,7 @@ async function requireBackendStopped(origin, action, message) {
     assert.equal(shell.preferences.nodeIntegration, false);
     assert.equal(await page.evaluate(() => typeof require), 'undefined');
     assert.deepEqual(await page.evaluate(() => Object.keys(qqBridgeDesktop).sort()), [
-      'close', 'exportConfig', 'getSettings', 'getWindowState', 'isDesktop', 'minimize', 'onWindowState', 'quit', 'toggleMaximize', 'updateSettings', 'version',
+      'chooseNapcatExecutable', 'choosePluginDirectory', 'close', 'exportConfig', 'getSettings', 'getWindowState', 'isDesktop', 'minimize', 'onWindowState', 'quit', 'toggleMaximize', 'updateSettings', 'version',
     ]);
     pass('无原生边框与菜单栏，保留应用菜单动作；隔离 preload 仅暴露固定操作');
 

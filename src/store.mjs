@@ -3,6 +3,7 @@ import path from 'node:path';
 import { DatabaseSync } from 'node:sqlite';
 import { randomBytes, createCipheriv, createDecipheriv } from 'node:crypto';
 import { DEFAULT_CONFIG, configHash, migrateConfig, isCredentialName } from './config.mjs';
+import { createMemoryStore } from './memory-store.mjs';
 
 export function atomicJson(file, value) {
   const temp = `${file}.${process.pid}.tmp`;
@@ -60,8 +61,10 @@ export function createStore(dataDir) {
   const saveState = (next) => { atomicJson(configFile, next); state = next; };
   const stagedSecretNames = () => Object.keys(secrets).filter(name => name.startsWith('draft:') && isCredentialName(name.slice(6)));
   const secretsPending = () => stagedSecretNames().some(name => secrets[name] !== secrets[name.slice(6)]);
+  const { memory, conversation } = createMemoryStore({ db, getState: () => state });
   return {
     dataDir,
+    memory, conversation,
     getState: () => structuredClone(state),
     getConfig: () => structuredClone(state.applied),
     getSecret: (name) => secrets[name] || '',

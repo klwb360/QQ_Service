@@ -26,8 +26,16 @@ async function verifyWindowsPackage(appOutDir, expectedVersion) {
     path.join(backend, 'src', 'napcat-settings.mjs'),
     path.join(backend, 'src', 'napcat-native.mjs'),
     path.join(backend, 'src', 'group-events.mjs'),
+    path.join(backend, 'src', 'plugins.mjs'),
+    path.join(backend, 'src', 'plugin-worker.mjs'),
+    path.join(backend, 'src', 'tool-schema.mjs'),
+    path.join(backend, 'src', 'tool-router.mjs'),
+    path.join(backend, 'src', 'social-runtime.mjs'),
+    path.join(backend, 'src', 'social-chat.mjs'),
+    path.join(backend, 'src', 'memory-store.mjs'),
     path.join(backend, 'public', 'index.html'),
     path.join(backend, 'public', 'app.js'),
+    path.join(backend, 'public', 'memory-ui.js'),
     path.join(backend, 'public', 'styles.css'),
     path.join(backend, 'node_modules', 'ws', 'package.json')
   ];

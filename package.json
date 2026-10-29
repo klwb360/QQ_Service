@@ -1,6 +1,6 @@
 {
   "name": "qq-service",
-  "version": "0.5.0",
+  "version": "0.6.0",
   "private": true,
   "type": "module",
   "description": "Windows-first local QQ / DeepSeek / personal Codex dashboard",
@@ -13,7 +13,7 @@
   "scripts": {
     "start": "node src/server.mjs",
     "test": "node --test",
-    "check": "node --check src/server.mjs && node --check src/accounts.mjs && node --check src/account-service.mjs && node --check src/installer.mjs && node --check src/napcat-settings.mjs && node --check src/napcat-native.mjs && node --check src/config.mjs && node --check src/runtime.mjs && node --check src/group-events.mjs && node --check src/providers.mjs && node --check src/store.mjs && node --check public/app.js && node --check desktop/main.cjs && node --check desktop/preload.cjs && node --check desktop/settings.cjs && node --check scripts/prepare-windows.mjs && node --check scripts/verify-packaged.cjs",
+    "check": "node --check src/server.mjs && node --check src/accounts.mjs && node --check src/account-service.mjs && node --check src/installer.mjs && node --check src/napcat-settings.mjs && node --check src/napcat-native.mjs && node --check src/config.mjs && node --check src/runtime.mjs && node --check src/social-runtime.mjs && node --check src/social-chat.mjs && node --check src/memory-store.mjs && node --check src/plugins.mjs && node --check src/tool-schema.mjs && node --check src/tool-router.mjs && node --check src/plugin-worker.mjs && node --check src/group-events.mjs && node --check src/providers.mjs && node --check src/store.mjs && node --check public/app.js && node --check public/memory-ui.js && node --check desktop/main.cjs && node --check desktop/preload.cjs && node --check desktop/settings.cjs && node --check scripts/prepare-windows.mjs && node --check scripts/verify-packaged.cjs",
     "desktop": "electron .",
     "prepare:windows": "node scripts/prepare-windows.mjs",
     "build:exe": "npm run prepare:windows && electron-builder --win portable --x64 --publish never",
