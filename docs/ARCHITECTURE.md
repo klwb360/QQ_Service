@@ -2,7 +2,7 @@
 
 [返回首页](../README.md) · [使用指南](USAGE.md) · [开发指南](DEVELOPMENT.md) · [接口契约](CONTRACT.md)
 
-v0.6.0 使用一个 Electron 桌面壳和一个本地 Node.js 管理后台，同时运行多个相互隔离的 QQ 配置。每个账号拥有独立的配置、多组 API 凭据、SQLite、QQ 连接、任务调度、NapCat 实例资料及 Codex 登录目录。
+v0.6.1 使用一个 Electron 桌面壳和一个本地 Node.js 管理后台，同时运行多个相互隔离的 QQ 配置。每个账号拥有独立的配置、多组 API 凭据、SQLite、QQ 连接、任务调度、NapCat 实例资料及 Codex 登录目录。
 
 NapCat 是 QQ 连接组件，负责实际登录和消息接口；DeepSeek/Codex 负责分析文字；应用自己的后台决定执行什么任务、允许向哪里发送。输入 QQ 号不是登录动作，模型也不直接获得任意 QQ 操作能力。
 

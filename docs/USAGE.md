@@ -2,11 +2,11 @@
 
 [返回首页](../README.md) · [自由群聊与记忆](SOCIAL_CHAT.md) · [功能实现与架构](ARCHITECTURE.md) · [Windows 原生 NapCat](NATIVE_NAPCAT_WINDOWS.md)
 
-v0.6.0 在同一个账号菜单内连续配置：**账号与 AI → 连接 QQ → 任务与权限 → 启动账号**。完成当前部分并继续后，下一部分向下展开，已填写的表单保留在上方。多个账号可以同时运行；切换界面不会改变正在执行任务的所属账号。
+v0.6.1 在同一个账号菜单内连续配置：**账号与 AI → 连接 QQ → 任务与权限 → 启动账号**。完成当前部分并继续后，下一部分向下展开，已填写的表单保留在上方。多个账号可以同时运行；切换界面不会改变正在执行任务的所属账号。
 
 ## 1. 打开应用，创建账号
 
-从 [Release](https://github.com/klwb360/QQ_Service/releases/latest) 下载 `QQ_Service-0.6.0-Windows-x64.exe`，放在普通文件夹，例如 `D:\Apps\QQ_Service`，双击打开。适用于 Windows 10/11 x64，自带 Node.js 和 npm。便携 EXE 首次展开可能较慢；当前未签名，Windows 可能显示发布者未知或 SmartScreen 提示。
+从 [Release](https://github.com/klwb360/QQ_Service/releases/latest) 下载 `QQ_Service-0.6.1-Windows-x64.exe`，放在普通文件夹，例如 `D:\Apps\QQ_Service`，双击打开。适用于 Windows 10/11 x64，自带 Node.js 和 npm。便携 EXE 首次展开可能较慢；当前未签名，Windows 可能显示发布者未知或 SmartScreen 提示。
 
 窗口使用应用内标题栏，可最小化、最大化或关闭；原生菜单栏已移除。可在「设置」选择关闭按钮的行为：**默认最小化到托盘**继续运行，也可改为完全退出；这是所有账号共用的应用设置。托盘始终提供完全退出入口；无法创建托盘时，关闭会退出。重复双击会唤起已有窗口。后台只在本机运行；休眠、关机或完全退出时不采集新消息，也不补跑错过的定时汇总。
 
