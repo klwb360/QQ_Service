@@ -57,9 +57,17 @@ export function parseMessage(message, selfId) {
   return { text: text.trim(), mentioned, hasNonText };
 }
 
+function replyMessageId(message) {
+  if (Array.isArray(message)) return id(message.find(segment => segment?.type === 'reply')?.data?.id);
+  if (typeof message !== 'string') return '';
+  const reply = /\[CQ:reply,([^\]]*)\]/.exec(message);
+  const value = reply?.[1].split(',').find(parameter => parameter.startsWith('id='))?.slice(3) || '';
+  // Split raw CQ parameters first, then decode once (ampersands last).
+  return value.replace(/&#91;/g, '[').replace(/&#93;/g, ']').replace(/&#44;/g, ',').replace(/&amp;/g, '&');
+}
+
 function normalizeEvent(event, selfId) {
   const parsed = parseMessage(event.message, selfId || event.self_id);
-  const replySegment = Array.isArray(event.message) ? event.message.find(segment => segment?.type === 'reply') : null;
   return {
     ...parsed,
     userId: id(event.userId ?? event.user_id),
@@ -69,7 +77,7 @@ function normalizeEvent(event, selfId) {
     selfId: id(event.self_id || selfId),
     time: event.time || Math.floor(Date.now() / 1000),
     ownMessage: event.post_type === 'message_sent',
-    replyTo: id(replySegment?.data?.id),
+    replyTo: replyMessageId(event.message),
     displayName: String(event.sender?.card || event.sender?.nickname || '').slice(0, 80),
   };
 }
@@ -788,7 +796,7 @@ export function createRuntime({ getConfig, getSecret, store, installer, pluginMa
       if (!input.isNotice && input.text && !input.ownMessage && input.userId !== accountId && store.conversation) {
         input.messageId ||= dedupKey;
         await store.conversation.record({ actualQQ: accountId, groupId: input.groupId, messageId: input.messageId,
-          userId: input.userId, role: 'user', text: input.text, time: input.time,
+          userId: input.userId, role: 'user', text: input.text.slice(0, 12_000), time: input.time,
           replyTo: input.replyTo, displayName: input.displayName });
         if (input.replyTo) {
           const recent = await store.conversation.list({ actualQQ: accountId, groupId: input.groupId, limit: 50 });

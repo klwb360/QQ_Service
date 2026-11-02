@@ -1,6 +1,7 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { createModelLimiter } from '../src/social-runtime.mjs';
+import { createModelLimiter, createSocialRuntime } from '../src/social-runtime.mjs';
+import { DEFAULT_CONFIG } from '../src/config.mjs';
 
 function deferred() {
   let resolve;
@@ -92,4 +93,84 @@ test('等待队列有界，取消等待请求后可接纳新请求', async () =>
   const accepted = limiter.run(undefined, 0, () => 'accepted after cancel');
   blocked.resolve(); await first;
   assert.equal(await accepted, 'accepted after cancel');
+});
+
+async function memoryLookup(context, inputs, { autonomous = false } = {}) {
+  const config = structuredClone(DEFAULT_CONFIG);
+  config.chat.enabled = config.models.deepseek.enabled = true;
+  config.chat.contextMessages = 50;
+  config.chat.social.batchMs = 0;
+  config.groups = [{ id: '222222', read: true, send: true, triggers: ['mention', 'poke'],
+    social: { enabled: true, proactive: autonomous, activeStart: '00:00', activeEnd: '00:00' } }];
+  const completed = deferred(), queries = [], requests = [], scopes = [];
+  const runtime = createSocialRuntime({ getConfig: () => config, getIdentity: () => '999999', getEpoch: () => 1,
+    store: {
+      getTask: async key => key.startsWith('social-state:') ? { lastCheck: Date.now() - 11 * 60_000 } : undefined,
+      conversation: { async list(scope) { scopes.push(scope); return context; } },
+      memory: {
+        getGroup: () => ({ enabled: true }),
+        async relevant(query) {
+          queries.push(query);
+          return query.userIds.includes('555555')
+            ? [{ userId: '555555', status: 'confirmed', kind: 'preference', text: '喜欢科幻动画' }] : [];
+        },
+      },
+    },
+    gate() {}, listTools: () => [], grantedTools: () => [],
+    infer: async (provider, messages, signal, options) => {
+      await options.beforeCall();
+      requests.push(messages);
+      return { text: JSON.stringify({ action: 'silent', reason: 'test', memoryCandidates: [] }) };
+    },
+    send: async () => { throw new Error('选择沉默时不能发送消息'); },
+    report: (level, message) => { if (message.includes('选择沉默')) completed.resolve(); },
+  });
+  let deadline;
+  try {
+    if (autonomous) await runtime.tick();
+    else for (const [index, input] of inputs.entries()) await runtime.handle({ messageType: 'group', groupId: '222222',
+      messageId: `request-${index}`, mentioned: true, text: '聊聊动画', ...input }, { action: 'chat' });
+    await Promise.race([completed.promise, new Promise((resolve, reject) => {
+      deadline = setTimeout(() => reject(new Error('记忆查询测试等待超时')), 5000);
+    })]);
+    assert.equal(queries.length, 1);
+    assert.equal(requests.length, 1);
+    assert.deepEqual(scopes, [{ actualQQ: '999999', groupId: '222222', limit: 50 }]);
+    assert.equal(queries[0].actualQQ, '999999');
+    assert.equal(queries[0].groupId, '222222');
+    assert.equal(queries[0].limit, 8);
+    return { query: queries[0], messages: requests[0] };
+  } finally { clearTimeout(deadline); runtime.stop(); }
+}
+
+const historyMember = userId => ({ role: 'user', userId, messageId: `history-${userId}`, text: '先前的聊天' });
+
+test('超过20位历史成员时仍查询本轮请求者的记忆并注入提示', async () => {
+  const historyIds = Array.from({ length: 24 }, (_, index) => String(600000 + index));
+  const { query, messages } = await memoryLookup(['555555', ...historyIds].map(historyMember), [{ userId: '555555' }]);
+  assert.ok(query.userIds.includes('555555'), '最早出现过的当前请求者不能被历史成员挤出');
+  assert.equal(query.userIds.length, 20);
+  assert.deepEqual(query.userIds, ['555555', ...historyIds.slice(-19).reverse()]);
+  assert.match(messages[0].content, /喜欢科幻动画/);
+});
+
+test('本轮多位参与者先去重保留，剩余名额按最近发言填充且排除通知和AI', async () => {
+  const historyIds = Array.from({ length: 24 }, (_, index) => String(600000 + index));
+  const context = ['555555', '555556', ...historyIds].map(historyMember);
+  context.push(historyMember(historyIds[0]), { role: 'assistant', userId: '999999', messageId: 'bot', text: 'AI回答' });
+  const { query } = await memoryLookup(context, [
+    { userId: '555555' }, { userId: '555556' }, { userId: '555555' },
+    { userId: '555557', isNotice: true, kind: 'poke', mentionsBot: true },
+  ]);
+  assert.deepEqual(query.userIds, ['555555', '555556', historyIds[0], ...historyIds.slice(-17).reverse()]);
+  assert.equal(new Set(query.userIds).size, 20);
+  assert.equal(query.userIds.includes('555557'), false);
+  assert.equal(query.userIds.includes('999999'), false);
+});
+
+test('没有本轮成员的主动检查仍只查询最近20位历史成员', async () => {
+  const historyIds = Array.from({ length: 24 }, (_, index) => String(600000 + index));
+  const context = [...historyIds, historyIds[0]].map(historyMember);
+  const { query } = await memoryLookup(context, [], { autonomous: true });
+  assert.deepEqual(query.userIds, [historyIds[0], ...historyIds.slice(-19).reverse()]);
 });

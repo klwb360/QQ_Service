@@ -128,8 +128,10 @@ export function createSocialRuntime({ getConfig, getIdentity, getEpoch, store, i
     const controller = new AbortController();
     state.controller = controller; state.writeAttempted = false;
     const context = await historyFor(state, config);
-    const userIds = [...new Set([...context.filter(item => item.role === 'user').map(item => item.userId),
-      ...entries.filter(entry => !entry.input.isNotice).map(entry => entry.input.userId)])].slice(-20);
+    // Reserve lookup slots for this turn before filling from the most recent
+    // history. De-duplicating oldest-first would pin returning members there.
+    const userIds = [...new Set([...entries.filter(entry => !entry.input.isNotice).map(entry => entry.input.userId).reverse(),
+      ...context.filter(item => item.role === 'user').map(item => item.userId).reverse()])].slice(0, 20);
     const memories = await store.memory?.relevant({ actualQQ: state.actualQQ, groupId: state.groupId,
       userIds, query: latest?.text || state.topic || group.social?.interests || config.chat.social?.interests || '', limit: 8 }) || [];
     const scope = { groupId: state.groupId, ...(autonomous
