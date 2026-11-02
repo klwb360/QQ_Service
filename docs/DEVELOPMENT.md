@@ -58,7 +58,7 @@ npm run desktop
 npm run build:exe
 ```
 
-本版目标为 `dist/QQ_Service-0.6.0-Windows-x64.exe`。`npm run build:installer` 提供可选 NSIS 目标，默认 Release 交付便携 EXE。
+本版目标为 `dist/QQ_Service-0.6.1-Windows-x64.exe`。`npm run build:installer` 提供可选 NSIS 目标，默认 Release 交付便携 EXE。
 
 窗口为无原生边框 Electron 窗口，最小化、最大化/还原、关闭通过受限预加载接口操作。关闭偏好是桌面全局设置，默认进入托盘，可选完全退出；系统关闭和自绘关闭行为应一致。实际窗口控制和设置持久化需用 Electron 检查，不能只测 DOM 按钮存在。
 

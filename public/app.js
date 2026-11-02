@@ -1942,7 +1942,7 @@
   });
   window.addEventListener('hashchange', () => navigate(location.hash.slice(1)));
   if (window.qqBridgeDesktop?.isDesktop) {
-    $('.sidebar-version span').textContent = window.qqBridgeDesktop.version || '0.4.0';
+    $('.sidebar-version span').textContent = window.qqBridgeDesktop.version || '0.6.1';
     $('.sidebar-note small').textContent = '各账号独立运行；关闭窗口后留在托盘，退出停止所有后台。';
     $('.page-footer span').textContent = 'QQ_Service · Windows 桌面应用';
     $('.page-footer span:last-child').textContent = '模型授权 ≠ 发送授权 · 关闭窗口留在托盘';

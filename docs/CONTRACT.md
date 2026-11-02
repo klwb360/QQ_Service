@@ -1,6 +1,6 @@
 # Implementation contract
 
-Windows-first, local-only Node 24 application, version 0.6.0. One Electron window and one management server host multiple concurrent account profiles. QQ uses NapCat OneBot v11; models use DeepSeek, multiple OpenAI-compatible Chat Completions APIs, and official Codex CLI. WeChat and Telegram are planned registry entries, not implemented adapters. See [account-control design](ACCOUNTS_CONTRACT.md) and [architecture](ARCHITECTURE.md).
+Windows-first, local-only Node 24 application, version 0.6.1. One Electron window and one management server host multiple concurrent account profiles. QQ uses NapCat OneBot v11; models use DeepSeek, multiple OpenAI-compatible Chat Completions APIs, and official Codex CLI. WeChat and Telegram are planned registry entries, not implemented adapters. See [account-control design](ACCOUNTS_CONTRACT.md) and [architecture](ARCHITECTURE.md).
 
 Never report a real login, deployment or Windows interaction as tested without performing it.
 
