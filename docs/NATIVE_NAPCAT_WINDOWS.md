@@ -2,7 +2,7 @@
 
 [返回首页](../README.md) · [使用指南](USAGE.md) · [官方 Shell 安装说明](https://napneko.github.io/guide/boot/Shell)
 
-QQ_Service 可以连接本机原生 NapCat 的 OneBot v11 接口，无需 Docker Desktop 或 WSL。NapCat 是 QQ 连接组件，负责实际 QQ 登录和消息接口；DeepSeek/Codex 不代替它登录 QQ。
+QQ_Service 可以连接本机原生 NapCat 的 OneBot v11 接口，无需 Docker Desktop 或 WSL。NapCat 是 QQ 连接组件，负责实际 QQ 登录和消息接口；模型 API 不代替它登录 QQ。
 
 v0.5.0 在「设置 → NapCat 接入方式」全局选择 **本地安装**。此设置适用于所有账号，设置页无需选择账号。按官方说明安装后，点击「选择文件」选中启动文件；再到账号的「连接 QQ」点击 **打开 NapCat → 打开登录页 → 连接并继续**。已有 NapCat 且已经登录时，直接核对第 2 节的接口即可。
 
@@ -46,7 +46,7 @@ v0.5.0 在「设置 → NapCat 接入方式」全局选择 **本地安装**。�
 
 连接成功后可读取已加入群作为验证，但这不等于已授权这些群。请让所选群产生一条新消息，再检查当前账号记录；完整验证步骤见 [使用指南](USAGE.md#6-验证一次完整流程)。不要仅依据“NapCat 已安装”判断 QQ 已接通。
 
-本地方式的模块卡片显示「打开 NapCat」，不显示 Docker 安装/停止按钮。Codex CLI 在自己的模块卡片安装，不依赖 Docker。选择文件或切换方式不会自动启动程序。
+本地方式的模块卡片显示「打开 NapCat」，不显示 Docker 安装/停止按钮。模型 API 在账号中填写 Key，不需要安装 CLI 或 Docker。选择文件或切换方式不会自动启动程序。
 
 ## 4. 多账号同时在线
 

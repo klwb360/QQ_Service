@@ -72,13 +72,10 @@ async function seed() {
     const call = (action, module) => installerCalls.push({ id, action, module });
     return {
       environment:async () => ({ node:{ supported:true }, docker:{ installed:true, running:true, linuxContainers:true } }),
-      status:async () => ['napcat','codex','deepseek','summary','favorites'].map(module => ({ id:module, name:module, installed:item.installed.has(module), version:'QA', state:module === 'napcat' && item.running ? 'running' : item.installed.has(module) ? 'installed' : 'missing' })),
+      status:async () => ['napcat','deepseek','summary','favorites'].map(module => ({ id:module, name:module, installed:item.installed.has(module), version:'QA', state:module === 'napcat' && item.running ? 'running' : item.installed.has(module) ? 'installed' : 'missing' })),
       install:async (module, onLog) => { call('install', module); onLog(`本地模拟安装 ${module}`); if (item.gate) await item.gate; item.installed.add(module); return { installed:true }; },
       startNapcat:async onLog => { call('start','napcat'); item.running=true; onLog?.('本地模拟启动'); },
       stopNapcat:async onLog => { call('stop','napcat'); item.running=false; onLog?.('本地模拟停止'); },
-      codexStatus:async () => { call('status','codex'); return { loggedIn:true, message:'本地模拟授权' }; },
-      loginCodex:async onLog => { call('login','codex'); onLog('本地模拟官方授权'); return { loggedIn:true }; },
-      runCodex:async () => { throw new Error('此检查不允许调用模型'); },
       dispose:async () => {},
     };
   } });
@@ -117,9 +114,9 @@ async function launch() {
   assert.equal(await page.evaluate(()=>Boolean(window.QQServiceDesigner||window.QQServiceBuilder)),false);
   pass('保留每个账号主下拉栏与单选 AI 下拉框，四部分账号流程可用；编辑器不再加载');
 
-  for(const source of ['deepseek','vendor:openai','vendor:dashscope','vendor:zhipu','vendor:kimi','vendor:siliconflow','vendor:custom','codex']) {
+  for(const source of ['deepseek','vendor:openai','vendor:dashscope','vendor:zhipu','vendor:kimi','vendor:siliconflow','vendor:custom']) {
     await page.locator('#account-llm-source').selectOption(source);
-    const forms=page.locator('#deepseek-model-card:visible, #codex-model-card:visible, [data-api-card]:visible');
+    const forms=page.locator('#deepseek-model-card:visible, [data-api-card]:visible');
     assert.equal(await forms.count(),1);
     if(source.startsWith('vendor:')) {
       await forms.locator('[data-secret]').fill('QA_VENDOR_KEY');
@@ -139,7 +136,7 @@ async function launch() {
   await page.locator('[data-flow-actions="identity"] [data-setup-apply]').click();await active('connection');
   assert.ok(posts.some(p=>p.url===`/api/accounts/${account.id}/config/apply`));
   const modelState=await state();assert.equal(modelState.secrets.deepseekApiKey,true);assert.equal(modelState.applied.models.deepseek.model,'qa-model');assert.equal(modelState.applied.permissions.released,false);
-  pass('全部八种 AI 来源均显示唯一配置表单；高级项默认折叠，自定义地址可见，名称及模型凭据实际保存到当前账号');
+  pass('全部七种 API 来源均显示唯一配置表单；高级项默认折叠，自定义地址可见，名称及模型凭据实际保存到当前账号');
 
   await clickBack('connection','identity');
   await page.locator('#deepseek-model-card summary').click();
@@ -249,26 +246,20 @@ async function launch() {
   let releaseInstall; const item=contexts.get(account.id); item.gate=new Promise(resolve=>{releaseInstall=resolve;});
   await moduleInstall('napcat');
   await until(()=>installerCalls.some(call=>call.id===account.id&&call.action==='install'&&call.module==='napcat'),'NapCat 卡片未调用账号安装器');
-  await chooseAccount(second.id); await navigate('modules'); await moduleInstall('codex');
-  await until(async()=>contexts.get(second.id).installed.has('codex'),'第二账号不能独立安装 Codex');
+  await chooseAccount(second.id); await navigate('modules'); await moduleInstall('napcat');
+  await until(async()=>contexts.get(second.id).installed.has('napcat'),'第二账号不能独立安装 NapCat');
   assert.equal(item.installed.has('napcat'),false);
   releaseInstall(); item.gate=null;
-  await until(async()=>{const current=await state();return current.jobs.some(job=>job.label==='安装 napcat'&&job.status==='completed');},'NapCat 安装任务没有完成');
+  await until(async()=>{const current=await state(account.id);return current.jobs.some(job=>job.label==='安装 napcat'&&job.status==='completed');},'NapCat 安装任务没有完成');
   assert.equal(item.installed.has('napcat'),true); assert.equal(item.running,true);
-  await chooseAccount(account.id); await navigate('modules'); await moduleInstall('codex');
-  await until(()=>item.installed.has('codex'),'当前账号 Codex 卡片没有安装');
-  await until(async()=>(await state()).jobs.filter(job=>job.status==='running').length===0,'Codex 安装任务未结束');
-  await page.locator('#module-cards [data-action="codex-login"]').click();
-  await until(()=>installerCalls.some(call=>call.id===account.id&&call.action==='login'&&call.module==='codex'),'Codex 授权没有调用账号后端');
-  await until(async()=>(await state()).jobs.filter(job=>job.status==='running').length===0,'Codex 授权未完成');
-  assert.ok(item.installed.has('napcat')&&item.installed.has('codex'));
-  assert.equal(await page.locator('#module-cards > .module-card').count(),5);
+  await chooseAccount(account.id); await navigate('modules');
+  assert.equal(await page.locator('#module-cards > .module-card').count(),4);
+  assert.equal(await page.locator('[data-module="codex"], [data-action^="codex-"]').count(),0);
   assert.ok(posts.some(post=>post.url===`/api/accounts/${account.id}/modules/napcat/install`));
-  assert.ok(posts.some(post=>post.url===`/api/accounts/${second.id}/modules/codex/install`));
-  assert.ok(posts.some(post=>post.url===`/api/accounts/${account.id}/codex/login`));
-  assert.equal(posts.some(post=>post.url.endsWith('/setup/install')),false);
+  assert.ok(posts.some(post=>post.url===`/api/accounts/${second.id}/modules/napcat/install`));
+  assert.equal(posts.some(post=>post.url.endsWith('/setup/install')||post.url.includes('/codex/')),false);
   assert.equal((await state()).applied.permissions.released,false); assert.equal((await state(second.id)).applied.permissions.released,false);
-  pass('保留的模块卡片真实提交独立安装与 Codex 授权任务；账号切换不改任务归属，两个账号可并发安装，同账号 NapCat 与 Codex 可同时保留');
+  pass('API-only 模块卡片保留 NapCat 独立安装，两个账号可并发安装，均不产生模型登录或发送授权');
 
   await post(`/api/accounts/${account.id}/permissions/revoke`);
   assert.deepEqual(errors,[]); assert.equal(sent.length,0);
@@ -280,7 +271,15 @@ async function launch() {
   console.error(error.stack||error.message); process.exitCode=1;
  } finally {
   if(page)await page.evaluate(()=>window.addEventListener('beforeunload',e=>e.stopImmediatePropagation(),{capture:true})).catch(()=>{});
-  if(electron)await electron.close().catch(()=>{});
+  if(electron) {
+    // The test's raw Electron shell has no production quit handler. A dirty
+    // form may prevent app.quit() during cleanup even after all assertions pass.
+    // Ignore beforeunload only here, after the test has finished its checks.
+    await electron.evaluate(({BrowserWindow}) => {
+      for(const win of BrowserWindow.getAllWindows()) win.webContents.on('will-prevent-unload', event => event.preventDefault());
+    }).catch(()=>{});
+    await electron.close().catch(()=>{});
+  }
   if(app)await app.close();
   if(qq){for(const peer of qq.clients)peer.terminate();await new Promise(resolve=>qq.close(resolve));}
   fs.rmSync(fixture,{recursive:true,force:true});

@@ -31,7 +31,7 @@ function installerAt(dataDir, extra = {}) {
   });
 }
 
-test('账号的模块记录、Codex 登录与工作目录独立，迁移账号保留旧容器名', async () => {
+test('账号模块记录保持独立；订阅安装接口移除，旧登录资料原样保留', async () => {
   const root = fs.mkdtempSync(path.join(os.tmpdir(), 'qq-service-installer-profiles-'));
   const firstDir = path.join(root, 'accounts', '285fb128-7b6e-4d26-8858-c7e43f76407c');
   const secondDir = path.join(root, 'accounts', '383b8d6e-d2f6-4568-97df-6147274198ee');
@@ -47,17 +47,23 @@ test('账号的模块记录、Codex 登录与工作目录独立，迁移账号�
     assert.match(names[0], /^qqbridge-napcat-[a-f0-9]{24}$/);
     assert.equal(names[2], 'qqbridge-napcat');
     assert.equal(names[3], 'qqbridge-napcat');
-    for (const directory of [firstDir, secondDir]) {
-      const cli = path.join(directory, 'modules', 'codex', 'node_modules', '@openai', 'codex', 'bin', 'codex.js');
-      fs.mkdirSync(path.dirname(cli), { recursive: true });
-      fs.writeFileSync(cli, '// Fixture entry point; never executed.\n');
+    const oldLoginDir = path.join(firstDir, 'codex-home');
+    const oldCli = path.join(firstDir, 'modules', 'codex', 'node_modules', '@openai', 'codex', 'bin', 'codex.js');
+    fs.mkdirSync(oldLoginDir, { recursive: true });
+    fs.mkdirSync(path.dirname(oldCli), { recursive: true });
+    fs.writeFileSync(path.join(oldLoginDir, 'auth.json'), 'legacy-login-fixture');
+    fs.writeFileSync(oldCli, '// Legacy fixture entry; must never execute.\n');
+    for (const installer of installers) {
+      assert.equal(installer.codexInvocation, undefined);
+      assert.equal(installer.loginCodex, undefined);
+      assert.equal(installer.codexStatus, undefined);
+      await assert.rejects(installer.install('codex'), /未知模块/);
+      assert.deepEqual((await installer.status()).map(module => module.id), ['napcat', 'deepseek', 'summary', 'favorites']);
     }
-    const firstInvocation = first.codexInvocation();
-    const secondInvocation = second.codexInvocation();
-    assert.equal(firstInvocation.env.CODEX_HOME, path.join(firstDir, 'codex-home'));
-    assert.equal(secondInvocation.env.CODEX_HOME, path.join(secondDir, 'codex-home'));
-    assert.notEqual(firstInvocation.cwd, secondInvocation.cwd);
-    assert.notEqual(firstInvocation.args[0], secondInvocation.args[0]);
+    assert.equal(fs.readFileSync(path.join(oldLoginDir, 'auth.json'), 'utf8'), 'legacy-login-fixture');
+    assert.equal(fs.readFileSync(oldCli, 'utf8'), '// Legacy fixture entry; must never execute.\n');
+    assert.equal(fs.existsSync(path.join(secondDir, 'codex-home')), false);
+    assert.equal(fs.existsSync(path.join(secondDir, 'codex-workspace')), false);
     await first.install('summary');
     const record = JSON.parse(fs.readFileSync(path.join(firstDir, 'module-state.json'), 'utf8'));
     assert.equal(record.modules.summary.installed, true);

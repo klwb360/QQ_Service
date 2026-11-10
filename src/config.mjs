@@ -14,7 +14,6 @@ export const DEFAULT_CONFIG = {
   qq: { enabled: false, wsUrl: 'ws://127.0.0.1:3001', webUiUrl: 'http://127.0.0.1:6099' },
   models: {
     deepseek: { enabled: false, baseUrl: 'https://api.deepseek.com', model: 'deepseek-chat', maxTokens: 1024, temperature: 0.7 },
-    codex: { enabled: false, model: '', timeoutSeconds: 180 },
     apis: []
   },
   chat: { enabled: false, provider: 'deepseek', persona: '你是一个友好、简洁的群聊助手。', contextMessages: 12, social: structuredClone(DEFAULT_CHAT_SOCIAL) },
@@ -53,7 +52,7 @@ export const pluginSecretName = (id, key) => {
 export const isCredentialName = value => value === 'deepseekApiKey' || value === 'napcatToken'
   || Boolean(parsePluginSecretName(value)) || (typeof value === 'string' && value.startsWith('apiKey:') && isApiProviderId(value.slice(7)));
 export function getModelConfig(config, provider) {
-  if (provider === 'deepseek' || provider === 'codex') return config?.models?.[provider];
+  if (provider === 'deepseek') return config?.models?.deepseek;
   return isApiProviderId(provider) && Array.isArray(config?.models?.apis)
     ? config.models.apis.find(api => api.id === provider) : undefined;
 }
@@ -71,12 +70,12 @@ export function effectiveGroupTriggers(group) {
 // permissions. A new/malformed document must never gain legacy send rights.
 export function migrateConfig(input) {
   if (!input || typeof input !== 'object' || Array.isArray(input)) throw new ConfigError(['配置必须是 JSON 对象']);
-  if (input.schemaVersion === 2) return structuredClone(input);
-  if (input.schemaVersion !== 1) throw new ConfigError(['配置版本必须为 1 或 2']);
+  if (![1, 2].includes(input.schemaVersion)) throw new ConfigError(['配置版本必须为 1 或 2']);
+  if (input.schemaVersion === 2) return retireSubscription(structuredClone(input));
   const config = structuredClone(input);
   const connected = config.qq?.enabled === true;
   const hasRecipient = typeof config.ownerQQ === 'string' && Boolean(config.ownerQQ.trim()) && config.ownerQQ !== config.botQQ;
-  return {
+  return retireSubscription({
     ...config,
     schemaVersion: 2,
     permissions: { released: connected, privateReplies: connected && hasRecipient },
@@ -89,7 +88,19 @@ export function migrateConfig(input) {
       ? { ...group, read: true, send: group.mode === 'social' } : group) : config.groups,
     summary: { ...config.summary, sendToOwner: config.summary?.sendToOwner ?? true },
     favorites: { ...config.favorites, provider: config.summary?.provider ?? 'deepseek' },
-  };
+  });
+}
+
+// Read legacy documents without ever turning a retired subscription into a
+// billable API request. Existing API profiles keep their permissions intact.
+function retireSubscription(config) {
+  const selected = ['chat', 'summary', 'favorites'].filter(name => config[name]?.provider === 'codex');
+  const active = config.models?.codex?.enabled === true || selected.some(name => config[name].enabled === true);
+  if (config.models && typeof config.models === 'object' && !Array.isArray(config.models)) delete config.models.codex;
+  for (const name of selected) config[name] = { ...config[name], provider: '', enabled: false,
+    ...(name === 'summary' ? { scheduleEnabled: false, sendToOwner: false } : {}) };
+  if (active) config.permissions = { ...config.permissions, released: false, privateReplies: false };
+  return config;
 }
 
 export function validateConfig(input, { applying = false, hasSecret = () => false } = {}) {
@@ -143,9 +154,8 @@ export function validateConfig(input, { applying = false, hasSecret = () => fals
     } catch { issue(`qq.${key}`, `${key} 必须是无凭据、查询参数的本机 ${protocols[0]} 地址`, key === 'wsUrl' ? '在 NapCat 的 OneBot 服务中启用正向 WebSocket，再复制本机地址；Token 请填写在独立的凭据栏。' : '请填写 NapCat 本机 WebUI 地址，例如 http://127.0.0.1:6099。'); }
   }
   const models = section('models');
-  for (const key of ['deepseek', 'codex']) if (models[key] !== undefined && !object(models[key])) issue(`models.${key}`, `${key} 模型配置必须是对象`, '请通过模型设置重新保存此通道。');
+  if (models.deepseek !== undefined && !object(models.deepseek)) issue('models.deepseek', 'DeepSeek 模型配置必须是对象', '请通过模型设置重新保存此通道。');
   const ds = object(models.deepseek) ? models.deepseek : {};
-  const cx = object(models.codex) ? models.codex : {};
   result.models.deepseek.enabled = bool(ds.enabled, false, 'DeepSeek', 'models.deepseek.enabled');
   result.models.deepseek.baseUrl = string(ds.baseUrl, result.models.deepseek.baseUrl, 'DeepSeek 地址', 300, 'models.deepseek.baseUrl').replace(/\/+$/, '');
   try {
@@ -157,10 +167,6 @@ export function validateConfig(input, { applying = false, hasSecret = () => fals
   if (!/^[\w.:-]{1,120}$/.test(result.models.deepseek.model)) issue('models.deepseek.model', 'DeepSeek 模型名称无效', '请填写 deepseek-chat 或服务商提供的有效模型 ID。');
   result.models.deepseek.maxTokens = number(ds.maxTokens, 1024, '输出 token 上限', 128, 8192, true, 'models.deepseek.maxTokens');
   result.models.deepseek.temperature = number(ds.temperature, 0.7, '温度', 0, 2, false, 'models.deepseek.temperature');
-  result.models.codex.enabled = bool(cx.enabled, false, 'GPT 订阅', 'models.codex.enabled');
-  result.models.codex.model = string(cx.model, '', 'Codex 模型', 120, 'models.codex.model');
-  if (result.models.codex.model && !/^[\w.:-]{1,120}$/.test(result.models.codex.model)) issue('models.codex.model', 'Codex 模型名称无效', '可留空使用 Codex 默认模型，或填写官方 CLI 支持的模型 ID。');
-  result.models.codex.timeoutSeconds = number(cx.timeoutSeconds, 180, 'GPT 超时', 30, 600, true, 'models.codex.timeoutSeconds');
   if (models.apis !== undefined && !Array.isArray(models.apis)) issue('models.apis', '兼容 API 列表必须是数组', '请通过“添加 API”创建模型通道。');
   else if (models.apis?.length > 20) issue('models.apis', '每个账号最多配置 20 个兼容 API 通道', '请移除暂时不使用的 API 通道。');
   else if (Array.isArray(models.apis)) {
@@ -194,7 +200,8 @@ export function validateConfig(input, { applying = false, hasSecret = () => fals
   }
   const provider = (value, fallback, label, path) => {
     const selected = string(value, fallback, label, 68, path);
-    if (!getModelConfig(result, selected)) issue(path, `${label}引用了不存在的模型通道`, '请重新选择 DeepSeek、ChatGPT 订阅或已添加的兼容 API 通道。');
+    if (!selected && input[path.split('.')[0]]?.enabled !== true) return '';
+    if (!getModelConfig(result, selected)) issue(path, `${label}引用了不存在的模型通道`, '请在账号控制选择 DeepSeek、OpenAI 或其他已添加的 API 通道。');
     return selected;
   };
   // Packages are global; activation and plain scalar settings belong to this

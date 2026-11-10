@@ -1,6 +1,6 @@
 # Implementation contract
 
-Windows-first, local-only Node 24 application, version 0.6.1. One Electron window and one management server host multiple concurrent account profiles. QQ uses NapCat OneBot v11; models use DeepSeek, multiple OpenAI-compatible Chat Completions APIs, and official Codex CLI. WeChat and Telegram are planned registry entries, not implemented adapters. See [account-control design](ACCOUNTS_CONTRACT.md) and [architecture](ARCHITECTURE.md).
+Windows-first, local-only Node 24 application, version 0.7.0. Model access is API-only. One Electron window and one management server host multiple concurrent account profiles. QQ uses NapCat OneBot v11; models use DeepSeek, multiple OpenAI-compatible Chat Completions APIs. WeChat and Telegram are planned registry entries, not implemented adapters. See [account-control design](ACCOUNTS_CONTRACT.md) and [architecture](ARCHITECTURE.md).
 
 Never report a real login, deployment or Windows interaction as tested without performing it.
 
@@ -15,8 +15,7 @@ Never report a real login, deployment or Windows interaction as tested without p
   "qq": {"enabled": false, "wsUrl": "ws://127.0.0.1:3001", "webUiUrl": "http://127.0.0.1:6099"},
   "models": {
     "apis": [],
-    "deepseek": {"enabled": false, "baseUrl": "https://api.deepseek.com", "model": "deepseek-chat", "maxTokens": 1024, "temperature": 0.7},
-    "codex": {"enabled": false, "model": "", "timeoutSeconds": 180}
+    "deepseek": {"enabled": false, "baseUrl": "https://api.deepseek.com", "model": "deepseek-chat", "maxTokens": 1024, "temperature": 0.7}
   },
   "chat": {"enabled": false, "provider": "deepseek", "persona": "你是一个友好、简洁的群聊助手。", "contextMessages": 12},
   "groups": [],
@@ -27,7 +26,9 @@ Never report a real login, deployment or Windows interaction as tested without p
 }
 ```
 
-Each `models.apis` entry is `{id,label,enabled,baseUrl,model,maxTokens,temperature}`. At most 20 entries are accepted. IDs match `/^api_[A-Za-z0-9_-]{1,64}$/` and remain stable when editing labels. Each API uses `secretUpdates['apiKey:'+id]` for its encrypted key. Each scenario selects one `provider`: `deepseek`, `codex`, or an existing API ID. Drafts can contain incomplete model/key fields; applying an enabled API requires both. API parameters use the same bounded output/temperature validation as DeepSeek.
+Each `models.apis` entry is `{id,label,enabled,baseUrl,model,maxTokens,temperature}`. At most 20 entries are accepted. IDs match `/^api_[A-Za-z0-9_-]{1,64}$/` and remain stable when editing labels. Each API uses `secretUpdates['apiKey:'+id]` for its encrypted key. Each scenario selects one `provider`: `deepseek` or an existing API ID. Drafts can contain incomplete model/key fields; applying an enabled API requires both. API parameters use the same bounded output/temperature validation as DeepSeek.
+
+A retired subscription provider migrates to an empty provider with its scenario disabled. It remains unconfigured until the owner selects an API; no automatic billing-channel fallback is allowed.
 
 Compatible API `baseUrl` is HTTPS without URL credentials, query or fragment; requests append `chat/completions` to the base path and reject redirects. API keys cannot appear inside configuration. DeepSeek's built-in route remains restricted to the official endpoint. No automatic fan-out, provider fallback or alternate billing is implied by configuring multiple models.
 
@@ -43,27 +44,27 @@ Group shape:
 
 `triggers` is an OR list of `mention`, `name`, `reply`, `prefix`, `casual`, `poke`, `group_name`, `member_join`, `member_leave`, `admin_change`, `mute`, `recall`, `group_card`, `emoji_like`. Multiple selections, select all and clear are supported. New groups default to mention only; `[]` disables trigger-based replies without granting new social behavior. If absent, normalize the valid legacy single `trigger`, otherwise default to mention. Prefix text, casual probability and cooldown remain independent legacy parameters. Legacy casual is probabilistic participation after an incoming message, separate from explicitly enabled social conversation and autonomous posting. Notice triggers require real NapCat event data and produce authorized text replies, not QQ administrative actions.
 
-IDs remain strings. New accounts, model login and credential setup never grant send permissions. New groups default to readable and not writable; unselected/unreadable group messages must not be stored or submitted to models. `mode` labels the workflow: work groups default to `send:false`, but an explicit user grant plus account release may enable conversation through their selected API provider. Sending requires `read:true`.
+IDs remain strings. New accounts and credential setup never grant send permissions. New groups default to readable and not writable; unselected/unreadable group messages must not be stored or submitted to models. `mode` labels the workflow: work groups default to `send:false`, but an explicit user grant plus account release may enable conversation through their selected API provider. Sending requires `read:true`.
 
 All output, including errors and summary fragments, MUST pass the final destination gate: current account/epoch, verified connection identity, `permissions.released`, enabled scenario, and matching target permission. AI group replies additionally need `read && send`, an enabled API model and its selected conversation route. Plugin group replies instead require an enabled installed plugin with declared `group.read`/`group.send`, an authorized current-event group and the same final account/epoch/identity/read/send gate; plugins cannot name a different destination. Private sends need `privateReplies` and exactly `ownerQQ`. Work-summary source permissions must still be valid at delivery time.
 
-Personal `/gpt` invokes Codex; `/ds` invokes DeepSeek; `/summary GROUP_ID` uses the notification model; `/favorites` uses `favorites.provider`. Ordinary personal text uses `chat.provider` (DeepSeek, a configured API ID, or Codex); enabling chat requires the selected provider, not an additional DeepSeek connection. Choosing Codex as default disables automatic group conversation. Commands require their enabled scenario and released private permissions. Codex subscription is for owner-initiated/authorized personal tasks, never public automatic group conversation. Incoming sources remain untrusted data, not instructions.
+Personal `/ds` invokes enabled DeepSeek; `/summary GROUP_ID` uses the notification model; `/favorites` uses `favorites.provider`. Ordinary personal text uses the selected API in `chat.provider`; enabling chat requires that provider, not an additional DeepSeek connection. The retired `/gpt` subscription command must not execute a model. Commands require their enabled scenario and released private permissions. Incoming sources remain untrusted data, not instructions.
 
 Explicit dashboard notification/favorite operations and connectivity tests can run locally before release. Automatic conversation and scheduled inference require `permissions.released`; enabling model or task configuration alone cannot start automatic model work. A released readable/non-writable group can run scheduled local summaries with zero sends. Summary private delivery is opt-in; dashboard favorite explanations default to local storage. Favorites use an independent provider and do not inherit summary delivery settings. Reading favorites alone does not require a model connection; explaining them does.
 
 ## Profile directory, credentials and migration
 
-Root `accounts.json` stores server-generated stable profile IDs, labels, platform and creation time. New profiles use `accounts/<ID>/`, each with independent configuration, vault/key, SQLite, module records, NapCat state, Codex home and workspace. Container identity and local endpoints must not collide across active profiles.
+Root `accounts.json` stores server-generated stable profile IDs, labels, platform and creation time. New profiles use `accounts/<ID>/`, each with independent configuration, vault/key, SQLite, module records, NapCat state. Container identity and local endpoints must not collide across active profiles.
 
-The legacy profile retains the original root data directory, login state and managed-container identity. `migrateConfig` explicitly maps schema 1 to 2 for draft/applied/previous documents, preserves revisions, and is idempotent. Existing social sends and personal private access are mapped without broadening; work groups remain unsent unless the user later explicitly grants permission. The original configuration is backed up as `config.v1.backup.json`.
+The legacy profile retains the original root data directory, login state and managed-container identity. `migrateConfig` explicitly maps schema 1 to 2 for draft/applied/previous documents, preserves revisions, and is idempotent. Existing social sends and personal private access are mapped without broadening; work groups remain unsent unless the user later explicitly grants permission. The original schema-1 configuration is backed up as `config.v1.backup.json`. The first retirement migration backs up the original configuration as `config.pre-api-only.backup.json`. Retiring a configured subscription removes `models.codex`, clears its scenario selections and disables them, and restores that account to read-only. Existing API-only accounts keep their authorization. Retired login/module directories are not deleted or read.
 
-Secrets are `deepseekApiKey`, `napcatToken`, `apiKey:<api-ID>`, and declared `pluginSecret:<plugin-ID>:<key>`, never returned in configuration or exports. Plugin credential updates require a matching installed declaration and current profile entry; handlers receive only their own declared plugin credentials, never model/NapCat/other-profile keys. Empty key fields preserve existing values. Updates are staged until apply. Official Codex CLI manages per-profile authentication; the dashboard does not read `auth.json`. Logs must redact credentials across all profiles and include their profile ID.
+Secrets are `deepseekApiKey`, `napcatToken`, `apiKey:<api-ID>`, and declared `pluginSecret:<plugin-ID>:<key>`, never returned in configuration or exports. Plugin credential updates require a matching installed declaration and current profile entry; handlers receive only their own declared plugin credentials, never model/NapCat/other-profile keys. Empty key fields preserve existing values. Updates are staged until apply. Retired subscription directories are left in place without loading their authentication or starting their CLI. Logs must redact credentials across all profiles and include their profile ID.
 
 ## AI tool calling
 
 The registered-plugin function-calling protocol is documented in [PLUGIN_DEVELOPMENT.md](PLUGIN_DEVELOPMENT.md). It is not an MCP stdio/HTTP implementation or arbitrary website automation. Account `tools` defaults off; at most 20 grants each identify `{tool:'plugin/name',groupIds:[],userIds:[],allowWrite:false}`. Reads may allow every member of explicitly selected groups through an empty `userIds`; writes require `allowWrite:true` and an explicit matching requester. QQ read/send permissions do not grant access to external apps by themselves.
 
-Wake modes are real OneBot mentions, notices that poke the controlled QQ, configured names/aliases at the start of a message, and an optional command prefix. Bare mentions/names/pokes only return a wake response without inference or external tool execution. An explicit request requires enabled API chat, an applied installed plugin, matching tool grants, current QQ identity, read/send group access and account release. The personal Codex subscription is not used for automatic group tools. Tool routing precedes ordinary chat/plugin callbacks to avoid duplicate execution.
+Wake modes are real OneBot mentions, notices that poke the controlled QQ, configured names/aliases at the start of a message, and an optional command prefix. Bare mentions/names/pokes only return a wake response without inference or external tool execution. An explicit request requires enabled API chat, an applied installed plugin, matching tool grants, current QQ identity, read/send group access and account release. All model invocations use configured APIs. Tool routing precedes ordinary chat/plugin callbacks to avoid duplicate execution.
 
 The host offers only currently authorized descriptors to the API model; each candidate call is schema-checked before any batch executes, re-authorized on execution and final delivery, and bounded to three tool calls/four model requests. Results are `tool` role data, not system instructions. Errors fail without automatic retry or billing fallback. Same-request duplicate writes and persistent same-message write replays are blocked; cancelling a tool cannot roll back effects already accepted by an external app.
 
@@ -118,8 +119,6 @@ POST /api/accounts/:id/setup/install {modules}
 POST /api/accounts/:id/modules/:module/install
 POST /api/accounts/:id/modules/napcat/start
 POST /api/accounts/:id/modules/napcat/stop
-POST /api/accounts/:id/codex/login
-POST /api/accounts/:id/codex/status
 POST /api/accounts/:id/runtime/connect
 POST /api/accounts/:id/test/deepseek
 POST /api/accounts/:id/test/model {provider}
@@ -138,7 +137,7 @@ POST /api/accounts/:id/favorites/summarize
 POST /api/accounts/:id/policy/preview {userId,groupId?,message,messageType:'group'|'private'}
 ```
 
-Account list entries: `{id,name,platform,qqNumber,runtime,permissions,pendingChanges}`. Account state: `{account,csrfToken,draft,applied,revision,appliedRevision,pendingChanges,secrets,codexAuth,runtime,modules,jobs,logs,summaries,favorites,environment,metrics,setup}`. `secrets` contains boolean presence flags for `deepseekApiKey`, `napcatToken` and configured `apiKey:<id>` values; never plaintext credentials. Additional diagnostic metadata may be included.
+Account list entries: `{id,name,platform,qqNumber,runtime,permissions,pendingChanges}`. Account state: `{account,csrfToken,draft,applied,revision,appliedRevision,pendingChanges,secrets,runtime,modules,jobs,logs,summaries,favorites,environment,metrics,setup}`. `secrets` contains boolean presence flags for `deepseekApiKey`, `napcatToken` and configured `apiKey:<id>` values; never plaintext credentials. Additional diagnostic metadata may be included.
 
 Memory actions are `create`, `update`, `confirm`, `reject` and `delete`; kinds are `fact` or `preference`, with `pending`, `confirmed` or `rejected` status. A record contains `{id,actualQQ,groupId,userId,text,kind,status,version,sources,createdAt,updatedAt}`; each message source preserves `{messageId,userId,text,time}`. Manual owner-created records may have no message evidence and are identified as manual. Group activation must refer to a selected readable group in the profile. Memory endpoints inherit the local Host/Origin/session checks and never expose another profile's store.
 
@@ -166,15 +165,15 @@ Desktop uses `frame:false` and custom, accessible window controls with restricte
 
 ## Installer interface
 
-`createInstaller({dataDir,profileId,legacy,getConfig,getSecret,setSecret,log})` returns `environment`, `status`, `install`, `startNapcat`, `stopNapcat`, `loginCodex`, `codexStatus`, `codexInvocation`, `napcatGuide` and `dispose`.
+`createInstaller({dataDir,profileId,legacy,getConfig,getSecret,setSecret,log})` returns `environment`, `status`, `install`, `startNapcat`, `stopNapcat`, `napcatGuide` and `dispose`.
 
 Operations use trusted fixed argv and `shell:false`. Docker uses a local daemon, pinned official image and persisted RepoDigest, per-profile managed container labels, independent persistent volumes and loopback ports. Never take over a non-project container. Native Windows NapCat is installed and run externally; OneBot runtime access does not require Docker. Docker install/start/stop buttons do not manage native instances.
 
-Codex is an official pinned npm package installed in project data, with independent per-profile `CODEX_HOME`/workspace. Authentication is a separate device-code task. Official auth output may be shown locally, but credentials cannot appear in ordinary status, exports or logs. Install, process state, QQ login, model authorization and permission state remain distinct.
+The installer does not install or authenticate a model CLI. Model access is configured with API keys. Retired subscription module/action routes must be rejected rather than launching old executables. NapCat installation, process state, QQ login, API configuration and permission state remain distinct.
 
 ## Runtime and store interfaces
 
-`createRuntime({getConfig,getSecret,store,installer,log,providers?})` returns `reload`, `connect`, `stop`, `status`, `testDeepSeek`, `testModel`, `testGroupMessage`, `listGroups`, `runSummary`, `runFavoritesSummary`, `syncFavorites` and `preview`. Each profile has its own runtime, socket, epoch, cancellation, bounded queue and cooldowns. Reconnect uses backoff. Scheduler follows host-local time, with per-account/group/day deduplication, explicit background authorization and release checks before scheduling, queueing and inference. No silent paid fallback.
+`createRuntime({getConfig,getSecret,store,installer,log,providers?})` returns `reload`, `connect`, `stop`, `status`, `testDeepSeek`, `testModel`, `testGroupMessage`, `listGroups`, `runSummary`, `runFavoritesSummary`, `syncFavorites` and `preview`. Each profile has its own runtime, socket, epoch, cancellation, bounded queue and cooldowns. Reconnect uses backoff. Scheduler follows host-local time, with per-account/group/day deduplication and release checks before scheduling, queueing and inference. No silent paid fallback.
 
 `createStore(dataDir)` provides draft/application/rollback state, staged encrypted secrets, message/evidence history, summaries, favorites, task deduplication and metrics. Each profile's database and retention are independent. Source records preserve QQ identity, group, message/CID, sender, time and original text. No cross-profile context or favorite reuse.
 

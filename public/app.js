@@ -37,7 +37,6 @@
   let currentScenarioTab = 'tasks';
   let dialogResolve = null;
   let consecutiveFailures = 0;
-  let codexLoginStatus = null;
   let expandedAccountId = '';
   const setupSteps = [
     ['identity', '账号与 AI'], ['connection', '连接 QQ'],
@@ -81,7 +80,7 @@
   function rememberEditor() {
     if (!selectedAccountId) return;
     const previous = editors.get(selectedAccountId) ?? {};
-    editors.set(selectedAccountId, { ...previous, state, draft, dirty, editVersion, secretUpdates, codexLoginStatus, profileName: $('#account-profile-name').value, summaryGroup: $('#summary-group').value });
+    editors.set(selectedAccountId, { ...previous, state, draft, dirty, editVersion, secretUpdates, profileName: $('#account-profile-name').value, summaryGroup: $('#summary-group').value });
   }
   function adoptEditor(id, { populate = true } = {}) {
     const editor = editors.get(id) ?? {};
@@ -90,7 +89,6 @@
     dirty = editor.dirty ?? false;
     editVersion = editor.editVersion ?? 0;
     secretUpdates = editor.secretUpdates ?? {};
-    codexLoginStatus = editor.codexLoginStatus ?? null;
     if (populate) populateForm();
   }
   function markDirty(editedElement = document.activeElement) {
@@ -472,7 +470,7 @@
     else if (environment && typeof environment === 'object') {
       checks = Object.entries(environment).filter(([key, value]) => !['checkedAt', 'platform', 'arch', 'message', 'setupGuide', 'dockerInstallUrl'].includes(key) && value !== null).map(([key, value]) => typeof value === 'object' ? { name: key, ...value } : { name: key, detail: String(value), status: typeof value === 'boolean' ? value : 'unknown' });
     }
-    const names = { node: 'Node.js', napcat: 'NapCat 本地启动文件', docker: 'Docker Desktop', codex: '官方 Codex CLI', platform: '操作系统', npm: 'npm', wsl: 'WSL 2' };
+    const names = { node: 'Node.js', napcat: 'NapCat 本地启动文件', docker: 'Docker Desktop', platform: '操作系统', npm: 'npm', wsl: 'WSL 2' };
     $('#environment-checks').innerHTML = checks.length ? checks.map((check) => {
       const name = check.name ?? names[check.id] ?? check.id ?? check.label ?? '环境检查';
       const status = check.status ?? (check.name === 'docker' ? (check.running && check.linuxContainers ? 'ready' : check.installed ? 'warning' : 'missing') : check.supported !== undefined ? check.supported : check.ok !== undefined ? check.ok : check.available !== undefined ? check.available : check.installed !== undefined ? (check.installed ? 'installed' : 'missing') : 'unknown');
@@ -493,14 +491,11 @@
     const sendTargets = groups.filter((group) => group.send === true).length;
     const writable = Array.isArray(runtime.permissions?.writableGroups) ? runtime.permissions.writableGroups.length : 0;
     const released = state?.applied?.permissions?.released === true;
-    const auth = state?.codexAuth?.loggedIn !== null && state?.codexAuth?.loggedIn !== undefined ? state.codexAuth : codexLoginStatus;
     $('#runtime-badge').textContent = currentPage === 'overview' ? `${accounts.length} 个账号 · ${accounts.filter((account) => account.runtime?.connected === true || account.runtime?.connectionState === 'connected').length} 个已连接` : selectedAccountId ? `${accountName()} · ${label}` : '尚无账号';
     $('#runtime-badge').className = `heading-status ${color === 'green' ? 'connected' : color === 'red' ? 'error' : ''}`;
     $('#runtime-badge').classList.toggle('hidden', currentPage === 'settings');
-    $('#account-codex-status').textContent = auth?.message || (auth?.loggedIn === true ? '此账号的官方 Codex 已授权' : auth?.loggedIn === false ? '此账号尚未登录 Codex' : '此账号授权状态等待检查');
     $('#runtime-status').innerHTML = checkRow('QQ 实际连接', actualAccount ? `后台确认 QQ ${actualAccount}` : `尚未确认实际登录 QQ${configuredAccount ? `；配置 QQ ${configuredAccount}` : ''}`, qqStatus)
-      + checkRow('消息发送权限', released ? `已释放 · ${writable} 个满足任务条件的发送群 · 私聊${state?.applied?.permissions?.privateReplies ? '已授权指定接收 QQ' : '未授权'}` : '只读：不会因连接 QQ 或登录模型而发送消息', released ? 'ready' : 'disabled')
-      + checkRow('Codex 订阅授权', auth?.message ?? '请在账号控制中检查此账号的官方 CLI 授权', auth?.loggedIn === true ? 'logged_in' : auth?.loggedIn === false ? 'waiting_login' : 'unknown');
+      + checkRow('消息发送权限', released ? `已释放 · ${writable} 个满足任务条件的发送群 · 私聊${state?.applied?.permissions?.privateReplies ? '已授权指定接收 QQ' : '未授权'}` : '只读：不会因连接 QQ 或配置模型而发送消息', released ? 'ready' : 'disabled');
     $('#runtime-details').textContent = JSON.stringify(runtime, null, 2);
     const connectedAccounts = accounts.filter((account) => account.runtime?.connected === true || account.runtime?.connectionState === 'connected').length;
     const stats = [
@@ -709,7 +704,6 @@
     const native = settings.mode !== 'docker';
     const known = [
       { id: 'napcat', name: 'NapCat · QQ 连接组件', kind: 'external', description: native ? '按官方说明安装，选择启动文件后即可直接打开。' : '通过 Docker 安装和管理此账号的 NapCat 容器。', icon: '⇄' },
-      { id: 'codex', name: '官方 Codex CLI', kind: 'external', description: '在此账号独立保存 ChatGPT / Codex 授权，用于本人指令与授权的整理任务。', icon: '✧' },
       { id: 'deepseek', name: 'DeepSeek 接入', kind: 'builtin', description: '此账号独立 API Key。配置模型不等于启用社交回复或释放消息权限。', path: 'models.deepseek.enabled', icon: '◈' },
       { id: 'summary', name: '通知汇总', kind: 'builtin', description: '此账号独立通知参数和任务模型；默认保存在本地，可另外授权指定私聊目标。', path: 'summary.enabled', icon: '▤' },
       { id: 'favorites', name: 'QQ 收藏读取', kind: 'builtin', description: '读取此账号的收藏列表与摘要，使用独立收藏模型进行本地整理。', path: 'favorites.enabled', icon: '☆' }
@@ -724,7 +718,6 @@
       else if (definition.id === 'napcat') actions = native
         ? '<button class="button button-secondary button-small" data-open-napcat-program>打开 NapCat</button><a class="module-help-link" href="#settings">选择启动文件 →</a>'
         : '<button class="button button-secondary button-small" data-module-action="install" data-module="napcat">安装 / 检查</button><button class="button button-quiet button-small" data-open-napcat-program>打开 NapCat</button><button class="button button-quiet button-small" data-module-action="stop" data-module="napcat">停止</button>';
-      else actions = '<button class="button button-secondary button-small" data-module-action="install" data-module="codex">安装 / 检查</button><button class="button button-quiet button-small" data-action="codex-login">当前账号授权 →</button>';
       const napcat = definition.id === 'napcat';
       const status = napcat && native ? module?.kind === 'native' ? actualStatus : settings.executablePath ? 'configured' : 'not_configured' : actualStatus;
       const version = napcat && native ? settings.executablePath || '在设置中选择 NapCat 启动文件' : builtin ? '启用功能仍受账号与消息权限约束' : module ? `版本 ${module.version || '未提供'} · ${module.installed ? '已安装' : '未确认安装'}` : '等待此账号的模块检查结果';
@@ -899,7 +892,7 @@
   }
   function jobsHTML(jobs, showOutput = true) {
     if (!jobs.length) return '<div class="empty-state"><strong>尚无任务记录</strong>安装、授权和操作后，实际执行结果会显示在这里。</div>';
-    const titles = { 'install-napcat': '安装 NapCat', 'install-codex': '安装 Codex CLI', 'codex-login': 'GPT 官方设备码授权', 'setup-install': '安装所选模块' };
+    const titles = { 'install-napcat': '安装 NapCat', 'setup-install': '安装所选模块' };
     return jobs.map((job) => {
       const status = job.status ?? job.state ?? 'unknown';
       const output = jobOutput(job);
@@ -912,7 +905,6 @@
     const jobs = getJobs();
     updateRecordHTML($('#recent-jobs'), jobsHTML(jobs.slice(0, 3), false));
     updateRecordHTML($('#module-jobs'), jobsHTML(jobs.slice(0, 5)));
-    updateRecordHTML($('#setup-codex-jobs'), jobsHTML(jobs.filter((job) => /codex|GPT|授权|设备|login/i.test([job.type, job.name, job.label, job.title].filter(Boolean).join(' '))).slice(0, 3)));
     updateRecordHTML($('#setup-connection-jobs'), jobsHTML(jobs.filter((job) => /napcat|setup-install|安装所选模块/i.test([job.type, job.name, job.label, job.title].filter(Boolean).join(' '))).slice(0, 3)));
     updateRecordHTML($('#all-jobs'), jobsHTML(jobs));
   }
@@ -931,7 +923,7 @@
       const group = state?.applied?.groups?.find((item) => item.id === String(summary.groupId));
       const delivery = typeof summary.delivery === 'object' ? summary.delivery.state ?? summary.delivery.status : summary.delivery;
       const deliveryLabels = { sent: '已发送本人', unknown: '发送结果不确定，请核对私聊', partially_sent: '部分已发送，请核对私聊', local_only: '仅保存在本地', saved: '仅保存在本地', not_requested: '仅保存在本地', pending: '等待发送', not_sent: '未发送', failed: '发送失败', skipped: '未发送' };
-      return `<article class="summary-item"><div class="summary-header"><div><strong>${escapeHTML(summary.groupName || group?.name || summary.groupId || '通知汇总')}</strong><div class="job-meta">${escapeHTML(formatTime(summary.createdAt))} · ${escapeHTML(summary.provider === 'codex' ? 'GPT 个人订阅' : summary.provider === 'deepseek' ? 'DeepSeek' : summary.provider ?? '模型未提供')}</div></div>${delivery ? `<span class="pill ${['unknown', 'partially_sent', 'failed'].includes(delivery) ? 'pill-orange' : 'pill-neutral'}">${escapeHTML(deliveryLabels[delivery] || delivery)}</span>` : ''}</div><div class="summary-body">${escapeHTML(summary.text)}</div>${String(summary.groupId ?? '').startsWith('favorites:') ? '<p class="field-note">此整理仅引用当前账号收藏的列表摘要，不包含已验证的全文、图片或附件。</p>' : ''}<details data-record-id="${escapeHTML(summary.id || summary.createdAt)}"><summary>查看 ${evidence.length} 条原文依据</summary><div class="evidence-list">${evidence.length ? evidence.map((item) => typeof item === 'string' ? `<div class="evidence-item">${escapeHTML(item)}</div>` : `<div class="evidence-item"><div class="evidence-meta">${item.cid !== undefined ? '收藏' : '消息'} ${escapeHTML(item.messageId ?? item.cid ?? item.id ?? '未提供')} · ${item.cid !== undefined ? '所属账号' : '发送者'} ${escapeHTML(item.accountId && item.cid !== undefined ? item.accountId : item.userId ?? item.source ?? '未提供')} · ${escapeHTML(formatTime(item.time ?? item.collectTime ?? item.createdAt))}</div>${escapeHTML(item.text ?? item.content ?? item.summary ?? JSON.stringify(item))}</div>`).join('') : '未返回依据。请核对原始通知。'}</div></details></article>`;
+      return `<article class="summary-item"><div class="summary-header"><div><strong>${escapeHTML(summary.groupName || group?.name || summary.groupId || '通知汇总')}</strong><div class="job-meta">${escapeHTML(formatTime(summary.createdAt))} · ${escapeHTML(summary.provider === 'codex' ? '历史模型（已停用）' : summary.provider === 'deepseek' ? 'DeepSeek' : summary.provider ?? '模型未提供')}</div></div>${delivery ? `<span class="pill ${['unknown', 'partially_sent', 'failed'].includes(delivery) ? 'pill-orange' : 'pill-neutral'}">${escapeHTML(deliveryLabels[delivery] || delivery)}</span>` : ''}</div><div class="summary-body">${escapeHTML(summary.text)}</div>${String(summary.groupId ?? '').startsWith('favorites:') ? '<p class="field-note">此整理仅引用当前账号收藏的列表摘要，不包含已验证的全文、图片或附件。</p>' : ''}<details data-record-id="${escapeHTML(summary.id || summary.createdAt)}"><summary>查看 ${evidence.length} 条原文依据</summary><div class="evidence-list">${evidence.length ? evidence.map((item) => typeof item === 'string' ? `<div class="evidence-item">${escapeHTML(item)}</div>` : `<div class="evidence-item"><div class="evidence-meta">${item.cid !== undefined ? '收藏' : '消息'} ${escapeHTML(item.messageId ?? item.cid ?? item.id ?? '未提供')} · ${item.cid !== undefined ? '所属账号' : '发送者'} ${escapeHTML(item.accountId && item.cid !== undefined ? item.accountId : item.userId ?? item.source ?? '未提供')} · ${escapeHTML(formatTime(item.time ?? item.collectTime ?? item.createdAt))}</div>${escapeHTML(item.text ?? item.content ?? item.summary ?? JSON.stringify(item))}</div>`).join('') : '未返回依据。请核对原始通知。'}</div></details></article>`;
     }).join('') : '<div class="empty-state"><strong>还没有通知汇总</strong>启用汇总并应用配置，然后在「场景与权限」中运行。</div>');
   }
   function renderFavorites() {
@@ -1015,8 +1007,7 @@
     if (!config) return [];
     return [
       ...(config.models?.deepseek?.enabled ? [{ id: 'deepseek', label: 'DeepSeek', config: config.models.deepseek, secret: 'deepseekApiKey' }] : []),
-      ...(config.models?.apis ?? []).filter((item) => item.enabled).map((item) => ({ id: item.id, label: item.label || '自定义 API', config: item, secret: `apiKey:${item.id}` })),
-      ...(config.models?.codex?.enabled ? [{ id: 'codex', label: 'ChatGPT / Codex', config: config.models.codex }] : [])
+      ...(config.models?.apis ?? []).filter((item) => item.enabled).map((item) => ({ id: item.id, label: item.label || '自定义 API', config: item, secret: `apiKey:${item.id}` }))
     ];
   }
   function vendorForApi(entry) {
@@ -1028,7 +1019,7 @@
     if (selection.startsWith('vendor:')) {
       const vendorId = selection.slice(7);
       const vendor = llmVendors.find((entry) => entry.id === vendorId);
-      if (!vendor) throw new Error('请选择列表中的模型来源。');
+      if (!vendor) throw new Error('请选择列表中的 API 模型来源。');
       let entry = config.models.apis.find((item) => vendorForApi(item) === vendorId);
       if (!entry) {
         if (config.models.apis.length >= 20) throw new Error('此账号已保存 20 个兼容接口，请选择一个已保存配置。');
@@ -1037,9 +1028,8 @@
       }
       provider = entry.id;
     }
-    if (provider && !['deepseek', 'codex'].includes(provider) && !config.models.apis.some((item) => item.id === provider)) throw new Error('所选模型配置已不存在，请重新选择。');
+    if (provider && provider !== 'deepseek' && !config.models.apis.some((item) => item.id === provider)) throw new Error('所选模型配置已不存在，请重新选择。');
     config.models.deepseek.enabled = provider === 'deepseek';
-    config.models.codex.enabled = provider === 'codex';
     config.models.apis.forEach((entry) => { entry.enabled = entry.id === provider; });
     if (provider) for (const task of ['chat', 'summary', 'favorites']) config[task].provider = provider;
     return provider;
@@ -1058,7 +1048,7 @@
     const select = $('#account-llm-source');
     const providers = configuredProviders();
     const entries = draft?.models?.apis ?? [];
-    const options = [{ value: '', label: providers.length > 1 ? '旧配置启用了多个模型，请明确选择一个' : '请选择一个模型来源' }, { value: 'deepseek', label: 'DeepSeek API', key: 'deepseek' }];
+    const options = [{ value: '', label: providers.length > 1 ? '旧配置启用了多个模型，请明确选择一个' : '请选择一个 API 模型来源' }, { value: 'deepseek', label: 'DeepSeek API', key: 'deepseek' }];
     const used = new Set();
     for (const vendor of llmVendors) {
       const matching = entries.filter((entry) => vendorForApi(entry) === vendor.id);
@@ -1067,7 +1057,6 @@
       if (first) used.add(first.id);
     }
     for (const entry of entries) if (!used.has(entry.id)) options.push({ value: entry.id, label: `已保存 · ${entry.label}` });
-    options.push({ value: 'codex', label: 'ChatGPT 订阅 / Codex', key: 'codex' });
     const html = options.map((option) => `<option value="${escapeHTML(option.value)}" ${option.value === '' ? 'disabled' : ''}>${escapeHTML(option.label)}</option>`).join('');
     if (select.innerHTML !== html) select.innerHTML = html;
     select.value = providers.length === 1 ? providers[0].id : '';
@@ -1096,10 +1085,15 @@
       $('#custom-api-cards').innerHTML = entries.map((entry, index) => `<section class="account-model-form custom-api-card hidden" data-api-card="${escapeHTML(entry.id)}" data-api-id="${escapeHTML(entry.id)}">
         <div class="form-grid"><label class="field field-wide">API Key <small class="api-secret-note"></small><input type="password" data-secret="apiKey:${escapeHTML(entry.id)}" autocomplete="new-password" value="${escapeHTML(secretUpdates[`apiKey:${entry.id}`] || '')}" placeholder="粘贴 API Key"></label><label class="field field-wide">模型名称<input data-config="models.apis.${index}.model" value="${escapeHTML(entry.model)}" spellcheck="false" placeholder="填写服务商提供的模型 ID"></label></div>
         <div class="account-model-tools"><button class="button button-secondary button-small" data-setup-model-test="${escapeHTML(entry.id)}">测试连接</button><div class="api-vendor-guide" data-api-guide></div></div>
+        <p class="field-note openai-api-project-note ${vendorForApi(entry) === 'openai' ? '' : 'hidden'}" data-openai-api-note>建议为机器人创建独立项目和 API Key。符合条件的 Pro 额度需先在官方 Billing 激活。<a href="https://platform.openai.com/settings/organization/projects" target="_blank" rel="noopener noreferrer">项目与密钥 ↗</a> · <a href="https://developers.openai.com/api/docs/guides/chatgpt-api-credits" target="_blank" rel="noopener noreferrer">领取 API 额度 ↗</a></p>
         <details class="account-advanced" ${vendorForApi(entry) === 'custom' ? 'open' : ''}><summary>接口与高级设置</summary><div class="form-grid"><label class="field field-wide">API 地址<input data-config="models.apis.${index}.baseUrl" value="${escapeHTML(entry.baseUrl)}" placeholder="https://api.example.com/v1" spellcheck="false"></label><label class="field field-wide">接口名称<input data-config="models.apis.${index}.label" value="${escapeHTML(entry.label)}" maxlength="80"></label><label class="field">最大输出 Token<input type="number" min="128" max="131072" data-config="models.apis.${index}.maxTokens" value="${escapeHTML(entry.maxTokens ?? 1024)}"></label><label class="field">Temperature<input type="number" min="0" max="2" step="0.1" data-config="models.apis.${index}.temperature" value="${escapeHTML(entry.temperature ?? .7)}"></label></div></details>
       </section>`).join('');
     }
-    $$('[data-api-card]').forEach((card) => card.classList.toggle('hidden', card.dataset.apiCard !== active));
+    $$('[data-api-card]').forEach((card) => {
+      card.classList.toggle('hidden', card.dataset.apiCard !== active);
+      const entry = entries.find(item => item.id === card.dataset.apiCard);
+      $('[data-openai-api-note]', card)?.classList.toggle('hidden', vendorForApi(entry) !== 'openai');
+    });
   }
   async function saveAccountProfile() {
     const id = requireAccount();
@@ -1113,11 +1107,7 @@
     acceptState(result, { accountId: id });
     toast(`「${name}」名称已保存；运行模型与权限保持原状。`);
   }
-  function authStatus() {
-    return state?.codexAuth?.loggedIn !== undefined && state?.codexAuth?.loggedIn !== null ? state.codexAuth : codexLoginStatus;
-  }
   function modelEvidence(provider) {
-    if (provider.id === 'codex') return JSON.stringify(provider.config) !== JSON.stringify(state?.applied?.models?.codex) ? ['订阅模型参数尚未应用，请先保存并应用', 'model_pending'] : authStatus()?.loggedIn === true ? ['官方 CLI 已确认授权', 'logged_in'] : ['尚未确认官方订阅授权，请在账号与 AI 中登录或检查状态', 'waiting_login'];
     if (!provider.config?.model) return ['请先填写模型名称', 'model_missing'];
     if (!secretUpdates[provider.secret] && !state?.secrets?.[provider.secret]) return ['尚未填写 API Key', 'model_missing'];
     if (secretUpdates[provider.secret]) return ['密钥已修改，需要保存、应用并重新测试', 'model_pending'];
@@ -1211,7 +1201,6 @@
       $('.api-secret-note', card).textContent = secretUpdates[`apiKey:${entry.id}`] ? '密钥已输入，尚未保存' : state.secrets?.[`apiKey:${entry.id}`] ? '已保存，留空保留' : '未设置';
     }
     $('#deepseek-model-card').classList.toggle('hidden', selectedProvider?.id !== 'deepseek');
-    $('#codex-model-card').classList.toggle('hidden', selectedProvider?.id !== 'codex');
     const issue = connection?.issue ?? runtime.issue;
     $('#setup-connection-result').innerHTML = verified ? `<p class="account-connection-ok">✓ QQ ${escapeHTML(actualQQ)} 已连接</p>` : `<p class="account-connection-pending">${escapeHTML(issue?.message ?? runtime.lastError ?? '在 NapCat 登录后，点击「连接并继续」。')}</p>`;
     if (issue?.action && !verified) $('#setup-connection-result').insertAdjacentHTML('beforeend', `<p class="connection-fix">下一步：${escapeHTML(issue.action)}</p>`);
@@ -1224,10 +1213,8 @@
     $('#setup-verification-checks').innerHTML = checkRow('QQ 连接', verified ? `QQ ${actualQQ}` : '请先连接 QQ', verified ? 'passed' : 'pending') + checkRow('AI', selectedProvider ? `${selectedProvider.label} · ${modelDescription}` : modelDescription, modelState) + checkRow('任务与权限', hasTask ? `${permissionSummary} · ${released ? '已启动' : '启动前保持只读'}` : '请先选择要启用的功能', hasTask ? released ? 'running' : 'ready' : 'pending');
     const modelAction = document.createElement('button');
     modelAction.type = 'button'; modelAction.className = 'button button-quiet button-small';
-    if (!selectedProvider || modelState === 'model_missing' || selectedProvider.id === 'codex' && modelState !== 'logged_in') {
+    if (!selectedProvider || modelState === 'model_missing') {
       modelAction.dataset.setupStep = 'identity'; modelAction.textContent = '配置 AI';
-    } else if (selectedProvider.id === 'codex') {
-      modelAction.dataset.action = 'codex-status'; modelAction.textContent = '检查登录';
     } else {
       modelAction.dataset.setupModelTest = selectedProvider.id;
       modelAction.textContent = modelState === 'passed' ? '重新测试' : '测试连接'; modelAction.disabled = modelState === 'testing';
@@ -1235,7 +1222,7 @@
     const modelRow = $$('#setup-verification-checks .check-row')[1];
     modelRow.insertBefore(modelAction, $('.pill', modelRow));
     const writable = (applied.groups ?? []).find((group) => group.read && group.send);
-    const testText = !verified ? '当前应先完成 QQ 连接：确认 NapCat 已扫码并启用正向 WebSocket 服务，再验证实际 QQ 身份。' : !hasTask ? 'QQ 已连接。请先启用一个功能：聊天、通知汇总或收藏整理，并保存应用。' : !released ? '任务已配置。下一步在“选定群与消息权限”选择群、设定读取 / 发送，再确认“启动此账号”。' : applied.chat?.enabled && applied.chat?.provider === 'codex' ? '当前使用 ChatGPT 订阅，仅处理本人请求及授权整理，不自动回复群消息。需要群内自动回复时，请改选 DeepSeek 等 API；需要私聊时，请使用已配置的私聊接收 QQ 发起请求。' : applied.chat?.enabled && writable ? `现在可在群 ${writable.name || writable.id} 中，用其他群成员账号${effectiveTriggers(writable).includes('prefix') ? `发送“${writable.prefix || '/ai'} 你好”` : effectiveTriggers(writable).includes('casual') && !effectiveTriggers(writable).includes('mention') ? '发一条普通消息（概率参与可能不会立即回复，首次验证推荐改为 @ 触发）' : `@ QQ ${actualQQ} 并发送“你好”`}。查看下方接收、模型和发送计数，再核对群中回复。` : applied.summary?.enabled ? '现在可在“账号功能参数”中，选择已应用的可读工作群并运行一次通知汇总。需先在群中产生可读消息。未授权私聊发送时，结果在任务与记录中查看。' : applied.favorites?.enabled ? '现在可在“账号功能参数”中点击“读取此账号收藏”，然后整理已读取收藏。结果可在任务与记录中核对。' : '此账号已启动。请按已授权的触发条件发送测试消息，并查看任务与记录。';
+    const testText = !verified ? '当前应先完成 QQ 连接：确认 NapCat 已扫码并启用正向 WebSocket 服务，再验证实际 QQ 身份。' : !hasTask ? 'QQ 已连接。请先启用一个功能：聊天、通知汇总或收藏整理，并保存应用。' : !released ? '任务已配置。下一步在“选定群与消息权限”选择群、设定读取 / 发送，再确认“启动此账号”。' : applied.chat?.enabled && writable ? `现在可在群 ${writable.name || writable.id} 中，用其他群成员账号${effectiveTriggers(writable).includes('prefix') ? `发送“${writable.prefix || '/ai'} 你好”` : effectiveTriggers(writable).includes('casual') && !effectiveTriggers(writable).includes('mention') ? '发一条普通消息（概率参与可能不会立即回复，首次验证推荐改为 @ 触发）' : `@ QQ ${actualQQ} 并发送“你好”`}。查看下方接收、模型和发送计数，再核对群中回复。` : applied.summary?.enabled ? '现在可在“账号功能参数”中，选择已应用的可读工作群并运行一次通知汇总。需先在群中产生可读消息。未授权私聊发送时，结果在任务与记录中查看。' : applied.favorites?.enabled ? '现在可在“账号功能参数”中点击“读取此账号收藏”，然后整理已读取收藏。结果可在任务与记录中核对。' : '此账号已启动。请按已授权的触发条件发送测试消息，并查看任务与记录。';
     $('#setup-test-guide').textContent = testText;
     const metrics = runtime.metrics ?? {};
     $('#setup-live-metrics').innerHTML = [['received','已接收消息'],['selected','命中处理规则'],['modelCalls','模型调用'],['sent','已发送消息']].map(([key,label]) => `<div><strong>${Number(metrics[key] || 0)}</strong><span>${label}</span></div>`).join('');
@@ -1244,14 +1231,14 @@
     const testOptions = '<option value="">选择已应用且允许发送的群</option>' + testGroups.map((group) => `<option value="${escapeHTML(group.id)}">${escapeHTML(group.name || group.id)}</option>`).join('');
     if (groupSelect.innerHTML !== testOptions) groupSelect.innerHTML = testOptions;
     groupSelect.value = testGroups.some((group) => group.id === previousGroup) ? previousGroup : testGroups[0]?.id || '';
-    $('#setup-send-test').disabled = !released || !verified || !testGroups.length || !applied.chat?.enabled || applied.chat?.provider === 'codex';
+    $('#setup-send-test').disabled = !released || !verified || !testGroups.length || !applied.chat?.enabled;
     const qqTest = state.setup?.verification ?? runtime.qqTest;
     if (qqTest?.tested || qqTest?.sent) $('#setup-send-test-result').textContent = `已实际发送连接测试到群 ${qqTest.groupId} · ${formatTime(qqTest.testedAt)}，请在 QQ 群中核对。`;
     else $('#setup-send-test-result').textContent = '';
     $('#scenario-account-guidance').textContent = `当前配置：${accountName()} · ${released ? '已启动指定范围' : '默认只读，最后确认后启动'}`;
   }
   function providerLabel(id) {
-    return id === 'deepseek' ? 'DeepSeek API' : id === 'codex' ? 'ChatGPT / Codex' : (draft?.models?.apis ?? []).find((entry) => entry.id === id)?.label || id || '未选择模型';
+    return id === 'deepseek' ? 'DeepSeek API' : id === 'codex' ? '历史模型（已停用）' : (draft?.models?.apis ?? []).find((entry) => entry.id === id)?.label || id || '未选择模型';
   }
   async function testSetupModel(provider) {
     const id = requireAccount();
@@ -1260,7 +1247,7 @@
     const version = editor.editVersion, revision = editor.state.revision, appliedRevision = editor.state.appliedRevision;
     const needsApply = editor.dirty || editor.state.pendingChanges || editor.state.secretsPendingChanges || taskModelNeedsSync(editor.draft);
     const preparation = needsApply ? '<p>将保存并应用这个账号当前参数；应用后账号恢复只读，发送需要重新启动账号授权。</p>' : '<p>将使用当前已应用的模型参数测试，不改变账号发送权限。</p>';
-    if (!await openDialog(`测试 ${providerLabel(provider)}`, `${preparation}<p>向所选模型发送一次小型请求，可能消耗 API 费用或订阅额度；测试不向 QQ 发送消息。</p>`, needsApply ? '保存并测试' : '开始测试')) return;
+    if (!await openDialog(`测试 ${providerLabel(provider)}`, `${preparation}<p>向所选模型发送一次小型请求，可能消耗 API 额度或产生费用；测试不向 QQ 发送消息。</p>`, needsApply ? '保存并测试' : '开始测试')) return;
     const current = editors.get(id);
     if (!current || current.editVersion !== version || current.state.revision !== revision || current.state.appliedRevision !== appliedRevision) throw new Error('确认期间账号参数发生变化，请重新检查后再测试。');
     if (needsApply) await applyConfig(id, { advanceSetup: false });
@@ -1313,7 +1300,7 @@
       const title = closeBehavior === 'quit' ? '退出应用' : '关闭到托盘';
       $('#window-quit').title = title; $('#window-quit').setAttribute('aria-label',title);
       if (desktop.isDesktop) {
-        $('.page-footer span:last-child').textContent = closeBehavior === 'quit' ? '模型授权 ≠ 发送授权 · 关闭窗口即退出' : '模型授权 ≠ 发送授权 · 关闭窗口留在托盘';
+        $('.page-footer span:last-child').textContent = closeBehavior === 'quit' ? '模型配置 ≠ 发送授权 · 关闭窗口即退出' : '模型配置 ≠ 发送授权 · 关闭窗口留在托盘';
         $('.sidebar-note small').textContent = closeBehavior === 'quit' ? '各账号独立运行；关闭窗口后退出应用，停止所有后台。' : '各账号独立运行；关闭窗口后留在托盘，退出停止所有后台。';
       }
     }
@@ -1449,7 +1436,7 @@
     const sends = snapshot.groups?.filter((group) => group.send === true) ?? [];
     const targets = sends.length ? sends.map((group) => `<li>${escapeHTML(group.name || group.id)}（${escapeHTML(group.id)}）</li>`).join('') : '<li>不向任何群发送</li>';
     const privateTarget = snapshot.permissions?.privateReplies && snapshot.ownerQQ ? `指定 QQ ${escapeHTML(snapshot.ownerQQ)}` : '未允许私聊发送';
-    if (!await openDialog(`释放「${accountName(id)}」的范围权限`, `<p>将保存并应用这个账号当前的任务和权限配置，并校验实际登录 QQ ${escapeHTML(snapshot.botQQ || '尚未填写')}。</p><div class="apply-preview"><p>允许读取：${reads.length} 个群</p><p>允许群发送：</p><ul>${targets}</ul><p>私聊：${privateTarget}</p><p>聊天与回复：${snapshot.chat?.enabled ? (snapshot.chat?.provider === 'codex' ? '已启用 · Codex 仅本人私聊' : `已启用 · ${escapeHTML(providerLabel(snapshot.chat?.provider))}`) : '未启用'}；通知汇总：${snapshot.summary?.enabled ? '已启用' : '未启用'}；收藏：${snapshot.favorites?.enabled ? '已启用' : '未启用'}。</p></div><p>仅释放本次列出的范围。其他账号的配置和权限不受影响。</p>`, '保存并释放此账号权限')) return;
+    if (!await openDialog(`释放「${accountName(id)}」的范围权限`, `<p>将保存并应用这个账号当前的任务和权限配置，并校验实际登录 QQ ${escapeHTML(snapshot.botQQ || '尚未填写')}。</p><div class="apply-preview"><p>允许读取：${reads.length} 个群</p><p>允许群发送：</p><ul>${targets}</ul><p>私聊：${privateTarget}</p><p>聊天与回复：${snapshot.chat?.enabled ? `已启用 · ${escapeHTML(providerLabel(snapshot.chat?.provider))}` : '未启用'}；通知汇总：${snapshot.summary?.enabled ? '已启用' : '未启用'}；收藏：${snapshot.favorites?.enabled ? '已启用' : '未启用'}。</p></div><p>仅释放本次列出的范围。其他账号的配置和权限不受影响。</p>`, '保存并释放此账号权限')) return;
     if (editors.get(id).dirty || taskModelNeedsSync(editors.get(id).draft)) await saveDraft({ forApply: true, accountId: id });
     if (editors.get(id).dirty) throw new Error('此账号仍有新编辑，请重新检查权限后再释放。');
     const revision = editors.get(id).state.revision;
@@ -1482,7 +1469,7 @@
     acceptState(result.state, { accountId: result.account.id, replaceDraft: true });
     const id = result.account.id;
     const editor = editors.get(id);
-    chooseSingleLlm(editor.draft, ['deepseek', 'codex', ''].includes(source) ? source : `vendor:${source}`);
+    chooseSingleLlm(editor.draft, ['deepseek', ''].includes(source) ? source : `vendor:${source}`);
     editor.dirty = true; editor.editVersion = (editor.editVersion ?? 0) + 1;
     expandedAccountId = id;
     await selectAccount(id);
@@ -1522,22 +1509,6 @@
   const actions = {
     'environment-check': () => mutate('/environment/check', {}, '环境检查已返回。'),
     'runtime-connect': () => mutate('/runtime/connect', {}, '连接请求已提交，请查看后台确认的 QQ 身份。'),
-    'codex-login': async () => {
-      const id = requireAccount();
-      await mutate('/codex/login', {}, '官方设备码授权任务已启动，请查看此账号任务输出中的地址与设备码。', id);
-      if (selectedAccountId === id && currentPage !== 'connections') navigate('modules');
-    },
-    'codex-status': async () => {
-      const id = requireAccount();
-      const result = await mutate('/codex/status', undefined, undefined, id);
-      const status = result.loggedIn !== undefined ? result : result.status ?? result.codexAuth;
-      if (status && typeof status === 'object') {
-        const editor = editors.get(id);
-        editor.codexLoginStatus = status;
-        if (selectedAccountId === id) { codexLoginStatus = status; renderRuntime(); renderSetupGuide(); }
-        toast(`「${accountName(id)}」${status.message || (status.loggedIn ? '官方 CLI 报告已授权。' : '尚未确认授权。')}`, status.loggedIn ? 'success' : 'info');
-      }
-    },
     'test-deepseek': async () => {
       const id = requireAccount();
       if (!await openDialog(`测试「${accountName(id)}」DeepSeek`, '<p>使用这个账号已应用的 API Key 与模型发送一次小型请求，可能产生 API 费用。</p><p>此测试不发送 QQ 消息；不会释放发送权限。</p>', '测试此账号 API')) return;
@@ -1942,10 +1913,10 @@
   });
   window.addEventListener('hashchange', () => navigate(location.hash.slice(1)));
   if (window.qqBridgeDesktop?.isDesktop) {
-    $('.sidebar-version span').textContent = window.qqBridgeDesktop.version || '0.6.1';
+    $('.sidebar-version span').textContent = window.qqBridgeDesktop.version || '0.7.0';
     $('.sidebar-note small').textContent = '各账号独立运行；关闭窗口后留在托盘，退出停止所有后台。';
     $('.page-footer span').textContent = 'QQ_Service · Windows 桌面应用';
-    $('.page-footer span:last-child').textContent = '模型授权 ≠ 发送授权 · 关闭窗口留在托盘';
+    $('.page-footer span:last-child').textContent = '模型配置 ≠ 发送授权 · 关闭窗口留在托盘';
   }
   window.QQMemoryUI?.create({
     getAccounts: () => accounts,

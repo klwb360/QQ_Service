@@ -1,50 +1,56 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { EventEmitter } from 'node:events';
-import { PassThrough } from 'node:stream';
 import { createProviders } from '../src/providers.mjs';
 
-function mockSpawner(events, inspect = () => {}) {
-  return (command, args, options) => {
-    inspect(command, args, options);
-    const child = new EventEmitter(); child.exitCode = null; child.killed = false;
-    child.stdin = new PassThrough(); child.stdout = new PassThrough(); child.stderr = new PassThrough();
-    child.kill = () => { child.killed = true; child.exitCode = 1; return true; };
-    child.stdin.on('finish', () => {
-      setImmediate(() => {
-        for (const event of events) child.stdout.write(JSON.stringify(event) + '\n');
-        child.exitCode = 0; child.emit('close', 0);
-      });
+const config = { enabled: true, baseUrl: 'https://api.deepseek.com', model: 'deepseek-chat', maxTokens: 128, temperature: 0 };
+const messages = [{ role: 'user', content: '解释这条通知。' }];
+
+test('模型提供者只暴露 DeepSeek 与兼容 API，不再提供订阅 CLI 执行器', () => {
+  const providers = createProviders();
+  assert.deepEqual(Object.keys(providers).sort(), ['compatible', 'deepseek']);
+  assert.equal(providers.codex, undefined);
+});
+
+test('取消 API 请求会终止本次调用，不重试也不换模型通道', async () => {
+  const controller = new AbortController();
+  let begin;
+  const started = new Promise(resolve => { begin = resolve; });
+  let requests = 0, aborted = false;
+  const providers = createProviders({ fetchImpl: async (_url, options) => {
+    requests++;
+    begin();
+    return new Promise((_, reject) => options.signal.addEventListener('abort', () => {
+      aborted = true;
+      reject(Object.assign(new Error('fixture cancelled'), { name: 'AbortError' }));
+    }, { once: true }));
+  } });
+  const pending = providers.deepseek({ messages, config, apiKey: 'fixture-key', signal: controller.signal });
+  await started;
+  controller.abort();
+  await assert.rejects(pending, error => error.status === 409 && /已取消/.test(error.message));
+  assert.equal(aborted, true);
+  assert.equal(requests, 1);
+});
+
+test('API 超时、额度错误和无效输出均不重试或静默换计费通道', async t => {
+  const cases = [
+    ['超时', async () => { throw Object.assign(new Error('fixture timeout'), { name: 'TimeoutError' }); }, /请求超时/],
+    ['额度不足', async () => new Response(JSON.stringify({ error: { message: 'fixture-key 额度不足' } }), { status: 429 }), /429/],
+    ['无效 JSON', async () => new Response('not-json', { status: 200 }), /无法解析/],
+    ['超大响应', async () => new Response('x'.repeat(256 * 1024 + 1), { status: 200 }), /无法解析/],
+    ['没有文字', async () => Response.json({ choices: [{ message: { content: '' }, finish_reason: 'stop' }] }), /没有返回可用的文字/],
+  ];
+  for (const [label, respond, expected] of cases) await t.test(label, async () => {
+    const urls = [];
+    const providers = createProviders({ fetchImpl: async (url, options) => {
+      urls.push(String(url));
+      return respond(url, options);
+    } });
+    await assert.rejects(providers.deepseek({ messages, config, apiKey: 'fixture-key' }), error => {
+      assert.match(error.message, expected);
+      assert.equal(error.message.includes('fixture-key'), false);
+      return true;
     });
-    return child;
-  };
-}
-const invocation = { command: 'official-codex-mock', args: ['codex.js'], cwd: '/isolated', env: { CODEX_HOME: '/isolated-auth', OPENAI_API_KEY: 'must-not-pass', OPENAI_BASE_URL: 'must-not-pass' } };
-
-test('Codex 只接受完成的文字流，命令固定 argv、不继承付费 API 凭据', async () => {
-  let checked = false;
-  const providers = createProviders({ spawnImpl: mockSpawner([
-    { type: 'item.completed', item: { id: 'answer', type: 'agent_message', text: '已解释' } },
-    { type: 'turn.completed', usage: {} }
-  ], (_, args, options) => {
-    checked = true; assert.equal(options.shell, false); assert.equal(options.env.OPENAI_API_KEY, undefined);
-    assert.equal(options.env.OPENAI_BASE_URL, undefined); assert.equal(args.includes('--ignore-user-config'), true);
-    assert.equal(args.includes('--ignore-rules'), true); assert.equal(args.includes('read-only'), true);
-  }) });
-  const result = await providers.codex({ prompt: '只解释文字，不执行 $(example)', config: { enabled: true, timeoutSeconds: 30 }, invocation });
-  assert.equal(checked, true); assert.equal(result.text, '已解释');
-});
-
-test('Codex 工具事件或缺少完成事件时不能伪装成成功答案', async () => {
-  const unsafe = createProviders({ spawnImpl: mockSpawner([{ type: 'item.started', item: { id: 'tool', type: 'command_execution', command: 'bad' } }]) });
-  await assert.rejects(unsafe.codex({ prompt: 'x', config: { enabled: true }, invocation }), /尝试调用工具/);
-  const incomplete = createProviders({ spawnImpl: mockSpawner([{ type: 'item.completed', item: { id: 'answer', type: 'agent_message', text: '未完成' } }]) });
-  await assert.rejects(incomplete.codex({ prompt: 'x', config: { enabled: true }, invocation }), /未返回完成/);
-});
-
-test('DeepSeek 错误不会启动 GPT 或静默换计费通道', async () => {
-  let spawned = 0;
-  const providers = createProviders({ spawnImpl: () => { spawned++; throw new Error('不可调用'); }, fetchImpl: async () => new Response(JSON.stringify({ error: { message: '额度不足' } }), { status: 429 }) });
-  await assert.rejects(providers.deepseek({ messages: [], config: { enabled: true, baseUrl: 'https://api.deepseek.com', model: 'deepseek-chat', maxTokens: 128, temperature: 0 }, apiKey: 'test-only' }), /429/);
-  assert.equal(spawned, 0);
+    assert.deepEqual(urls, ['https://api.deepseek.com/chat/completions']);
+  });
 });

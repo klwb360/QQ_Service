@@ -10,7 +10,6 @@ export function createAccountService({ account, dataDir, csrfToken, installerFac
   const store = createStore(dataDir);
   const logs = [], jobs = [];
   let environment = null, activeJob = null, applying = false, started = false, closed = false;
-  let codexAuth = { loggedIn: null, message: '尚未检查该账号的官方 CLI 登录状态' };
   let applyFinished = Promise.resolve();
   const ensureOpen = () => { if (closed) throw fail('账号后台正在退出，操作已取消。'); };
   const redact = value => {
@@ -42,7 +41,7 @@ export function createAccountService({ account, dataDir, csrfToken, installerFac
     const draft = store.getState().draft;
     const pluginCredentials = (pluginManager?.list() || []).flatMap(plugin => (plugin.secretsSchema || []).map(field => pluginSecretName(plugin.id, field.key)));
     const secrets = Object.fromEntries(['deepseekApiKey', 'napcatToken', ...(draft.models.apis || []).map(model => apiSecretName(model.id)), ...pluginCredentials].map(name => [name, store.hasDraftSecret(name)]));
-    return { csrfToken, account: summary(), ...store.getState(), pendingChanges: store.pendingChanges(), secrets, secretsPendingChanges: store.secretsPending(), codexAuth: safeDetails(codexAuth), runtime: safeDetails(runtime.status()), setup: setupStatus(), modules, plugins: pluginManager?.list() || [], jobs: safeDetails(jobs.slice(-20)), logs: safeDetails(logs.slice(-100)), summaries: store.getSummaries(), favorites: store.getFavorites(), environment, metrics: store.metrics(), dataDir };
+    return { csrfToken, account: summary(), ...store.getState(), pendingChanges: store.pendingChanges(), secrets, secretsPendingChanges: store.secretsPending(), runtime: safeDetails(runtime.status()), setup: setupStatus(), modules, plugins: pluginManager?.list() || [], jobs: safeDetails(jobs.slice(-20)), logs: safeDetails(logs.slice(-100)), summaries: store.getSummaries(), favorites: store.getFavorites(), environment, metrics: store.metrics(), dataDir };
   };
   const setupStatus = () => {
     const { draft, applied } = store.getState();
@@ -50,14 +49,14 @@ export function createAccountService({ account, dataDir, csrfToken, installerFac
     const secretSnapshot = store.getSecretSnapshot();
     const napcatTokenPending = Object.hasOwn(secretSnapshot, 'draft:napcatToken') && secretSnapshot['draft:napcatToken'] !== secretSnapshot.napcatToken;
     const verified = Boolean(actual.connected && actual.accountId && String(actual.accountId) === draft.botQQ && draft.qq.enabled && applied.qq.enabled && applied.botQQ === draft.botQQ && draft.qq.wsUrl === applied.qq.wsUrl && !napcatTokenPending);
-    const providers = ['deepseek', 'codex', ...(draft.models.apis || []).map(model => model.id)].map(id => {
+    const providers = ['deepseek', ...(draft.models.apis || []).map(model => model.id)].map(id => {
       const model = getModelConfig(draft, id);
-      const credentialName = id === 'codex' ? null : id === 'deepseek' ? 'deepseekApiKey' : apiSecretName(id);
-      const credentialReady = credentialName ? store.hasDraftSecret(credentialName) : codexAuth.loggedIn === true;
+      const credentialName = id === 'deepseek' ? 'deepseekApiKey' : apiSecretName(id);
+      const credentialReady = store.hasDraftSecret(credentialName);
       // Other models and the QQ connection have independent credentials. Their
       // pending edits must not invalidate this provider's unchanged evidence.
       const credentialPending = credentialName && Object.hasOwn(secretSnapshot, `draft:${credentialName}`) && secretSnapshot[`draft:${credentialName}`] !== secretSnapshot[credentialName];
-      return { id, label: id === 'deepseek' ? 'DeepSeek' : id === 'codex' ? 'ChatGPT 订阅 / Codex' : model.label, enabled: Boolean(model.enabled), credentialReady, credentialPending: Boolean(credentialPending), configured: Boolean(credentialReady && (!isApiProviderId(id) || model.model)), tested: Boolean(credentialReady && actual.modelTests?.[id]?.tested && JSON.stringify(model) === JSON.stringify(getModelConfig(applied, id)) && !credentialPending), testedAt: actual.modelTests?.[id]?.testedAt || null, status: actual.modelTests?.[id]?.status || 'untested', message: actual.modelTests?.[id]?.message || '' };
+      return { id, label: id === 'deepseek' ? 'DeepSeek' : model.label, enabled: Boolean(model.enabled), credentialReady, credentialPending: Boolean(credentialPending), configured: Boolean(credentialReady && (!isApiProviderId(id) || model.model)), tested: Boolean(credentialReady && actual.modelTests?.[id]?.tested && JSON.stringify(model) === JSON.stringify(getModelConfig(applied, id)) && !credentialPending), testedAt: actual.modelTests?.[id]?.testedAt || null, status: actual.modelTests?.[id]?.status || 'untested', message: actual.modelTests?.[id]?.message || '' };
     });
     const selected = providers.filter(provider => provider.enabled);
     const modelsReady = selected.length > 0 && selected.every(provider => provider.configured);
@@ -68,8 +67,8 @@ export function createAccountService({ account, dataDir, csrfToken, installerFac
     const blockers = [];
     const add = (code, message, field, action, nextStep) => blockers.push({ code, message, field, action, nextStep });
     if (!draft.botQQ) add('QQ_NUMBER_MISSING', '请填写要接入的 QQ 号。', 'botQQ', '这个 QQ 号应与 NapCat 稍后扫码登录的账号一致。', 'identity');
-    if (!selected.length) add('MODEL_NOT_SELECTED', '尚未选择 AI 模型。', 'models', '从模型来源下拉栏选择一个 API 厂商或 ChatGPT 订阅。', 'models');
-    for (const provider of selected.filter(provider => !provider.credentialReady)) add(provider.id === 'codex' ? 'CODEX_LOGIN_REQUIRED' : 'MODEL_KEY_MISSING', provider.id === 'codex' ? '请登录或检查此账号的 Codex 授权。' : `${provider.label} 尚未配置 API Key。`, provider.id === 'codex' ? 'models.codex' : isApiProviderId(provider.id) ? `models.apis.${provider.id}` : 'models.deepseek', provider.id === 'codex' ? '点击官方设备登录；已有登录时点击检查状态。' : '填写对应服务商的 API Key，然后保存。', 'models');
+    if (!selected.length) add('MODEL_NOT_SELECTED', '尚未选择 AI 模型。', 'models', '从模型来源下拉栏选择一个 API 厂商。', 'models');
+    for (const provider of selected.filter(provider => !provider.credentialReady)) add('MODEL_KEY_MISSING', `${provider.label} 尚未配置 API Key。`, isApiProviderId(provider.id) ? `models.apis.${provider.id}` : 'models.deepseek', '填写对应服务商的项目专用 API Key，然后保存。', 'models');
     for (const provider of selected.filter(provider => isApiProviderId(provider.id) && !getModelConfig(draft, provider.id).model)) add('MODEL_NAME_MISSING', `${provider.label} 尚未填写模型名称。`, `models.apis.${provider.id}.model`, '填写服务商提供的模型 ID；API Key 并不能代替模型名称。', 'models');
     if (!draft.qq.enabled) add('QQ_DISABLED', '尚未启用本账号的 QQ 连接。', 'qq.enabled', '先准备 NapCat 并扫码登录，再保存并应用为只读。', 'connection');
     else if (!store.hasDraftSecret('napcatToken')) add('NAPCAT_TOKEN_MISSING', '尚未配置 OneBot Token。', 'secrets.napcatToken', '复制 NapCat 正向 WebSocket 的 Token，不能使用 WebUI 登录密码。', 'connection');
@@ -79,7 +78,7 @@ export function createAccountService({ account, dataDir, csrfToken, installerFac
     if (draft.ownerQQ && draft.ownerQQ === draft.botQQ && (draft.permissions.privateReplies || (draft.summary.enabled && draft.summary.sendToOwner))) add('PRIVATE_RECIPIENT_SAME', '私聊接收 QQ 不能与接入 QQ 相同。', 'ownerQQ', '仅群聊或本地整理时关闭私聊回复和私聊投递；需要私聊时填写另一个 QQ。', 'permissions');
     const steps = [
       { id: 'identity', title: '创建账号', complete: Boolean(draft.botQQ), description: '填写要接入的 QQ 号，与 NapCat 登录账号保持一致。' },
-      { id: 'models', title: '配置 AI', complete: modelsReady, description: modelsReady ? '凭据已配置；可主动测试真实调用，测试可能消耗费用或订阅额度。' : '选择一个模型来源，配置 API Key 或官方订阅登录。' },
+      { id: 'models', title: '配置 AI', complete: modelsReady, description: modelsReady ? '凭据已配置；可主动测试真实调用，测试会消耗所选 API 的额度。' : '选择一个 API 厂商，填写模型名称和 API Key。' },
       { id: 'connection', title: '连接 QQ', complete: verified, description: verified ? `NapCat 实际登录 QQ ${actual.accountId}，已核对身份。` : '先在 NapCat 登录 QQ，再验证本机 OneBot 连接；AI 登录不能代替 QQ 登录。' },
       { id: 'scenarios', title: '选择任务', complete: scenariosReady, description: '选择当前账号需要执行的聊天、通知汇总或收藏整理任务。' },
       { id: 'permissions', title: '授权并启动', complete: Boolean(released && hasTargets && !store.pendingChanges()), description: released ? '已释放当前已应用参数的权限；修改后应用会恢复只读。' : '选择群和消息范围后，明确点击启动；保存或测试连接不会授权发送。' },
@@ -196,7 +195,7 @@ export function createAccountService({ account, dataDir, csrfToken, installerFac
     // staging credentials. Unsaved identity, connection and model edits remain.
     const config = validateConfig(body.config);
     const updates = validateSecretUpdates(body.secretUpdates, config);
-    const selectedProviders = ['deepseek', 'codex', ...config.models.apis.map(model => model.id)]
+    const selectedProviders = ['deepseek', ...config.models.apis.map(model => model.id)]
       .filter(provider => getModelConfig(config, provider).enabled);
     const provider = selectedProviders.length === 1 ? selectedProviders[0] : DEFAULT_CONFIG.chat.provider;
     for (const section of ['chat', 'summary', 'favorites']) config[section] = { ...structuredClone(DEFAULT_CONFIG[section]), provider };
@@ -276,14 +275,14 @@ export function createAccountService({ account, dataDir, csrfToken, installerFac
     if (route === '/permissions/revoke') return { value: await revoke() };
     if (route === '/environment/check') { await checkEnvironment(); return { value: await state() }; }
     if (route === '/setup/install') {
-      const ids = body.modules || ['napcat', 'codex'];
-      if (!Array.isArray(ids) || !ids.length || ids.some(id => !['napcat', 'codex'].includes(id))) throw fail('安装模块列表无效。', 400);
+      const ids = body.modules || ['napcat'];
+      if (!Array.isArray(ids) || !ids.length || ids.some(id => id !== 'napcat')) throw fail('安装模块列表无效。', 400);
       return { code: 202, value: job('安装所选模块', async onLog => {
         for (const id of [...new Set(ids)]) { onLog(`开始安装 ${id}`); await installer.install(id, onLog); if (id === 'napcat') await installer.startNapcat(onLog); }
         await checkEnvironment();
       }) };
     }
-    const installMatch = route.match(/^\/modules\/(napcat|codex|deepseek|summary|favorites)\/install$/);
+    const installMatch = route.match(/^\/modules\/(napcat|deepseek|summary|favorites)\/install$/);
     if (installMatch) return { code: 202, value: job(`安装 ${installMatch[1]}`, async onLog => {
       const result = await installer.install(installMatch[1], onLog);
       if (installMatch[1] === 'napcat') await installer.startNapcat(onLog);
@@ -291,8 +290,6 @@ export function createAccountService({ account, dataDir, csrfToken, installerFac
     }) };
     if (route === '/modules/napcat/start') return { code: 202, value: job('启动 NapCat', installer.startNapcat) };
     if (route === '/modules/napcat/stop') return { code: 202, value: job('停止 NapCat', installer.stopNapcat) };
-    if (route === '/codex/login') return { code: 202, value: job('本账号 GPT 官方设备授权', async onLog => { runtime.invalidateModelTest?.('codex'); codexAuth = await installer.loginCodex(onLog); return codexAuth; }) };
-    if (route === '/codex/status') { const result = await installer.codexStatus(); if (!result.loggedIn || codexAuth.loggedIn !== result.loggedIn) runtime.invalidateModelTest?.('codex'); codexAuth = result; return { value: safeDetails(codexAuth) }; }
     if (route === '/runtime/connect') { checkConflicts(store.getConfig(), account.id); await runtime.connect(); return { value: await state() }; }
     if (route === '/test/deepseek') return { value: await runtime.testDeepSeek() };
     if (route === '/test/model') {

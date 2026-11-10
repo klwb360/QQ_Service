@@ -44,13 +44,11 @@ async function mockQQ(qq, favoriteText) {
   };
 }
 
-async function fixture(providerFactory) {
+async function fixture(providerFactory, { apiChat = false } = {}) {
   const dataDir = fs.mkdtempSync(path.join(os.tmpdir(), 'qqservice-isolation-'));
   const contexts = new Map();
   const app = createDashboard({ dataDir,
     installerFactory(context) {
-      const cli = path.join(context.dataDir, 'modules', 'codex', 'node_modules', '@openai', 'codex', 'bin', 'codex.js');
-      fs.mkdirSync(path.dirname(cli), { recursive: true }); fs.writeFileSync(cli, '// providers are stubbed; this file is never executed\n');
       return { ...createInstaller(context), environment: async () => ({}), status: async () => [] };
     },
     runtimeFactory(context) {
@@ -74,7 +72,11 @@ async function fixture(providerFactory) {
     const id = created.account.id; const route = `/api/accounts/${id}`;
     const config = structuredClone(created.state.draft);
     config.botQQ = mock.qq; config.ownerQQ = ownerQQ; config.qq.enabled = true; config.qq.wsUrl = mock.url;
-    config.models.deepseek.enabled = true; config.models.codex.enabled = true; config.chat.enabled = true;
+    config.models.deepseek.enabled = true; config.chat.enabled = true;
+    if (apiChat) {
+      config.models.apis = [{ id: 'api_private', label: '私人 API', enabled: true, baseUrl: 'https://api.openai.com/v1', model: 'gpt-test', maxTokens: 1024, temperature: 0.7 }];
+      config.chat.provider = 'api_private';
+    }
     config.summary.enabled = true; config.summary.sendToOwner = false; config.favorites.enabled = true;
     config.permissions.privateReplies = true;
     config.groups = [
@@ -82,7 +84,7 @@ async function fixture(providerFactory) {
       { id: '333333', name: '共同社交群', mode: 'social', read: true, send: true, trigger: 'prefix', prefix: '/ai', cooldownSeconds: 5, probability: 0 },
       { id: '444444', name: '未授权读取群', mode: 'work', read: false, send: false, trigger: 'mention', prefix: '/ai', cooldownSeconds: 5, probability: 0 },
     ];
-    let state = await post(route + '/config/save', { config, secretUpdates: { napcatToken: `token-${mock.qq}`, deepseekApiKey: `key-${mock.qq}` } });
+    let state = await post(route + '/config/save', { config, secretUpdates: { napcatToken: `token-${mock.qq}`, deepseekApiKey: `key-${mock.qq}`, ...(apiChat ? { 'apiKey:api_private': `private-key-${mock.qq}` } : {}) } });
     state = await post(route + '/config/apply', { revision: state.revision });
     await post(route + '/runtime/connect');
     return { id, route, state, mock, ownerQQ };
@@ -96,7 +98,7 @@ async function fixture(providerFactory) {
   };
 }
 
-test('两个真实 OneBot 连接并行，同群同消息 ID 的历史、收藏、模型密钥和 Codex 登录目录互不混用', async () => {
+test('两个真实 OneBot 连接并行，同群同消息 ID 的历史、收藏、模型与独立项目 API 密钥互不混用', async () => {
   const [qa, qb] = await Promise.all([mockQQ('111111', '账号甲收藏原文'), mockQQ('999999', '账号乙收藏原文')]);
   const calls = [];
   const f = await fixture(context => ({
@@ -104,11 +106,11 @@ test('两个真实 OneBot 连接并行，同群同消息 ID 的历史、收藏�
       calls.push({ provider: 'deepseek', qq: context.getConfig().botQQ, input: JSON.stringify(args.messages), apiKey: args.apiKey });
       return { provider: 'deepseek', text: `${context.getConfig().botQQ} 的本地结果 [消息:same-work-message]` };
     },
-    codex: async args => {
-      calls.push({ provider: 'codex', qq: context.getConfig().botQQ, input: args.prompt, invocation: args.invocation });
-      return { provider: 'codex', text: `${context.getConfig().botQQ} 的私人 GPT 回复` };
+    compatible: async args => {
+      calls.push({ provider: 'api_private', qq: context.getConfig().botQQ, input: JSON.stringify(args.messages), apiKey: args.apiKey });
+      return { provider: 'api_private', text: `${context.getConfig().botQQ} 的私人 API 回复` };
     },
-  }));
+  }), { apiChat: true });
   try {
     const a = await f.account('甲', qa, '666666'); const b = await f.account('乙', qb, '777777');
     assert.equal((await f.get(a.route + '/state')).runtime.connected, true);
@@ -143,24 +145,23 @@ test('两个真实 OneBot 连接并行，同群同消息 ID 的历史、收藏�
     assert.equal(qa.outbound.length, 0); assert.equal(qb.outbound.length, 0);
     await Promise.all([f.release(a), f.release(b)]);
     await Promise.all([
-      qa.event({ privateMessage: true, userId: a.ownerQQ, messageId: 'same-owner-message', text: '/gpt 甲的私人请求' }),
-      qb.event({ privateMessage: true, userId: b.ownerQQ, messageId: 'same-owner-message', text: '/gpt 乙的私人请求' }),
+      qa.event({ privateMessage: true, userId: a.ownerQQ, messageId: 'same-owner-message', text: '甲的私人请求' }),
+      qb.event({ privateMessage: true, userId: b.ownerQQ, messageId: 'same-owner-message', text: '乙的私人请求' }),
     ]);
     await waitFor(() => qa.outbound.length === 1 && qb.outbound.length === 1);
-    const codexCalls = calls.filter(c => c.provider === 'codex'); assert.equal(codexCalls.length, 2);
-    assert.notEqual(codexCalls[0].invocation.env.CODEX_HOME, codexCalls[1].invocation.env.CODEX_HOME);
-    assert.notEqual(codexCalls[0].invocation.cwd, codexCalls[1].invocation.cwd);
-    for (const call of codexCalls) {
-      const own = call.qq === '111111' ? a : b; const other = call.qq === '111111' ? '乙的私人请求' : '甲的私人请求';
+    const privateCalls = calls.filter(c => c.provider === 'api_private'); assert.equal(privateCalls.length, 2);
+    assert.notEqual(privateCalls[0].apiKey, privateCalls[1].apiKey);
+    for (const call of privateCalls) {
+      const other = call.qq === '111111' ? '乙的私人请求' : '甲的私人请求';
       assert.equal(call.input.includes(other), false);
-      assert.ok(call.invocation.env.CODEX_HOME.startsWith(path.join(f.dataDir, 'accounts', own.id) + path.sep));
+      assert.equal(call.apiKey, `private-key-${call.qq}`);
     }
     await Promise.all([
-      qa.event({ privateMessage: true, userId: '555555', messageId: 'stranger', text: '/gpt 旁人请求不占订阅' }),
-      qb.event({ groupId: '333333', messageId: 'group-subscription', text: '/ai /gpt 群友仍使用DS' }),
+      qa.event({ privateMessage: true, userId: '555555', messageId: 'stranger', text: '旁人请求不占 API' }),
+      qb.event({ groupId: '333333', messageId: 'group-subscription', text: '/ai 群友使用当前所选 API' }),
     ]);
     await waitFor(() => qb.outbound.length === 2);
-    assert.equal(calls.filter(c => c.provider === 'codex').length, 2);
+    assert.equal(calls.filter(c => c.provider === 'api_private').length, 3);
     assert.equal(qb.outbound.at(-1).params.group_id, '333333');
     assert.equal(qa.outbound[0].params.user_id, '666666'); assert.equal(qb.outbound[0].params.user_id, '777777');
     const accounts = await f.get('/api/accounts'); assert.equal(accounts.accounts.filter(x => x.runtime.connected).length, 2);

@@ -132,7 +132,7 @@ async function configureAccount(window, account, { ownerQQ, secret, persona }) {
   assert.equal(state.applied.permissions.privateReplies, false);
   assert.equal(state.applied.qq.enabled, false);
   assert.equal(state.applied.models.deepseek.enabled, true);
-  assert.equal(state.applied.models.codex.enabled, false);
+  assert.equal(Object.hasOwn(state.applied.models, 'codex'), false);
   assert.equal(state.secrets.deepseekApiKey, true);
 }
 

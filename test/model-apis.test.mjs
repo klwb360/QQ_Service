@@ -9,17 +9,16 @@ import { createProviders } from '../src/providers.mjs';
 
 const api = (id, overrides = {}) => ({ id, label: '工作模型', enabled: true, baseUrl: 'https://models.example/v1', model: 'vendor/model-v1', maxTokens: 1024, temperature: 0.7, ...overrides });
 
-test('多个 API 与订阅可共存，聊天、汇总和收藏独立选择通道', () => {
+test('多个 API 可共存，聊天、汇总和收藏独立选择通道', () => {
   const config = structuredClone(DEFAULT_CONFIG);
-  config.models.codex.enabled = true;
   config.models.apis = [api('api_work'), api('api_social')];
   config.chat.enabled = true; config.chat.provider = 'api_social';
   config.summary.enabled = true; config.summary.provider = 'api_work';
-  config.favorites.provider = 'codex';
+  config.favorites.provider = 'api_work';
   const result = validateConfig(config, { applying: true, hasSecret: name => ['apiKey:api_work', 'apiKey:api_social'].includes(name) });
   assert.equal(result.chat.provider, 'api_social');
   assert.equal(result.summary.provider, 'api_work');
-  assert.equal(result.favorites.provider, 'codex');
+  assert.equal(result.favorites.provider, 'api_work');
   assert.equal(getModelConfig(result, 'api_work').model, 'vendor/model-v1');
   assert.equal(getModelConfig(result, 'api_missing'), undefined);
   assert.equal(getModelConfig(result, '__proto__'), undefined);
@@ -63,9 +62,9 @@ test('API 通道拒绝重复标识、非安全地址和写入导出配置的密�
 test('同号不会阻止群聊或本地结果，只有启用私聊时提示可执行的改法', () => {
   const config = structuredClone(DEFAULT_CONFIG);
   config.botQQ = '123456'; config.ownerQQ = '123456';
-  config.models.codex.enabled = true;
-  config.summary.enabled = true; config.summary.provider = 'codex';
-  assert.doesNotThrow(() => validateConfig(config, { applying: true }));
+  config.models.deepseek.enabled = true;
+  config.summary.enabled = true; config.summary.provider = 'deepseek';
+  assert.doesNotThrow(() => validateConfig(config, { applying: true, hasSecret: () => true }));
   config.permissions.privateReplies = true;
   assert.throws(() => validateConfig(config, { applying: true }), error => error.issues.some(issue => issue.path === 'ownerQQ' && issue.message.includes('群聊和本地') && issue.action.includes('关闭')));
   config.permissions.privateReplies = false; config.summary.sendToOwner = true;
@@ -125,15 +124,14 @@ test('兼容 API 使用指定模型和独立密钥，保留基础路径并禁止
   assert.match(result.text, /通知解释/);
 });
 
-test('兼容 API 的错误隐藏任意格式密钥，失败时不会改用订阅', async () => {
-  let spawned = 0;
+test('兼容 API 的错误隐藏任意格式密钥，失败时不会切换其他 API', async () => {
   const secret = 'arbitrary-vendor-secret';
   const providers = createProviders({
     fetchImpl: async () => Response.json({ error: { message: `bad credential ${secret}` } }, { status: 401 }),
-    spawnImpl: () => { spawned++; throw new Error('不应调用'); },
+
   });
   await assert.rejects(providers.compatible({ messages: [], config: api('api_work'), apiKey: secret }), error => !error.message.includes(secret) && error.message.includes('401') && error.message.includes('访问权限'));
-  assert.equal(spawned, 0);
+  assert.equal(providers.codex, undefined);
 });
 
 test('取消或无效 API 地址时不发送请求，DeepSeek 官方通道不会转发到其他域名', async () => {

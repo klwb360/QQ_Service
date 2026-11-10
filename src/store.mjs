@@ -33,12 +33,13 @@ export function createStore(dataDir) {
   for (const name of ['draft', 'applied', 'previous']) {
     if (name === 'previous' && state[name] == null) continue;
     migrated[name] = migrateConfig(state[name]);
-    needsMigration ||= state[name].schemaVersion !== migrated[name].schemaVersion;
+    needsMigration ||= JSON.stringify(state[name]) !== JSON.stringify(migrated[name]);
   }
   if (needsMigration) {
-    // The legacy profile keeps this directory, including existing CLI login,
-    // vault and NapCat bind mounts. Only its configuration schema changes.
-    const backupFile = path.join(dataDir, 'config.v1.backup.json');
+    // Only configuration changes. Retired login directories and account data
+    // remain untouched, including when no schema-version bump is needed.
+    const schemaUpgrade = ['draft', 'applied', 'previous'].some(name => state[name]?.schemaVersion === 1);
+    const backupFile = path.join(dataDir, schemaUpgrade ? 'config.v1.backup.json' : 'config.pre-api-only.backup.json');
     if (!fs.existsSync(backupFile)) {
       fs.copyFileSync(configFile, backupFile, fs.constants.COPYFILE_EXCL);
       fs.chmodSync(backupFile, 0o600);

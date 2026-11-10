@@ -1,6 +1,6 @@
 import { spawn } from 'node:child_process';
 import { createHash, randomBytes } from 'node:crypto';
-import { existsSync, mkdirSync } from 'node:fs';
+import { existsSync } from 'node:fs';
 import { mkdir, readFile, readdir, rename, writeFile } from 'node:fs/promises';
 import net from 'node:net';
 import path from 'node:path';
@@ -8,14 +8,12 @@ import { nativeNapcatStatus, openNativeNapcat, NATIVE_NAPCAT_INSTALL_URL } from 
 
 const NAPCAT_IMAGE = 'mlikiowa/napcat-docker:v4.18.37';
 const NAPCAT_VERSION = '4.18.37';
-const CODEX_VERSION = '0.149.1';
 const MANAGED_LABEL = 'io.qqbridge.managed';
 const PROJECT_LABEL = 'io.qqbridge.project';
 const LOG_LIMIT = 128 * 1024;
 const CAPTURE_LIMIT = 64 * 1024;
 const MODULES = [
   { id: 'napcat', name: 'QQ / NapCat', kind: 'docker', description: '官方 NapCat 镜像；安装后仍需在本机 WebUI 扫码登录 QQ。' },
-  { id: 'codex', name: 'GPT 订阅 / Codex', kind: 'npm', description: '官方 Codex CLI；使用独立登录目录，仅供本人请求及已授权的后台汇总。' },
   { id: 'deepseek', name: 'DeepSeek', kind: 'builtin', description: '内置 API 接入；填写 API Key 后在功能配置中启用。' },
   { id: 'summary', name: '通知汇总', kind: 'builtin', description: '内置选定群消息收集与汇总；向 QQ 发送需在该账号的消息权限中单独授权。' },
   { id: 'favorites', name: 'QQ 我的收藏', kind: 'builtin', description: '内置当前登录账号的收藏列表读取；完整正文和附件取决于 QQ 接口。' },
@@ -205,10 +203,6 @@ export function createInstaller({ dataDir, profileId, legacy = false, getConfig,
   const recordFile = path.join(root, 'module-state.json');
   const napcatDir = path.join(root, 'modules', 'napcat');
   const napcatConfig = path.join(napcatDir, 'config');
-  const codexDir = path.join(root, 'modules', 'codex');
-  const codexHome = path.join(root, 'codex-home');
-  const codexWorkspace = path.join(root, 'codex-workspace');
-  const codexCli = path.join(codexDir, 'node_modules', '@openai', 'codex', 'bin', 'codex.js');
   const projectId = createHash('sha256').update(root).digest('hex').slice(0, 24);
   // Root-derived names cannot be supplied by requests. Preserve the existing
   // installation name for migrated profiles and older single-account callers.
@@ -421,48 +415,6 @@ export function createInstaller({ dataDir, profileId, legacy = false, getConfig,
     return { installed: true, imageDigest: digest };
   }
 
-  async function installCodex(onLog) {
-    const state = await records();
-    if (state.modules.codex?.installed && existsSync(codexCli)) {
-      const result = await run(process.execPath, [codexCli, '--version'], { env: codexInvocation().env });
-      emit(onLog, `已安装：${result.output}。保持固定版本。`);
-      return { installed: true, version: state.modules.codex.version };
-    }
-    await mkdir(codexDir, { recursive: true });
-    await mkdir(codexHome, { recursive: true });
-    await mkdir(codexWorkspace, { recursive: true });
-    const npm = npmInvocation();
-    emit(onLog, `正在安装官方 @openai/codex@${CODEX_VERSION} 到本项目目录。`);
-    await run(npm.command, [...npm.args, 'install', '--prefix', codexDir, '--include=optional', '--ignore-scripts', '--no-audit', '--no-fund', `@openai/codex@${CODEX_VERSION}`], { onLog, cwd: root, timeout: 20 * 60_000 });
-    if (!existsSync(codexCli)) throw problem('npm 返回成功，但官方 Codex CLI 入口不存在。');
-    const invocation = codexInvocation();
-    const result = await run(invocation.command, [...invocation.args, '--version'], { env: invocation.env, cwd: invocation.cwd, timeout: 30_000 });
-    if (!new RegExp(`\\b${CODEX_VERSION.replaceAll('.', '\\.')}\\b`).test(result.output)) throw problem('安装的 Codex 版本与锁定版本不匹配。', 502, result.output);
-    await saveModule('codex', { installed: true, version: CODEX_VERSION, installedAt: new Date().toISOString() });
-    emit(onLog, '官方 Codex CLI 已安装；需要另外完成 ChatGPT 设备码登录。');
-    return { installed: true, version: CODEX_VERSION };
-  }
-
-  function codexInvocation() {
-    if (!existsSync(codexCli)) throw problem('请先安装官方 Codex CLI 模块。', 409);
-    mkdirSync(codexHome, { recursive: true });
-    mkdirSync(codexWorkspace, { recursive: true });
-    // Keep only OS/runtime and network trust settings. Do not expose model API
-    // credentials, custom OpenAI endpoints, or arbitrary inherited secrets.
-    const allowed = new Set([
-      'PATH', 'PATHEXT', 'SYSTEMROOT', 'WINDIR', 'HOME', 'USERPROFILE',
-      'HOMEDRIVE', 'HOMEPATH', 'APPDATA', 'LOCALAPPDATA', 'TMP', 'TEMP',
-      'TMPDIR', 'USER', 'USERNAME', 'LOGNAME', 'LANG', 'LC_ALL', 'LC_CTYPE',
-      'HTTP_PROXY', 'HTTPS_PROXY', 'ALL_PROXY', 'NO_PROXY',
-      'NODE_EXTRA_CA_CERTS', 'SSL_CERT_FILE', 'SSL_CERT_DIR',
-    ]);
-    const env = Object.fromEntries(Object.entries(process.env).filter(([key]) => allowed.has(key.toUpperCase())));
-    env.CODEX_HOME = codexHome;
-    env.NO_COLOR = '1';
-    env.TERM = 'dumb';
-    return { command: process.execPath, args: [codexCli], env, cwd: codexWorkspace };
-  }
-
   async function install(id, onLog) {
     if (!MODULES.some((item) => item.id === id)) throw problem('未知模块。', 400);
     return exclusive(id, async () => {
@@ -470,7 +422,6 @@ export function createInstaller({ dataDir, profileId, legacy = false, getConfig,
         if (getNapcatSettings().mode === 'native') throw problem(`当前选择本地安装。请按官方说明安装 NapCat，并在全局设置中选择启动文件：${NATIVE_NAPCAT_INSTALL_URL}`, 409);
         return installNapcat(onLog);
       }
-      if (id === 'codex') return installCodex(onLog);
       await saveModule(id, { installed: true, version: 'builtin', installedAt: new Date().toISOString() });
       emit(onLog, '该功能已经内置，可在功能配置中启用。');
       return { installed: true, version: 'builtin' };
@@ -536,31 +487,6 @@ export function createInstaller({ dataDir, profileId, legacy = false, getConfig,
     });
   }
 
-  async function loginCodex(onLog) {
-    return exclusive('codex', async () => {
-      await mkdir(codexHome, { recursive: true });
-      await mkdir(codexWorkspace, { recursive: true });
-      const invocation = codexInvocation();
-      emit(onLog, '请按官方 CLI 输出在 OpenAI 授权页面输入设备码并登录；不要粘贴账号 token。');
-      await run(invocation.command, [...invocation.args, 'login', '--device-auth'], { env: invocation.env, cwd: invocation.cwd, onLog, timeout: 15 * 60_000 });
-      const result = await codexStatus();
-      if (!result.loggedIn) throw problem('官方 CLI 登录没有完成 ChatGPT 订阅认证。', 502, result.message);
-      return result;
-    });
-  }
-
-  async function codexStatus() {
-    if (!existsSync(codexCli)) return { loggedIn: false, message: '官方 Codex CLI 尚未安装。' };
-    const invocation = codexInvocation();
-    const result = await run(invocation.command, [...invocation.args, 'login', 'status'], { env: invocation.env, cwd: invocation.cwd, timeout: 30_000, allowFailure: true });
-    if (result.code === 0) {
-      if (/api key/i.test(result.output)) return { loggedIn: false, message: '当前 CLI 使用 API Key，请执行 ChatGPT 设备码登录。' };
-      return { loggedIn: true, message: result.output || '官方 CLI 已确认登录。' };
-    }
-    if (/not logged in|not authenticated|please (log|sign) in/i.test(result.output)) return { loggedIn: false, message: '尚未登录 ChatGPT，请启动设备码登录。' };
-    throw problem('无法检查官方 Codex 登录状态。', 502, result.output.slice(-1500));
-  }
-
   // Called only by the local authenticated dashboard state/guide endpoint.
   // Never include this credential in ordinary module status, exports, or logs.
   async function napcatGuide() {
@@ -593,12 +519,12 @@ export function createInstaller({ dataDir, profileId, legacy = false, getConfig,
       }
       const saved = state.modules[item.id];
       const builtin = item.kind === 'builtin';
-      const installed = builtin || Boolean(saved?.installed && (item.id !== 'codex' || existsSync(codexCli)));
-      const enabled = item.id === 'deepseek' ? config.models?.deepseek?.enabled : item.id === 'codex' ? config.models?.codex?.enabled : item.id === 'napcat' ? config.qq?.enabled : config[item.id]?.enabled;
+      const installed = builtin || Boolean(saved?.installed);
+      const enabled = item.id === 'deepseek' ? config.models?.deepseek?.enabled : item.id === 'napcat' ? config.qq?.enabled : config[item.id]?.enabled;
       const moduleState = operations.has(item.id) ? 'busy' : item.id === 'napcat' && containerError ? 'error' : item.id === 'napcat' && container?.State?.Running ? 'running' : installed ? (builtin ? 'available' : 'installed') : 'not_installed';
       return { ...item, installed, enabled: Boolean(enabled), state: moduleState, version: saved?.version || (builtin ? 'builtin' : ''), ...(item.id === 'napcat' ? { imageDigest: saved?.imageDigest || '', containerName: containerName, ...(containerError ? { message: containerError } : {}) } : {}) };
     });
   }
 
-  return { environment, status, install, startNapcat, stopNapcat, loginCodex, codexStatus, codexInvocation, napcatGuide, dispose };
+  return { environment, status, install, startNapcat, stopNapcat, napcatGuide, dispose };
 }

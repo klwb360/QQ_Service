@@ -35,7 +35,7 @@ test('HTTP 仪表盘有真实配置生命周期、跨站保护、无凭据导出
     response = await request('/api/config/apply', { revision: state.revision }, state.csrfToken);
     assert.equal(response.status, 502); assert.equal(app.store.getConfig().ownerQQ, '123456'); assert.equal(app.store.getSecret('deepseekApiKey'), 'private-key-123');
     failReload = false;
-    response = await request('/api/modules/codex/install', {}, state.csrfToken); assert.equal(response.status, 202);
+    response = await request('/api/modules/napcat/install', {}, state.csrfToken); assert.equal(response.status, 202);
     await new Promise(resolve => setTimeout(resolve, 10)); state = await (await fetch(base + '/api/state')).json();
     assert.equal(state.jobs.at(-1).status, 'failed'); assert.equal(state.jobs.at(-1).error, '模拟下载失败');
   } finally { await app.close(); fs.rmSync(dataDir, { recursive: true, force: true }); }

@@ -24,7 +24,7 @@ npm run check
 npm test
 ```
 
-常规测试使用模拟 OneBot/模型，无需真实登录或额度。应覆盖新账号零发送、显式释放/撤销、普通应用和回滚回只读、群读取/发送交集、工作群默认只读及明确授权、个人 Codex 范围、账号和上下文隔离、独立收藏模型、多 API 路由/密钥隔离、可定位校验错误、真实步骤诊断、受控 QQ 测试消息、配置迁移、凭据导出与后台生命周期。
+常规测试使用模拟 OneBot/模型，无需真实登录或额度。应覆盖新账号零发送、显式释放/撤销、普通应用和回滚回只读、群读取/发送交集、工作群默认只读及明确授权、订阅退役迁移与旧入口拒绝、账号和上下文隔离、独立收藏模型、多 API 路由/密钥隔离、可定位校验错误、真实步骤诊断、受控 QQ 测试消息、配置迁移、凭据导出与后台生命周期。
 
 自动结果和可选 Electron 交互检查见 [验证记录](VALIDATION.md)。模拟两个账号不能代替真实 QQ 多开、Windows 托盘或 Docker Desktop 挂载验收。
 
@@ -34,7 +34,7 @@ npm test
 
 普通配置保存不能伪造 `permissions.released:true`；应用与回滚恢复只读，显式 `/permissions/release` 校验保存 revision 后才授权。自动聊天和定时推理都需释放，不能因保存模型或定时参数自动开始；仪表盘明确发起的手动本地整理仍可执行。撤销立即阻止后续发送和自动任务。新增任务的错误分支也必须走统一发送门。引导最终“启动此账号”复用释放事务，不得另开授权通道。QQ 验证消息使用固定文本、实际目标和同一发送门，不能为了测试临时放宽权限。
 
-新账号使用独立目录和登录状态。旧版兼容 profile 保持原数据路径，启动时幂等迁移配置并保留备份；不要在升级脚本里重置凭据、搬移正在绑定的 Docker 目录或拷贝 CLI 会话到新账号。
+新账号使用独立目录和登录状态。旧版兼容 profile 保持原数据路径，启动时幂等迁移配置并保留备份；不要在升级脚本里重置凭据、搬移正在绑定的 Docker 目录或删除旧订阅目录。旧订阅配置只能停用并提示重新选 API，不得自动切换模型或计费通道。
 
 API 扩展写入 `models.apis`，保留稳定 ID，密钥使用独立 `apiKey:<id>`；聊天、通知和收藏用 provider ID 绑定。新增服务预设只提供参数，不代表已通过真实服务商联调。不得在失败后自动换用其他 Key、服务商或计费通道。
 
@@ -58,7 +58,7 @@ npm run desktop
 npm run build:exe
 ```
 
-本版目标为 `dist/QQ_Service-0.6.1-Windows-x64.exe`。`npm run build:installer` 提供可选 NSIS 目标，默认 Release 交付便携 EXE。
+本版目标为 `dist/QQ_Service-0.7.0-Windows-x64.exe`。`npm run build:installer` 提供可选 NSIS 目标，默认 Release 交付便携 EXE。
 
 窗口为无原生边框 Electron 窗口，最小化、最大化/还原、关闭通过受限预加载接口操作。关闭偏好是桌面全局设置，默认进入托盘，可选完全退出；系统关闭和自绘关闭行为应一致。实际窗口控制和设置持久化需用 Electron 检查，不能只测 DOM 按钮存在。
 
@@ -71,7 +71,6 @@ npm run build:exe
 | electron-builder | 26.15.3 |
 | ws | 8.22.0 |
 | NapCat Docker 外部模块 | v4.18.37，首次安装记录 RepoDigest |
-| Codex CLI 外部模块 | 0.149.1 |
 
 若先执行了 `npm ci --ignore-scripts`，桌面运行前还需 `node node_modules/electron/install.js` 下载开发运行环境。
 

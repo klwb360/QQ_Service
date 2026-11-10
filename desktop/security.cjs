@@ -67,7 +67,7 @@ function isAllowedExternalUrl(value, origin) {
     }
     if (url.protocol !== 'https:' || (url.port && url.port !== '443')) return false;
     return new Set([
-      'auth.openai.com', 'chatgpt.com', 'openai.com', 'help.openai.com',
+      'auth.openai.com', 'chatgpt.com', 'platform.openai.com', 'openai.com', 'help.openai.com',
       'developers.openai.com', 'learn.chatgpt.com', 'docs.docker.com',
       'www.docker.com', 'desktop.docker.com', 'napneko.github.io',
       'platform.deepseek.com', 'api-docs.deepseek.com',

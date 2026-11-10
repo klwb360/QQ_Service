@@ -67,10 +67,13 @@ test('独立窗口保留同源资源，阻止远程资源及 API 页面导航', 
   assert.equal(isDashboardNavigation(`${origin}/?redirect=https://example.com`, origin), false);
 });
 
-test('外部浏览器允许官方授权与本机 QQ 登录，拒绝危险协议、伪造域名及内部 API', () => {
+test('外部浏览器允许官方 API 设置与本机 QQ 登录，拒绝危险协议、伪造域名及内部 API', () => {
   const origin = 'http://127.0.0.1:43127';
   for (const value of [
-    'https://auth.openai.com/codex/device', 'https://chatgpt.com/',
+    'https://platform.openai.com/settings/organization/projects',
+    'https://platform.openai.com/api-keys',
+    'https://developers.openai.com/api/docs/guides/chatgpt-api-credits',
+    'https://chatgpt.com/',
     'https://docs.docker.com/desktop/setup/install/windows-install/',
     'https://platform.deepseek.com/', 'http://127.0.0.1:6099/webui/',
     'https://help.aliyun.com/zh/model-studio/',
@@ -81,7 +84,9 @@ test('外部浏览器允许官方授权与本机 QQ 登录，拒绝危险协议�
   ]) assert.equal(isAllowedExternalUrl(value, origin), true, value);
   for (const value of [
     `${origin}/api/config/export`, 'http://127.0.0.1:6099/api/login',
-    'https://auth.openai.com.evil.test/codex/device', 'https://auth.openai.com@evil.test/',
+    'https://platform.openai.com.evil.test/api-keys', 'https://platform.openai.com@evil.test/',
+    'https://fake.platform.openai.com/api-keys', 'http://platform.openai.com/api-keys',
+    'https://user:pass@platform.openai.com/api-keys', 'https://platform.openai.com:444/',
     'https://help.aliyun.com.evil.test/', 'https://docs.bigmodel.cn@evil.test/',
     'https://user:pass@auth.openai.com/', 'https://auth.openai.com:444/',
     'http://auth.openai.com/', 'file:///C:/test.exe', 'javascript:alert(1)',

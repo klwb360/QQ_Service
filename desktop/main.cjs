@@ -235,7 +235,7 @@ function setupMenu() {
         dialog.showMessageBox(window || undefined, { type: 'info', title: APP_NAME, message: !tray ? '本次未能创建托盘图标，关闭窗口会完全退出' : desktopSettings.get().closeBehavior === 'quit' ? '当前设置：关闭窗口后完全退出' : '当前设置：关闭窗口后继续在托盘后台运行', detail: '可在“设置”中修改关闭方式。消息收集和定时汇总需要应用保持运行。完全退出会停止仪表盘后台；已启动的 NapCat Docker 容器继续运行，可以先在“模块管理”中停止。电脑休眠或关机时不处理新消息。' });
       } },
       { label: `关于${APP_NAME}`, click: () => {
-        dialog.showMessageBox(window || undefined, { type: 'info', title: `关于${APP_NAME}`, message: `${APP_NAME} ${app.getVersion()}`, detail: 'QQ / DeepSeek / 本人 GPT 订阅的本地配置应用。账号授权在官方页面完成。' });
+        dialog.showMessageBox(window || undefined, { type: 'info', title: `关于${APP_NAME}`, message: `${APP_NAME} ${app.getVersion()}`, detail: 'QQ 与多厂商 AI API 的本地助手。使用各厂商 API Key 配置模型。' });
       } },
     ] },
   ]));

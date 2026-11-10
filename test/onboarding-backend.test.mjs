@@ -47,11 +47,10 @@ async function fixture() {
   const directory = fs.mkdtempSync(path.join(os.tmpdir(), 'qq-service-onboarding-'));
   const modelCalls = []; let modelFailure = false;
   const app = createDashboard({ dataDir: directory,
-    installerFactory: () => ({ environment: async () => ({}), status: async () => [], dispose: async () => {}, codexStatus: async () => ({ loggedIn: false }) }),
+    installerFactory: () => ({ environment: async () => ({}), status: async () => [], dispose: async () => {} }),
     runtimeFactory: context => createRuntime({ ...context, providers: {
       deepseek: async args => { modelCalls.push({ provider: 'deepseek', ...args }); if (modelFailure) throw new Error('模拟模型额度不足'); return { provider: 'deepseek', text: '模拟连接成功' }; },
       compatible: async args => { modelCalls.push(args); return { provider: args.provider, text: '自定义 API 连接成功' }; },
-      codex: async () => { throw new Error('此测试不调用订阅'); },
     } }),
   });
   const address = await app.listen(0); const base = `http://127.0.0.1:${address.port}`;

@@ -1,6 +1,6 @@
 # QQ_Service
 
-**在自己的 Windows 电脑上，按步骤连接 QQ，选择 AI 模型或个人 GPT 订阅。**
+**在自己的 Windows 电脑上，按步骤连接 QQ，选择模型 API，并管理每个账号的功能与权限。**
 
 [![Windows build](https://github.com/klwb360/QQ_Service/actions/workflows/windows.yml/badge.svg?branch=main)](https://github.com/klwb360/QQ_Service/actions/workflows/windows.yml)
 [![Release](https://img.shields.io/github/v/release/klwb360/QQ_Service)](https://github.com/klwb360/QQ_Service/releases/latest)
@@ -8,7 +8,9 @@
 
 [下载 Windows EXE](https://github.com/klwb360/QQ_Service/releases/latest) · [使用指南](docs/USAGE.md) · [自由群聊与记忆](docs/SOCIAL_CHAT.md) · [无需 Docker 接入 QQ](docs/NATIVE_NAPCAT_WINDOWS.md) · [功能实现与架构](docs/ARCHITECTURE.md) · [开发指南](docs/DEVELOPMENT.md) · [验证记录](docs/VALIDATION.md)
 
-QQ_Service 是支持多个 QQ 账号同时在线的本地助手。「账号控制」集中管理创建与配置：每个账号是一条可展开的菜单，从账号信息开始逐段向下完成模型、QQ 登录、功能与权限配置，已填写的内容保留在上方。总览只显示关键统计、运行状态和最近任务，统计卡片可点击进入对应页面。支持 DeepSeek、多组 OpenAI 兼容 API，以及通过官方 Codex CLI 使用本人 ChatGPT 订阅。**新账号默认只读；填入 QQ 号、API Key 或登录 Codex 都不会自动运行场景或获得发送权限。**
+QQ_Service 是支持多个 QQ 账号同时在线的本地助手。「账号控制」集中管理创建与配置：每个账号是一条可展开的菜单，从账号信息开始逐段向下完成模型、QQ 登录、功能与权限配置，已填写的内容保留在上方。总览只显示关键统计、运行状态和最近任务，统计卡片可点击进入对应页面。支持 DeepSeek、OpenAI 和多组兼容 API。**新账号默认只读；填入 QQ 号或 API Key 都不会自动运行场景或获得发送权限。**
+
+v0.7.0 起仅通过 API 接入模型，已移除 ChatGPT 订阅／Codex 安装和登录。需要 OpenAI 专用 Key 时，见 [机器人专用 API 配置](docs/OPENAI_API_SETUP.md)。
 
 ![QQ_Service 展开账号后的连续配置面板](docs/assets/account-control.png)
 
@@ -51,16 +53,16 @@ QQ_Service 是支持多个 QQ 账号同时在线的本地助手。「账号控�
 
 ## 下载与快速开始
 
-当前版本：**v0.6.1**，适用于 **Windows 10/11 x64**。
+当前版本：**v0.7.0**，适用于 **Windows 10/11 x64**。
 
 | 下载 | 说明 |
 | --- | --- |
-| [QQ_Service-0.6.1-Windows-x64.exe](https://github.com/klwb360/QQ_Service/releases/download/v0.6.1/QQ_Service-0.6.1-Windows-x64.exe) | 便携应用，自带 Node.js 和 npm，双击启动 |
-| [SHA256 校验文件](https://github.com/klwb360/QQ_Service/releases/download/v0.6.1/QQ_Service-0.6.1-Windows-x64.exe.sha256) | 用于核对下载文件 |
+| [QQ_Service-0.7.0-Windows-x64.exe](https://github.com/klwb360/QQ_Service/releases/download/v0.7.0/QQ_Service-0.7.0-Windows-x64.exe) | 便携应用，自带 Node.js 和 npm，双击启动 |
+| [SHA256 校验文件](https://github.com/klwb360/QQ_Service/releases/download/v0.7.0/QQ_Service-0.7.0-Windows-x64.exe.sha256) | 用于核对下载文件 |
 | [最新发布与更新说明](https://github.com/klwb360/QQ_Service/releases/latest) | 查看已发布版本和更新记录 |
 
-1. **创建账号配置**：创建入口只在「账号控制」显示。输入希望接入的 QQ 号，从下拉栏选择一个 API 厂商或 ChatGPT 订阅。每个账号的栏头与展开内容连为同一菜单，可点击栏头展开或收起，参数与数据分别保存，多个账号可以同时运行。完成一部分并继续后，下一部分带动画向下展开，之前的表单保持可见，无需切换顶部步骤标签。
-2. **准备模型**：选择 DeepSeek、兼容 API 厂商并填写模型与 Key，或安装 Codex CLI 完成官方 ChatGPT 授权；当前账号的任务使用所选模型。
+1. **创建账号配置**：创建入口只在「账号控制」显示。输入希望接入的 QQ 号，从下拉栏选择一个 API 厂商。每个账号的栏头与展开内容连为同一菜单，可点击栏头展开或收起，参数与数据分别保存，多个账号可以同时运行。完成一部分并继续后，下一部分带动画向下展开，之前的表单保持可见，无需切换顶部步骤标签。
+2. **准备模型**：选择 DeepSeek、OpenAI 或兼容 API 厂商并填写模型与 Key；当前账号的任务使用所选模型。
 3. **实际登录 QQ**：NapCat 是 QQ 登录与消息接口组件。先在「设置」全局选择本地安装或 Docker。本地方式按 [原生指南](docs/NATIVE_NAPCAT_WINDOWS.md) 安装并选择启动文件；Docker 方式在「模块」安装。回到「连接 QQ」点击 **打开 NapCat → 打开登录页 → 连接并继续**，核对实际登录账号。
 4. **选择账号功能**：按需启用聊天回复、工作通知汇总或收藏整理，设置触发方式、模型和计划。暂不使用的功能可以关闭。
 5. **选择群并启动**：到「选定群与消息权限」读取实际已加入群，明确读取、发送范围，确认后点击 **启动此账号**，显式授予已配置权限。只在面板看通知无需另一个 QQ 号，也不需要私聊发送权限。
@@ -72,19 +74,18 @@ EXE 当前未签名。详细操作、私聊命令与备份见 [使用指南](doc
 
 | 功能 | 目前如何实现 |
 | --- | --- |
-| 多账号控制 | 本地账号目录保存稳定 ID；每账号独立配置、凭据、SQLite、QQ 连接、任务队列和 Codex 登录目录 |
+| 多账号控制 | 本地账号目录保存稳定 ID；每账号独立配置、凭据、SQLite、QQ 连接、任务队列 |
 | 权限配置 | 账号功能参数与群/私聊权限分开；默认只读，独立释放/撤销入口，自动场景和发送由后台分别核对 |
 | Windows 应用 | Electron 自绘标题栏和窗口按钮，管理单实例与托盘；附带 Node.js 运行本地后台 |
-| 一键安装 | NapCat 接入方式全局设置；本地安装后选择启动文件，或按账号安装 Docker 容器；Codex 经 npm 安装 |
+| 一键安装 | NapCat 接入方式全局设置；本地安装后选择启动文件，或按账号安装 Docker 容器；模型 API 无需安装 CLI |
 | 插件与 AI 工具调用 | 模块页导入可信插件，为账号、群和调用人授权工具；支持真实 @、戳一戳及名字／别名唤醒，自定义 Skill 与插件独立加密凭据。AI 可选择已授权工具执行；写入需明确请求和额外授权。见 [开发指南](docs/PLUGIN_DEVELOPMENT.md)、[Bilibili 示例](examples/plugins/bilibili-assistant) |
 | 自由群聊与主动分享 | 每群单独开启；记录双向对话、合并短消息并接住追问，AI 判断接话或沉默；可使用独立授权的只读工具寻找素材，自行决定是否分享。见 [配置指南](docs/SOCIAL_CHAT.md) |
 | 群友记忆 | 设置中按账号、实际 QQ、群和成员管理明确事实与偏好；AI 提出候选，经主人确认后用于聊天，可编辑、删除或逐群暂停 |
 | 多 AI 配置 | 提供 DeepSeek、OpenAI、百炼、智谱、Kimi、硅基流动及自定义兼容 API 选项；每个账号从下拉栏选择一个模型来源，已保存的其他接口参数可保留 |
-| GPT 个人订阅 | 使用本人已登录的官方 Codex CLI，处理本人私聊及明确发起或授权的个人整理任务 |
 | 通知汇总 | 当前账号的可读工作群消息存入 SQLite，手动或定时交给所选模型解释；默认保存在本地，可授权私聊发送 |
 | 收藏整理 | 读取当前登录账号的收藏列表摘要，使用独立选择的整理模型，保存收藏 ID 和原摘要 |
 
-**工作群默认不发送；用户也可以明确授予其 API 模型回复权限。**「工作群/社交群」描述用途，实际权限由读取、发送和账号释放状态共同决定。个人 Codex 订阅不用于群友触发的自动群聊，未选群和未授权目标不能发送。
+**工作群默认不发送；用户也可以明确授予其 API 模型回复权限。**「工作群/社交群」描述用途，实际权限由读取、发送和账号释放状态共同决定。所有模型任务均使用配置好的 API；未选群和未授权目标不能发送。
 
 ```mermaid
 flowchart LR
@@ -96,7 +97,6 @@ flowchart LR
   NapCat --> Runtime[每账号运行时与任务队列]
   Accounts --> Runtime
   Runtime --> DS[DeepSeek / 兼容 API]
-  Runtime -->|本人任务| Codex[独立登录的 Codex CLI]
   Runtime <--> DB[(各账号 SQLite)]
   Runtime --> Gate[场景 + 目标 + 释放状态校验]
   Permissions --> Gate
@@ -106,17 +106,18 @@ flowchart LR
 ## 当前范围与验证状态
 
 - **QQ 来源**：只缓存连接后实际收到、且已授予读取权限的选定群消息，不回填完整历史。收藏只属于实际登录账号，暂为列表摘要，不含完整正文、图片或附件。
-- **GPT 接入**：使用 Codex 当前模型与订阅额度；ChatGPT 网页历史、记忆和自定义 GPTs 不会自动带入。额度不足不自动切换付费 API。
-- **本地运行**：多个 QQ 账号可同时在线；应用后台保持运行才会采集和定时汇总。新账号数据相互分开，旧版升级保留原目录、登录状态和既有权限，不扩大授权。
+- **OpenAI 接入**：使用专用 API 项目和 Key；符合条件的 Pro／Business 额度须先在官方页面激活到正确组织。ChatGPT 网页历史、记忆和自定义 GPTs 不会带入，API 失败不自动换用其他服务。见 [专用 API 配置](docs/OPENAI_API_SETUP.md)。
+- **本地运行**：多个 QQ 账号可同时在线；应用后台保持运行才会采集和定时汇总。新账号数据相互分开，升级保留原目录与 QQ 登录资料；已有 API 配置和权限不变。旧订阅任务停用并恢复只读，需主动改选 API，不自动扩大授权。
 - **自主聊天**：自由聊天、主动话题和群友记忆默认关闭，分别按群启用。主动检查与模型判断受预算约束，可以一直保持沉默；Bilibili 示例按视频元数据筛选，不具备完整视频观看能力。
 - **后续平台**：微信、Telegram 目前仅列入平台扩展规划，没有可用接入实现。
-- **验证**：自动测试、界面与桌面检查见 [验证记录](docs/VALIDATION.md)。正式 EXE 由 Windows CI 测试和构建；真实 QQ、DeepSeek、ChatGPT 及 Windows 原生扫码联调仍待完成。
+- **验证**：自动测试、界面与桌面检查见 [验证记录](docs/VALIDATION.md)。正式 EXE 由 Windows CI 测试和构建；真实 QQ、模型 API 及 Windows 原生扫码联调仍待完成。
 
 ## 文档与源码导航
 
 | 文档 | 内容 |
 | --- | --- |
 | [使用指南](docs/USAGE.md) | 创建账号、任务参数、读取与发送权限、私聊命令、收藏和备份 |
+| [机器人专用 API](docs/OPENAI_API_SETUP.md) | 领取符合条件的 API 额度、创建独立项目／Key，并接入应用 |
 | [自由群聊与记忆](docs/SOCIAL_CHAT.md) | 自然追问、内容驱动的主动分享、背景只读工具、群友记忆确认和排障 |
 | [Windows 原生 NapCat](docs/NATIVE_NAPCAT_WINDOWS.md) | 无需 Docker 的官方安装器、每账号高级连接与端口配置 |
 | [功能实现与架构](docs/ARCHITECTURE.md) | 多账号隔离、模型路由、权限门和旧版迁移 |
@@ -132,9 +133,9 @@ src/server.mjs            本地 HTTP、请求隔离与多账号协调
 src/accounts.mjs          稳定账号目录与可用/规划平台清单
 src/account-service.mjs   各账号配置、安装任务与权限释放事务
 src/config.mjs            schema 2 默认参数、校验与旧版迁移
-src/installer.mjs         每账号 NapCat / Codex 安装与状态检查
+src/installer.mjs         每账号 NapCat 安装与状态检查
 src/runtime.mjs           QQ 连接、群列表、聊天、汇总与发送权限
-src/providers.mjs         DeepSeek / 兼容 API / Codex CLI 模型调用
+src/providers.mjs         DeepSeek / OpenAI 兼容 API 模型调用
 src/store.mjs             每账号配置、凭据与 SQLite 数据
 scripts/                  运行环境准备与打包校验
 .github/workflows/        Windows 自动测试、构建与发布

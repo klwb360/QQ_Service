@@ -19,16 +19,16 @@ async function fixture({ beforeOperation = async () => {} } = {}) {
   const profiles = new Map();
   const app = createDashboard({ dataDir,
     installerFactory: context => {
-      const profile = { installed: new Set(), running: false, loggedIn: false, operations: [], runtimeCalls: [], invalidations: [] };
+      const profile = { installed: new Set(), running: false, operations: [], runtimeCalls: [], invalidations: [] };
       profiles.set(context.profileId, profile);
       const operation = async name => {
         profile.operations.push(name);
         await beforeOperation(context.profileId, name);
       };
       return {
-        status: async () => ['napcat', 'codex', 'deepseek', 'summary', 'favorites'].map(id => ({
-          id, name: id, installed: profile.installed.has(id) || !['napcat', 'codex'].includes(id),
-          state: id === 'napcat' && profile.running ? 'running' : profile.installed.has(id) ? 'installed' : ['napcat', 'codex'].includes(id) ? 'not_installed' : 'available',
+        status: async () => ['napcat', 'deepseek', 'summary', 'favorites'].map(id => ({
+          id, name: id, installed: profile.installed.has(id) || id !== 'napcat',
+          state: id === 'napcat' && profile.running ? 'running' : profile.installed.has(id) ? 'installed' : id === 'napcat' ? 'not_installed' : 'available',
         })),
         environment: async () => ({ node: { supported: true } }),
         install: async (id, onLog) => {
@@ -44,12 +44,6 @@ async function fixture({ beforeOperation = async () => {} } = {}) {
           await operation('stop:napcat'); profile.running = false;
           return { running: false };
         },
-        loginCodex: async onLog => {
-          await operation('login:codex'); profile.loggedIn = true;
-          onLog('模拟设备授权完成');
-          return { loggedIn: true, message: '模拟官方授权已确认' };
-        },
-        codexStatus: async () => ({ loggedIn: profile.loggedIn, message: profile.loggedIn ? '模拟官方授权已确认' : '模拟官方授权未登录' }),
         dispose: async () => {},
       };
     },
@@ -117,7 +111,7 @@ async function fixture({ beforeOperation = async () => {} } = {}) {
   };
 }
 
-test('模块卡片分别安装 NapCat 和 Codex；两者可同时保留，安装不应用参数、不登录模型或释放权限', async () => {
+test('NapCat 与内置模块按账号独立准备，安装不应用参数、调用模型或释放权限', async () => {
   const f = await fixture();
   try {
     const a = await f.create('111111'), b = await f.create('999999');
@@ -126,14 +120,14 @@ test('模块卡片分别安装 NapCat 和 Codex；两者可同时保留，安装
     assert.equal(result.job.status, 'completed');
     assert.deepEqual(a.profile.operations, ['install:napcat', 'start:napcat']);
     assert.equal(result.state.modules.find(module => module.id === 'napcat').state, 'running');
-    assert.equal(result.state.modules.find(module => module.id === 'codex').installed, false);
-    result = await f.submit(a, '/modules/codex/install');
+    assert.equal(result.state.modules.some(module => module.id === 'codex'), false);
+    result = await f.submit(a, '/modules/summary/install');
     assert.equal(result.job.status, 'completed');
-    assert.deepEqual(a.profile.operations, ['install:napcat', 'start:napcat', 'install:codex']);
-    assert.equal(result.state.modules.length, 5);
+    assert.deepEqual(a.profile.operations, ['install:napcat', 'start:napcat', 'install:summary']);
+    assert.equal(result.state.modules.length, 4);
     assert.equal(result.state.modules.find(module => module.id === 'napcat').state, 'running');
-    assert.equal(result.state.modules.find(module => module.id === 'codex').installed, true);
-    assert.equal(result.state.codexAuth.loggedIn, null);
+    assert.equal(result.state.modules.find(module => module.id === 'summary').installed, true);
+    assert.equal(Object.hasOwn(result.state, 'codexAuth'), false);
     assert.equal(result.state.applied.permissions.released, false);
     assert.equal(result.state.runtime.permissions.readOnly, true);
     assert.deepEqual(f.snapshot(a), beforeA);
@@ -165,34 +159,29 @@ test('NapCat 启停只控制当前账号模块，未发起 QQ 接管连接或改
   } finally { await f.close(); }
 });
 
-test('Codex 卡片授权与状态检查绑定当前账号；外部退出后清除旧授权证据，始终不调用模型或释放 QQ 权限', async () => {
+test('移除订阅安装和登录接口，不创建任务、不读取登录状态或影响其他账号', async () => {
   const f = await fixture();
   try {
     const a = await f.create('111111'), b = await f.create('999999');
     const beforeA = f.snapshot(a), beforeB = f.snapshot(b);
-    let response = await f.post(a.route + '/codex/status');
-    assert.equal(response.status, 200); assert.equal(response.body.loggedIn, false);
-    assert.equal((await f.submit(a, '/modules/codex/install')).job.status, 'completed');
-    const result = await f.submit(a, '/codex/login');
-    assert.equal(result.job.status, 'completed');
-    assert.equal(result.state.codexAuth.loggedIn, true);
-    assert.deepEqual(a.profile.operations, ['install:codex', 'login:codex']);
-    assert.equal((await f.state(b)).codexAuth.loggedIn, null);
-    response = await f.post(a.route + '/codex/status');
-    assert.equal(response.status, 200); assert.equal(response.body.loggedIn, true);
-    const beforeLogout = a.profile.invalidations.length;
-    a.profile.loggedIn = false; // The official CLI can be logged out outside this app.
-    response = await f.post(a.route + '/codex/status');
-    assert.equal(response.status, 200); assert.equal(response.body.loggedIn, false);
-    assert.equal((await f.state(a)).codexAuth.loggedIn, false);
-    assert.deepEqual(a.profile.invalidations.slice(beforeLogout), ['codex']);
+    for (const route of ['/modules/codex/install', '/codex/login', '/codex/status']) {
+      const response = await f.post(a.route + route);
+      assert.equal(response.status, 404, route);
+    }
+    const oldSetup = await f.post(a.route + '/setup/install', { modules: ['napcat', 'codex'] });
+    assert.equal(oldSetup.status, 400);
+    const state = await f.state(a);
+    assert.equal(Object.hasOwn(state, 'codexAuth'), false);
+    assert.ok(state.setup.models.providers.every(provider => provider.id !== 'codex'));
+    assert.deepEqual(state.jobs, []);
+    assert.deepEqual(a.profile.operations, []);
+    assert.deepEqual(b.profile.operations, []);
     assert.deepEqual(f.snapshot(a), beforeA);
     assert.deepEqual(f.snapshot(b), beforeB);
-    assert.deepEqual(b.profile.invalidations, []);
   } finally { await f.close(); }
 });
 
-test('单账号模块和授权任务互斥，另一账号仍可操作；失败任务结束后释放锁并不启动安装失败的 NapCat', async () => {
+test('单账号模块任务互斥，另一账号仍可操作；失败任务结束后释放锁并不启动安装失败的 NapCat', async () => {
   const entered = deferred(), resume = deferred(); let heldId, shouldFail = true;
   const f = await fixture({ beforeOperation: async (id, name) => {
     if (id === heldId && name === 'install:napcat' && shouldFail) {
@@ -207,14 +196,14 @@ test('单账号模块和授权任务互斥，另一账号仍可操作；失败�
     const submitted = await f.post(a.route + '/modules/napcat/install');
     assert.equal(submitted.status, 202); heldJob = submitted.body.job.id;
     await entered.promise;
-    for (const route of ['/modules/codex/install', '/modules/napcat/start', '/modules/napcat/stop', '/codex/login']) {
+    for (const route of ['/modules/summary/install', '/modules/napcat/start', '/modules/napcat/stop', '/modules/favorites/install']) {
       const response = await f.post(a.route + route);
       assert.equal(response.status, 409, route);
       assert.match(response.body.error, /正在执行|等待/);
     }
     const apply = await f.post(a.route + '/config/apply', { revision: beforeA.config.revision });
     assert.equal(apply.status, 409);
-    const independent = await f.submit(b, '/modules/codex/install');
+    const independent = await f.submit(b, '/modules/summary/install');
     assert.equal(independent.job.status, 'completed');
     assert.equal((await f.state(a)).jobs.filter(job => job.status === 'running').length, 1);
     resume.resolve();
@@ -222,12 +211,12 @@ test('单账号模块和授权任务互斥，另一账号仍可操作；失败�
     assert.equal(failed.job.status, 'failed'); assert.match(failed.job.error, /下载失败/);
     assert.deepEqual(a.profile.operations, ['install:napcat']);
     shouldFail = false;
-    const retried = await f.submit(a, '/modules/codex/install');
+    const retried = await f.submit(a, '/modules/summary/install');
     assert.equal(retried.job.status, 'completed');
-    assert.deepEqual(a.profile.operations, ['install:napcat', 'install:codex']);
+    assert.deepEqual(a.profile.operations, ['install:napcat', 'install:summary']);
     assert.deepEqual(f.snapshot(a), beforeA);
     assert.deepEqual(f.snapshot(b), beforeB);
-    assert.deepEqual(b.profile.operations, ['install:codex']);
+    assert.deepEqual(b.profile.operations, ['install:summary']);
   } finally {
     resume.resolve();
     if (heldJob) await f.finished({ route: `/api/accounts/${heldId}` }, heldJob).catch(() => {});

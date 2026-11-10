@@ -170,12 +170,12 @@ test('全局设置验证会话、来源、版本与文件路径；拒绝的写�
 test('账号模块任务执行期间禁止切换全局方式；任务完成后全部账号看到新设置', async () => {
   const gate = deferred();
   let heldId;
-  const f = await fixture({ beforeOperation: async (id, name) => { if (id === heldId && name === 'install:codex') await gate.promise; } });
+  const f = await fixture({ beforeOperation: async (id, name) => { if (id === heldId && name === 'install:summary') await gate.promise; } });
   try {
     const a = await f.create('12345001'), b = await f.create('12345002');
     heldId = a.id;
     const initial = (await f.get('/api/napcat/settings')).body;
-    const started = await f.post(a.route + '/modules/codex/install');
+    const started = await f.post(a.route + '/modules/summary/install');
     assert.equal(started.status, 202);
     const blocked = await f.post('/api/napcat/settings', { ...initial, mode: 'docker' });
     assert.equal(blocked.status, 409);
