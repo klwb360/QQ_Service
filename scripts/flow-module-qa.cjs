@@ -271,7 +271,15 @@ async function launch() {
   console.error(error.stack||error.message); process.exitCode=1;
  } finally {
   if(page)await page.evaluate(()=>window.addEventListener('beforeunload',e=>e.stopImmediatePropagation(),{capture:true})).catch(()=>{});
-  if(electron)await electron.close().catch(()=>{});
+  if(electron) {
+    // The test's raw Electron shell has no production quit handler. A dirty
+    // form may prevent app.quit() during cleanup even after all assertions pass.
+    // Ignore beforeunload only here, after the test has finished its checks.
+    await electron.evaluate(({BrowserWindow}) => {
+      for(const win of BrowserWindow.getAllWindows()) win.webContents.on('will-prevent-unload', event => event.preventDefault());
+    }).catch(()=>{});
+    await electron.close().catch(()=>{});
+  }
   if(app)await app.close();
   if(qq){for(const peer of qq.clients)peer.terminate();await new Promise(resolve=>qq.close(resolve));}
   fs.rmSync(fixture,{recursive:true,force:true});
