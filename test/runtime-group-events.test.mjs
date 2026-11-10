@@ -33,7 +33,7 @@ async function fixture({ infer } = {}) {
   await new Promise(resolve => server.once('listening', resolve));
   const config = structuredClone(DEFAULT_CONFIG);
   config.botQQ = '999999'; config.qq.enabled = true; config.qq.wsUrl = `ws://127.0.0.1:${server.address().port}`;
-  config.permissions.released = true; config.chat.enabled = true; config.models.deepseek.enabled = true; config.models.codex.enabled = true;
+  config.permissions.released = true; config.chat.enabled = true; config.models.deepseek.enabled = true;
   config.groups = [{ id: '222222', name: '已选群', mode: 'social', read: true, send: true, trigger: 'mention', triggers: Object.keys(notices), prefix: '/ai', probability: 0, cooldownSeconds: 30 }];
   const outbound = [], calls = []; let peer, delivered = 0;
   server.on('connection', socket => {

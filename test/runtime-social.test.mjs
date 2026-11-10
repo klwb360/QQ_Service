@@ -176,7 +176,7 @@ test('自由聊天依然遵守读取、发送、账号释放与 API 限制', asy
       () => { f.config.groups[0].send = false; },
       () => { f.config.chat.enabled = false; },
       () => { f.config.models.deepseek.enabled = false; },
-      () => { f.config.chat.provider = 'codex'; f.config.models.codex.enabled = true; },
+      () => { f.config.chat.provider = 'codex'; },
     ]) {
       Object.assign(f.config, structuredClone(baseline));
       change(); f.emit(); await f.idle();

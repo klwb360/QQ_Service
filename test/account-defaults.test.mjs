@@ -71,8 +71,6 @@ function customConfig(state) {
   config.qq.enabled = true;
   config.models.deepseek.model = 'deepseek-reasoner';
   config.models.deepseek.temperature = 0.4;
-  config.models.codex.model = 'gpt-5';
-  config.models.codex.timeoutSeconds = 330;
   config.models.apis = [
     { id: 'api_main', label: '主要服务', enabled: true, baseUrl: 'https://api.example.com/v1', model: 'custom-main', maxTokens: 2048, temperature: 0.2 },
     { id: 'api_backup', label: '保留服务', enabled: false, baseUrl: 'https://backup.example.com/v1', model: 'custom-backup', maxTokens: 4096, temperature: 1.1 },
@@ -114,7 +112,7 @@ test('还原当前账号功能默认值时保留身份、连接、全部模型�
     captured.qq.wsUrl = 'ws://127.0.0.1:5101'; captured.qq.webUiUrl = 'http://127.0.0.1:7101';
     captured.models.apis[0].label = '刚改但尚未保存的服务';
     captured.models.apis[0].model = 'custom-main-next';
-    captured.models.codex.timeoutSeconds = 420;
+    captured.models.apis[1].temperature = 0.6;
     const typedKeys = { napcatToken: 'typed-onebot-token', 'apiKey:api_main': 'typed-main-key' };
     const result = await f.post(a.route + '/config/reset-defaults', { revision: before.revision, config: captured, secretUpdates: typedKeys });
     assert.equal(result.status, 200, JSON.stringify(result.body));
@@ -163,14 +161,13 @@ test('默认功能通道选择唯一启用模型，无模型或旧多模型配�
   const f = await fixture();
   try {
     for (const [label, selected, expected] of [
-      ['DeepSeek', ['deepseek'], 'deepseek'], ['订阅', ['codex'], 'codex'],
+      ['DeepSeek', ['deepseek'], 'deepseek'],
       ['兼容 API', ['api_main'], 'api_main'], ['无模型', [], 'deepseek'],
-      ['兼容旧多模型', ['codex', 'api_main'], 'deepseek'],
+      ['兼容旧多模型', ['deepseek', 'api_main'], 'deepseek'],
     ]) await t.test(label, async () => {
       const a = await f.create();
       const config = customConfig(a.state);
       config.models.deepseek.enabled = selected.includes('deepseek');
-      config.models.codex.enabled = selected.includes('codex');
       config.models.apis.forEach(model => { model.enabled = selected.includes(model.id); });
       const result = await f.post(a.route + '/config/reset-defaults', { revision: a.state.revision, config });
       assert.equal(result.status, 200, JSON.stringify(result.body));
@@ -254,7 +251,7 @@ test('应用中、模块任务中或账号关闭后拒绝还原，不能在后�
     assert.deepEqual(a.service.store.getSecretSnapshot(), keysBefore);
     resumeApply.resolve();
     assert.equal((await applying).status, 200);
-    const job = await f.post(a.route + '/modules/codex/install'); assert.equal(job.status, 202);
+    const job = await f.post(a.route + '/modules/napcat/install'); assert.equal(job.status, 202);
     await installEntered.promise;
     const duringJob = a.service.store.getState();
     result = await f.post(a.route + '/config/reset-defaults', { revision: duringJob.revision, config });

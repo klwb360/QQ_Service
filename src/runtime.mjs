@@ -144,7 +144,7 @@ export function createRuntime({ getConfig, getSecret, store, installer, pluginMa
   function modelFingerprint(provider) {
     const config = getModelConfig(getConfig(), provider);
     if (!config) return null;
-    const secret = provider === 'codex' ? '' : getSecret(provider === 'deepseek' ? 'deepseekApiKey' : apiSecretName(provider));
+    const secret = getSecret(provider === 'deepseek' ? 'deepseekApiKey' : apiSecretName(provider));
     if (secret && typeof secret.then === 'function') return null;
     return createHash('sha256').update(JSON.stringify([config, secret])).digest('hex');
   }
@@ -169,7 +169,7 @@ export function createRuntime({ getConfig, getSecret, store, installer, pluginMa
     const released = config.permissions?.released === true;
     const privateReplies = released && config.permissions?.privateReplies === true;
     const readableGroups = config.groups.filter((group) => group.read === true).map((group) => group.id);
-    const writableGroups = released && config.chat?.enabled === true && config.chat?.provider !== 'codex' && getModelConfig(config, config.chat?.provider)?.enabled
+    const writableGroups = released && config.chat?.enabled === true && getModelConfig(config, config.chat?.provider)?.enabled
       ? config.groups.filter((group) => group.read === true && group.send === true).map((group) => group.id) : [];
     const social = socialRuntime.status();
     return {
@@ -322,7 +322,7 @@ export function createRuntime({ getConfig, getSecret, store, installer, pluginMa
     if (scenario === 'plugin' || scenario === 'tool') return;
     if (scenario === 'social') {
       const memoryEnabled = Boolean(accountId && store.memory?.getGroup({ actualQQ: accountId, groupId: destination.id }).enabled);
-      if ((!group.social?.enabled && !memoryEnabled) || !config.botQQ || config.botQQ !== accountId || provider === 'codex' || provider !== config.chat.provider
+      if ((!group.social?.enabled && !memoryEnabled) || !config.botQQ || config.botQQ !== accountId || provider !== config.chat.provider
         || !config.chat.enabled || !getModelConfig(config, provider)?.enabled) throw fail('自由聊天的群或模型配置已失效。', 409);
       const authorized = autonomous ? new Set(listTools().filter(tool => tool.effect === 'read'
         && group.social?.proactive && group.social.readTools?.includes(tool.id)).map(tool => tool.id))
@@ -331,8 +331,8 @@ export function createRuntime({ getConfig, getSecret, store, installer, pluginMa
       if (autonomous && !group.social.proactive) throw fail('主动话题已关闭。', 409);
       return;
     }
-    if (scenario !== 'chat' || provider === 'codex' || provider !== config.chat.provider || !getModelConfig(config, provider)?.enabled) {
-      throw fail('群聊回复需要选择已启用的 API 模型；个人 Codex 订阅不用于自动群聊。', 409);
+    if (scenario !== 'chat' || provider !== config.chat.provider || !getModelConfig(config, provider)?.enabled) {
+      throw fail('群聊回复需要选择已启用的 API 模型。', 409);
     }
     if (triggeredBy && !groupTriggers(group).includes(triggeredBy)) throw fail('该群事件的触发权限已撤销，旧回复已取消。', 409);
   }
@@ -395,13 +395,14 @@ export function createRuntime({ getConfig, getSecret, store, installer, pluginMa
           : { allowed: false, action: 'owner_error', scenario: 'summary', reason: '工作群未选定、没有读取权限，或通知汇总未启用。' };
       }
       if (/^\/summary(?:\s|$)/.test(input.text)) return { allowed: false, action: 'owner_error', scenario: 'summary', reason: '用法：/summary 工作群号' };
+      if (/^\/gpt(?:\s|$)/.test(input.text)) return { allowed: false, action: 'owner_error', scenario: 'chat', reason: '订阅登录接入已移除。请在账号控制配置 OpenAI API，再直接发送问题；不会自动切换到其他模型。' };
       if (config.chat?.enabled !== true) return { allowed: false, action: 'owner_error', scenario: 'chat', reason: '账号聊天功能未启用。' };
-      const command = /^\/(gpt|ds)(?:\s+([\s\S]*))?$/.exec(input.text);
-      const provider = command?.[1] === 'gpt' ? 'codex' : command?.[1] === 'ds' ? 'deepseek' : config.chat.provider;
+      const command = /^\/(ds)(?:\s+([\s\S]*))?$/.exec(input.text);
+      const provider = command ? 'deepseek' : config.chat.provider;
       const text = command ? (command[2] || '').trim() : input.text;
-      if (!text) return { allowed: false, action: 'owner_error', scenario: 'chat', reason: '请在 /gpt 或 /ds 后填写问题。' };
-      if (!getModelConfig(config, provider)?.enabled) return { allowed: false, action: 'owner_error', scenario: 'chat', reason: provider === 'codex' ? 'GPT 订阅模块未启用。' : '所选 API 模型尚未启用。' };
-      return { allowed: true, action: 'chat', scenario: 'chat', provider, text, destination: { type: 'private', id: config.ownerQQ }, reason: provider === 'codex' ? '本人私聊请求，使用个人订阅。' : '本人私聊，使用所选 API 模型。' };
+      if (!text) return { allowed: false, action: 'owner_error', scenario: 'chat', reason: '请在 /ds 后填写问题。' };
+      if (!getModelConfig(config, provider)?.enabled) return { allowed: false, action: 'owner_error', scenario: 'chat', reason: '所选 API 模型尚未启用。' };
+      return { allowed: true, action: 'chat', scenario: 'chat', provider, text, destination: { type: 'private', id: config.ownerQQ }, reason: '本人私聊，使用所选 API 模型。' };
     }
     if (input.messageType !== 'group') return { allowed: false, action: 'ignore', reason: '不支持此消息类型。' };
     const group = config.groups.find((entry) => entry.id === input.groupId);
@@ -410,7 +411,7 @@ export function createRuntime({ getConfig, getSecret, store, installer, pluginMa
     if (config.permissions?.released !== true) return { allowed: true, action: 'record_only', groupId: group.id, reason: '账号当前只读；完成群与消息配置并释放权限后才可自动回复。' };
     if (group.send !== true) return { allowed: true, action: 'record_only', groupId: group.id, reason: '该群没有发送权限，只记录已授权读取的消息。' };
     if (config.chat?.enabled !== true) return { allowed: true, action: 'record_only', groupId: group.id, reason: '账号聊天功能未启用，只记录消息。' };
-    if (config.chat?.provider === 'codex' || !getModelConfig(config, config.chat?.provider)?.enabled) return { allowed: true, action: 'record_only', groupId: group.id, reason: '自动群聊需要已启用的 API 模型，不会使用本人 Codex 订阅。' };
+    if (!getModelConfig(config, config.chat?.provider)?.enabled) return { allowed: true, action: 'record_only', groupId: group.id, reason: '自动群聊需要已启用的 API 模型，请先配置并测试连接。' };
     if (group.social?.enabled) return { allowed: true, action: 'social', groupId: group.id, reason: '该群已启用自由聊天，将结合语境判断回复或沉默。' };
     if (!input.text) return { allowed: true, action: 'record_only', groupId: group.id, reason: '没有可供回答的文字；附件当前未解析。' };
     const triggers = groupTriggers(group);
@@ -487,11 +488,6 @@ export function createRuntime({ getConfig, getSecret, store, installer, pluginMa
     const config = getConfig();
     if (!getModelConfig(config, provider)?.enabled) throw fail('所选模型通道尚未启用。', 409);
     counters.modelCalls++;
-    if (provider === 'codex') {
-      const invocation = await installer.codexInvocation();
-      const prompt = messages.map((message) => `${message.role === 'system' ? '任务要求' : message.role === 'assistant' ? '此前回答' : '输入资料'}：\n${message.content}`).join('\n\n');
-      return providers.codex({ prompt, config: config.models.codex, invocation, signal });
-    }
     const apiConfig = testing ? { ...getModelConfig(config, provider), maxTokens: 64, temperature: 0 } : getModelConfig(config, provider);
     if (isApiProviderId(provider)) return providers.compatible({ messages, config: apiConfig, apiKey: await getSecret(apiSecretName(provider)), signal, provider, ...(tools !== undefined ? { tools, toolChoice } : {}) });
     if (provider !== 'deepseek') throw fail('未知模型通道。');
@@ -577,7 +573,7 @@ export function createRuntime({ getConfig, getSecret, store, installer, pluginMa
     const group = config.groups.find(group => group.id === groupId);
     if (taskEpoch !== epoch || !config.tools?.enabled || !config.permissions?.released || !config.qq.enabled || !connected
       || !config.botQQ || config.botQQ !== accountId || !group?.read || !group.send
-      || !config.chat.enabled || config.chat.provider === 'codex' || !getModelConfig(config, config.chat.provider)?.enabled) {
+      || !config.chat.enabled || !getModelConfig(config, config.chat.provider)?.enabled) {
       throw fail('工具请求的账号、群、模型或授权范围已失效。', 409);
     }
     return config;
@@ -1016,7 +1012,7 @@ export function createRuntime({ getConfig, getSecret, store, installer, pluginMa
           { role: 'user', content: '请测试一次。' },
         ], signal, { testing: true });
         if (modelChecks.get(provider)?.attempt === attempt && fingerprint && fingerprint === modelFingerprint(provider)) modelChecks.set(provider, { attempt, status: 'passed', fingerprint, at: new Date().toISOString(), message: '最新一次真实模型测试已通过。' });
-        return { ...result, tested: true, message: provider === 'codex' ? '已完成一次真实 Codex 测试，会使用订阅额度；结果仅显示在本机。' : '已完成一次真实 API 测试，可能产生少量费用；结果仅显示在本机。' };
+        return { ...result, tested: true, message: '已完成一次真实 API 测试，可能消耗 API 额度；结果仅显示在本机。' };
       });
     } catch (error) {
       if (modelChecks.get(provider)?.attempt === attempt) modelChecks.set(provider, { attempt, status: 'failed', fingerprint: null, at: new Date().toISOString(), message: error.message || '最新一次模型测试未通过。' });
@@ -1084,8 +1080,8 @@ export function createRuntime({ getConfig, getSecret, store, installer, pluginMa
     if (source === 'schedule' && config.permissions?.released !== true) {
       throw fail('账号尚未释放权限，自动汇总不会调用模型；可在仪表盘手动整理。', 409);
     }
-    if (source === 'schedule' && config.summary.provider === 'codex' && !config.summary.backgroundAuthorized) {
-      throw fail('定时使用 GPT 订阅需要本人明确授权后台汇总。', 409);
+    if (source === 'schedule' && !config.summary.backgroundAuthorized) {
+      throw fail('定时汇总需要明确授权后台使用 API 额度。', 409);
     }
     const shouldSend = options.send ?? config.summary.sendToOwner;
     return enqueue(`summary:${group.id}`, async (signal, taskEpoch) => {
@@ -1093,8 +1089,8 @@ export function createRuntime({ getConfig, getSecret, store, installer, pluginMa
       if (!current.summary.enabled || !current.groups.some((entry) => entry.id === group.id && entry.mode === 'work' && entry.read === true)) {
         throw fail('通知汇总场景或来源群读取权限已撤销。', 409);
       }
-      if (source === 'schedule' && current.permissions?.released !== true) {
-        throw fail('账号权限已撤销，排队中的自动汇总已取消。', 409);
+      if (source === 'schedule' && (current.permissions?.released !== true || !current.summary.backgroundAuthorized)) {
+        throw fail('账号权限或后台汇总授权已撤销，排队中的自动汇总已取消。', 409);
       }
       const provider = current.summary.provider;
       const max = current.summary.maxMessages;
@@ -1240,9 +1236,9 @@ export function createRuntime({ getConfig, getSecret, store, installer, pluginMa
         if (schedulerEpoch !== epoch) break;
         const key = `daily-summary:${group.id}:${localDay(now)}`;
         if (await store.getTask(key)) continue;
-        if (config.summary.provider === 'codex' && !config.summary.backgroundAuthorized) {
-          await store.setTask(key, { state: 'blocked', at: now.toISOString(), reason: 'GPT 后台汇总尚未获本人授权。' });
-          report('warn', `工作群 ${group.id} 定时汇总未运行：GPT 后台授权未开启。`);
+        if (!config.summary.backgroundAuthorized) {
+          await store.setTask(key, { state: 'blocked', at: now.toISOString(), reason: '后台定时汇总尚未获授权。' });
+          report('warn', `工作群 ${group.id} 定时汇总未运行：请先允许后台使用 API 额度。`);
           continue;
         }
         await store.setTask(key, { state: 'running', at: now.toISOString() });

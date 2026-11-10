@@ -259,7 +259,7 @@ test('账号、群和请求人授权不满足时不能调用模型或执行工�
       () => { f.config.groups[0].read = false; },
       () => { f.config.groups[0].send = false; },
       () => { f.config.chat.enabled = false; },
-      () => { f.config.chat.provider = 'codex'; f.config.models.codex.enabled = true; },
+      () => { f.config.chat.provider = 'codex'; },
     ];
     for (const change of denied) {
       for (const key of Object.keys(f.config)) delete f.config[key];

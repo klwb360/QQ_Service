@@ -18,7 +18,7 @@ test('真实 OneBot mention 与普通文字 @ 有区别', () => {
   assert.equal(parseMessage('@999999 你好', '999999').mentioned, false);
 });
 
-test('模拟 QQ 端到端验证工作群只读、个人订阅边界、私密上下文隔离及收藏来源', async () => {
+test('模拟 QQ 端到端验证工作群只读、私人 API 与群聊边界、私密上下文隔离及收藏来源', async () => {
   const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'qqbridge-runtime-'));
   const store = createStore(dir);
   const wsServer = new WebSocketServer({ host: '127.0.0.1', port: 0 });
@@ -38,20 +38,20 @@ test('模拟 QQ 端到端验证工作群只读、个人订阅边界、私密上�
   let config = structuredClone(DEFAULT_CONFIG);
   config.ownerQQ = '111111'; config.botQQ = '999999'; config.qq.enabled = true;
   config.qq.wsUrl = `ws://127.0.0.1:${wsServer.address().port}`;
-  config.models.deepseek.enabled = true; config.models.codex.enabled = true;
+  config.models.deepseek.enabled = true; config.models.apis = [{ id: 'api_private', label: '私人 API', enabled: true, baseUrl: 'https://api.openai.com/v1', model: 'gpt-test', maxTokens: 1024, temperature: 0.7 }];
   config.permissions = { released: true, privateReplies: true }; config.chat.enabled = true;
-  config.summary.enabled = true; config.summary.provider = 'codex'; config.favorites.enabled = true;
-  config.summary.sendToOwner = true; config.favorites.provider = 'codex';
+  config.summary.enabled = true; config.summary.provider = 'api_private'; config.favorites.enabled = true;
+  config.summary.sendToOwner = true; config.favorites.provider = 'api_private';
   config.groups = [
     { id: '222222', name: '朋友', mode: 'social', read: true, send: true, trigger: 'prefix', prefix: '/ai', cooldownSeconds: 5, probability: 0 },
     { id: '333333', name: '工作', mode: 'work', read: true, send: false, trigger: 'prefix', prefix: '/ai', cooldownSeconds: 5, probability: 0 }
   ];
   store.saveDraft(config); store.commitDraft();
   const runtime = createRuntime({ getConfig: () => config, getSecret: () => 'mock-token', store,
-    installer: { codexInvocation: () => ({ command: 'mock', args: [], env: { CODEX_HOME: 'mock' }, cwd: 'mock' }) },
+    installer: {},
     providers: {
       deepseek: async args => { calls.push({ provider: 'deepseek', input: JSON.stringify(args.messages) }); return { provider: 'deepseek', text: 'DS 回复' }; },
-      codex: async args => { calls.push({ provider: 'codex', input: args.prompt }); return { provider: 'codex', text: args.prompt.includes('工作群：') ? '请交表 [消息:work-1]。不可信引用 [消息:invented]' : 'GPT 私人回复' }; }
+      compatible: async args => { const input = JSON.stringify(args.messages); calls.push({ provider: 'api_private', input }); return { provider: 'api_private', text: input.includes('工作群：') ? '请交表 [消息:work-1]。不可信引用 [消息:invented]' : 'API 私人回复' }; }
     }
   });
   const event = (messageId, messageType, userId, groupId, text) => peer.send(JSON.stringify({ post_type: 'message', message_type: messageType, self_id: 999999, user_id: userId, ...(groupId ? { group_id: groupId } : {}), message_id: messageId, time: Math.floor(Date.now() / 1000), message: [{ type: 'text', data: { text } }] }));
@@ -75,9 +75,10 @@ test('模拟 QQ 端到端验证工作群只读、个人订阅边界、私密上�
     assert.equal(summary.text.includes('[引用未核实]'), true);
     assert.equal(outbound.at(-1).params.user_id, '111111');
     assert.equal(outbound.some(p => p.params.group_id === '333333'), false);
-    event('owner-1', 'private', '111111', null, '/gpt 解释一个术语');
+    config.chat.provider = 'api_private';
+    event('owner-1', 'private', '111111', null, '解释一个术语');
     await waitFor(() => outbound.length === 3);
-    assert.deepEqual(calls.map(c => c.provider), ['deepseek', 'codex', 'codex']);
+    assert.deepEqual(calls.map(c => c.provider), ['deepseek', 'api_private', 'api_private']);
     const favorites = await runtime.syncFavorites();
     assert.equal(favorites.accountId, '999999'); assert.equal(favorites.partial, true); assert.equal(favorites.hasMore, true);
     assert.equal(store.getFavorites()[0].accountId, '999999');
@@ -95,7 +96,8 @@ test('模拟 QQ 端到端验证工作群只读、个人订阅边界、私密上�
     store.saveFavorites(existingFavorites); config.summary.enabled = true;
     assert.equal(outbound.every(p => !p.params.group_id || p.params.group_id === '222222'), true);
     await assert.rejects(runtime.runSummary('222222'), /选定.*工作群/);
-    await assert.rejects(runtime.runSummary('333333', { source: 'schedule' }), /明确授权/);
+    config.permissions.released = false;
+    await assert.rejects(runtime.runSummary('333333', { source: 'schedule' }), /授权|释放|只读/);
   } finally {
     await runtime.stop(); for (const client of wsServer.clients) client.terminate();
     await new Promise(resolve => wsServer.close(resolve)); store.close(); fs.rmSync(dir, { recursive: true, force: true });

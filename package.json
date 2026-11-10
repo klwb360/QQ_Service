@@ -1,9 +1,9 @@
 {
   "name": "qq-service",
-  "version": "0.6.1",
+  "version": "0.7.0",
   "private": true,
   "type": "module",
-  "description": "Windows-first local QQ / DeepSeek / personal Codex dashboard",
+  "description": "Windows-first local QQ assistant with DeepSeek and OpenAI-compatible APIs",
   "main": "desktop/main.cjs",
   "author": "QQ_Service contributors",
   "license": "MIT",

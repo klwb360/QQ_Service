@@ -63,7 +63,7 @@ export function createSocialRuntime({ getConfig, getIdentity, getEpoch, store, i
     const group = config.groups.find(item => item.id === groupId);
     const memoryEnabled = Boolean(getIdentity() && store.memory?.getGroup({ actualQQ: getIdentity(), groupId }).enabled);
     if (stopped || expectedEpoch !== getEpoch() || (!group?.social?.enabled && !memoryEnabled) || !config.chat?.enabled
-      || config.chat.provider === 'codex' || !getModelConfig(config, config.chat.provider)?.enabled) throw error('自由聊天配置已失效。');
+      || !getModelConfig(config, config.chat.provider)?.enabled) throw error('自由聊天配置已失效。');
     gate({ type: 'group', id: groupId }, expectedEpoch, { scenario: 'social', provider: config.chat.provider });
     return { config, group };
   }

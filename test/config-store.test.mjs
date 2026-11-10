@@ -12,13 +12,16 @@ test('同一群不能同时作为社交群和工作群', () => {
   assert.throws(() => validateConfig(config), error => error.details.some(detail => detail.includes('重复')));
 });
 
-test('草稿可以未完成；启用功能的应用必须满足依赖和后台授权', () => {
+test('草稿可以未完成；启用 API 功能的应用必须满足模型和密钥依赖', () => {
   const config = structuredClone(DEFAULT_CONFIG);
-  config.summary.enabled = true; config.summary.provider = 'codex'; config.summary.scheduleEnabled = true;
-  assert.equal(validateConfig(config).summary.provider, 'codex');
-  assert.throws(() => validateConfig(config, { applying: true }), error => error.details.some(d => d.includes('授权')) && error.details.some(d => d.includes('尚未启用')));
-  config.ownerQQ = '123456'; config.models.codex.enabled = true; config.summary.backgroundAuthorized = true;
-  assert.equal(validateConfig(config, { applying: true }).summary.enabled, true);
+  config.summary.enabled = true; config.summary.provider = 'deepseek'; config.summary.scheduleEnabled = true;
+  assert.equal(validateConfig(config).summary.provider, 'deepseek');
+  assert.throws(() => validateConfig(config, { applying: true }), error => error.details.some(d => d.includes('尚未启用')));
+  config.models.deepseek.enabled = true;
+  assert.throws(() => validateConfig(config, { applying: true }), error => error.details.some(d => d.includes('API Key')));
+  assert.throws(() => validateConfig(config, { applying: true, hasSecret: () => true }), error => error.issues.some(issue => issue.path === 'summary.backgroundAuthorized'));
+  config.summary.backgroundAuthorized = true;
+  assert.equal(validateConfig(config, { applying: true, hasSecret: () => true }).summary.enabled, true);
 });
 
 test('模型密钥不会被发送到任意网址，QQ URL 不接受远程或内嵌凭据', () => {

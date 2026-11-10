@@ -30,8 +30,6 @@ async function fixture(options = {}) {
         ...actual,
         environment: async () => ({ node: { supported: true } }),
         status: async () => [],
-        codexStatus: async () => ({ loggedIn: false, message: '模拟：未登录' }),
-        loginCodex: async onLog => { onLog('模拟设备授权完成'); return { loggedIn: true, message: '模拟账号登录完成' }; },
         install: async (id, onLog) => { onLog(`模拟安装 ${id}`); return { installed: true }; },
         dispose: async () => { item.disposeCount = (item.disposeCount || 0) + 1; await actual.dispose(); },
         ...options.installer?.(context, item),
@@ -91,7 +89,7 @@ async function saveAndApply(f, id, config, secretUpdates = { napcatToken: 'test-
   assert.equal(applied.status, 200, JSON.stringify(applied.body)); return applied.body;
 }
 
-test('账号创建默认只读，多个账号的配置、密钥、授权任务和 Codex 目录独立', async () => {
+test('账号创建默认只读，多个账号的配置、密钥、后台模块任务和资料目录独立', async () => {
   let completeJobs;
   const gate = new Promise(resolve => { completeJobs = resolve; });
   const f = await fixture({ installer: (context) => ({ install: async (id, onLog) => {
@@ -126,20 +124,16 @@ test('账号创建默认只读，多个账号的配置、密钥、授权任务�
     for (const context of [ca.installerContext, cb.installerContext]) {
       assert.equal(path.dirname(context.dataDir), path.join(f.dataDir, 'accounts'));
       assert.equal(fs.existsSync(path.join(context.dataDir, 'history.sqlite')), true);
-      const cli = path.join(context.dataDir, 'modules', 'codex', 'node_modules', '@openai', 'codex', 'bin', 'codex.js');
-      fs.mkdirSync(path.dirname(cli), { recursive: true }); fs.writeFileSync(cli, '// never executed by this test\n');
+      assert.equal(fs.existsSync(path.join(context.dataDir, 'codex-home')), false);
     }
-    const invocationA = ca.installer.codexInvocation(); const invocationB = cb.installer.codexInvocation();
-    assert.notEqual(invocationA.env.CODEX_HOME, invocationB.env.CODEX_HOME);
-    assert.notEqual(invocationA.cwd, invocationB.cwd);
-    assert.ok(invocationA.env.CODEX_HOME.startsWith(ca.installerContext.dataDir + path.sep));
-    assert.ok(invocationB.cwd.startsWith(cb.installerContext.dataDir + path.sep));
-    const login = await f.post(`/api/accounts/${a.account.id}/codex/login`); assert.equal(login.status, 202);
-    await waitFor(() => f.get(`/api/accounts/${a.account.id}/state`), r => r.body.jobs.some(j => j.status === 'completed'));
-    const stateB = (await f.get(`/api/accounts/${b.account.id}/state`)).body;
-    assert.notEqual(stateB.codexAuth.loggedIn, true);
+    assert.equal(ca.installer.codexInvocation, undefined);
+    assert.equal(cb.installer.codexInvocation, undefined);
+    for (const suffix of ['/codex/login', '/codex/status', '/modules/codex/install']) {
+      const retired = await f.post(`/api/accounts/${a.account.id}${suffix}`);
+      assert.ok([400, 404, 410].includes(retired.status));
+    }
     assert.equal((await f.get(`/api/accounts/${a.account.id}/state`)).body.applied.permissions.released, false);
-    const starts = await Promise.all([f.post(`/api/accounts/${a.account.id}/modules/codex/install`), f.post(`/api/accounts/${b.account.id}/modules/codex/install`)]);
+    const starts = await Promise.all([f.post(`/api/accounts/${a.account.id}/modules/napcat/install`), f.post(`/api/accounts/${b.account.id}/modules/napcat/install`)]);
     starts.forEach(r => assert.equal(r.status, 202, JSON.stringify(r.body)));
     completeJobs();
     await waitFor(() => f.get(`/api/accounts/${a.account.id}/state`), r => r.body.jobs.every(j => j.status !== 'running'));

@@ -21,7 +21,7 @@ const group = (id, mode, permissions = {}) => ({
   trigger: 'prefix', prefix: '/ai', cooldownSeconds: 5, probability: 0, ...permissions,
 });
 
-async function fixture({ configure = () => {}, deepseek, codex, response } = {}) {
+async function fixture({ configure = () => {}, deepseek, compatible, response } = {}) {
   const directory = fs.mkdtempSync(path.join(os.tmpdir(), 'qq-service-permissions-'));
   const store = createStore(directory);
   const server = new WebSocketServer({ host: '127.0.0.1', port: 0 });
@@ -29,7 +29,8 @@ async function fixture({ configure = () => {}, deepseek, codex, response } = {})
   const config = structuredClone(DEFAULT_CONFIG);
   config.botQQ = '999999'; config.ownerQQ = '111111'; config.qq.enabled = true;
   config.qq.wsUrl = `ws://127.0.0.1:${server.address().port}`;
-  config.models.deepseek.enabled = true; config.models.codex.enabled = true;
+  config.models.deepseek.enabled = true;
+  config.models.apis = [{ id: 'api_private', label: 'Private API', enabled: true, baseUrl: 'https://api.openai.com/v1', model: 'gpt-test', maxTokens: 512, temperature: 0.7 }];
   config.groups = [group('222222', 'social'), group('333333', 'work'), group('444444', 'work', { read: false })];
   configure(config);
   store.saveDraft(config); store.commitDraft();
@@ -50,17 +51,17 @@ async function fixture({ configure = () => {}, deepseek, codex, response } = {})
     });
   });
   const runtime = createRuntime({
-    getConfig: () => config, getSecret: () => 'mock-secret', store,
-    installer: { codexInvocation: () => ({ command: 'mock', args: [], env: {}, cwd: directory }) },
+    getConfig: () => config, getSecret: name => name === 'apiKey:api_private' ? 'mock-private-api-key' : 'mock-secret', store,
+    installer: {},
     log: (message, level) => logs.push({ message, level }),
     providers: {
       deepseek: async (args) => {
         calls.push({ provider: 'deepseek', input: JSON.stringify(args.messages) });
         return deepseek ? deepseek(args) : { provider: 'deepseek', text: 'DS 结果 [消息:work-1] [收藏:favorite-1]' };
       },
-      codex: async (args) => {
-        calls.push({ provider: 'codex', input: args.prompt });
-        return codex ? codex(args) : { provider: 'codex', text: 'GPT 结果 [消息:work-1] [收藏:favorite-1]' };
+      compatible: async (args) => {
+        calls.push({ provider: args.provider, input: JSON.stringify(args.messages), apiKey: args.apiKey });
+        return compatible ? compatible(args) : { provider: args.provider, text: 'API 结果 [消息:work-1] [收藏:favorite-1]' };
       },
     },
   });
@@ -95,7 +96,7 @@ test('配置模型与任务不授予发送权：只读账号不触发QQ模型任
     config.chat.enabled = true; config.permissions.privateReplies = true;
     config.groups[0].send = true; config.groups[1].send = true;
     config.summary.enabled = true; config.summary.sendToOwner = true;
-    config.favorites.enabled = true; config.favorites.provider = 'codex';
+    config.favorites.enabled = true; config.favorites.provider = 'api_private';
   } });
   try {
     f.emit({ messageId: 'social-1', text: '/ai 尝试群回复' });
@@ -121,11 +122,11 @@ test('配置模型与任务不授予发送权：只读账号不触发QQ模型任
     await f.runtime.syncFavorites();
     const favorites = await f.runtime.runFavoritesSummary();
     assert.equal(favorites.delivery.state, 'not_requested');
-    assert.equal(favorites.provider, 'codex');
+    assert.equal(favorites.provider, 'api_private');
     const blockedFavorites = await f.runtime.runFavoritesSummary({ send: true });
     assert.equal(blockedFavorites.delivery.state, 'failed');
     assert.equal(f.store.getSummaries().length, 4);
-    assert.deepEqual(f.calls.map((call) => call.provider), ['deepseek', 'deepseek', 'codex', 'codex']);
+    assert.deepEqual(f.calls.map((call) => call.provider), ['deepseek', 'deepseek', 'api_private', 'api_private']);
     assert.equal(f.outbound.length, 0);
     await assert.rejects(f.runtime.runSummary('444444'), /读取权限/);
   } finally { await f.close(); }
@@ -156,42 +157,43 @@ test('工作群默认只读，显式授权后可由DeepSeek回复，不要求配
 
 test('私聊权限、场景开关和错误回复共用发送网关', async () => {
   const f = await fixture({ configure(config) {
-    config.permissions.released = true; config.chat.enabled = true;
-  }, codex: async () => { throw new Error('模拟模型连接失败'); } });
+    config.permissions.released = true; config.chat.enabled = true; config.chat.provider = 'api_private';
+  }, compatible: async () => { throw new Error('模拟模型连接失败'); } });
   try {
-    f.emit({ type: 'private', userId: '111111', text: '/gpt 尚未授权私聊' });
+    f.emit({ type: 'private', userId: '111111', text: '尚未授权私聊的API请求' });
     await f.idle();
     assert.equal(f.calls.length, 0);
     f.config.permissions.privateReplies = true;
     f.config.chat.enabled = false;
-    for (const text of ['/gpt 场景未启用', '/summary', '/favorites']) f.emit({ type: 'private', userId: '111111', text });
+    for (const text of ['场景未启用的API请求', '/summary', '/favorites']) f.emit({ type: 'private', userId: '111111', text });
     await f.idle();
     assert.equal(f.outbound.length, 0);
     assert.equal(f.calls.length, 0);
     f.config.chat.enabled = true;
-    f.emit({ type: 'private', userId: '111111', text: '/gpt 授权后的请求' });
+    f.emit({ type: 'private', userId: '111111', text: '授权后的API请求' });
     await waitFor(() => f.outbound.length === 1);
     assert.match(f.outbound[0].params.message[0].data.text, /任务未完成.*模拟模型连接失败/);
     assert.equal(f.outbound[0].params.user_id, '111111');
     f.config.permissions.released = false;
-    f.emit({ type: 'private', userId: '111111', text: '/gpt 撤权后不会回错误提示' });
+    f.emit({ type: 'private', userId: '111111', text: '撤权后不会回错误提示' });
     await f.idle();
     assert.equal(f.outbound.length, 1);
     assert.equal(f.calls.length, 1);
   } finally { await f.close(); }
 });
 
-test('仅配置Codex的账号可处理本人私聊，自动群聊不会使用个人订阅', async () => {
+test('仅配置兼容API的账号可处理本人私聊，群聊仍需独立群授权', async () => {
   const f = await fixture({ configure(config) {
     config.permissions = { released: true, privateReplies: true };
-    config.chat.enabled = true; config.chat.provider = 'codex'; config.models.deepseek.enabled = false;
-    config.groups[0].send = true;
+    config.chat.enabled = true; config.chat.provider = 'api_private'; config.models.deepseek.enabled = false;
+    config.groups[0].send = false;
   } });
   try {
-    f.emit({ type: 'private', userId: '111111', text: '默认使用我选择的Codex模型' });
+    f.emit({ type: 'private', userId: '111111', text: '默认使用我选择的专用API模型' });
     await waitFor(() => f.outbound.length === 1);
-    assert.deepEqual(f.calls.map((call) => call.provider), ['codex']);
-    f.emit({ text: '/ai 群友不能触发我的Codex' });
+    assert.deepEqual(f.calls.map((call) => call.provider), ['api_private']);
+    assert.equal(f.calls[0].apiKey, 'mock-private-api-key');
+    f.emit({ text: '/ai 未授权发送的群不能触发API' });
     f.emit({ type: 'private', userId: '555555', text: '/gpt 陌生人不能触发' });
     await f.idle();
     assert.equal(f.calls.length, 1); assert.equal(f.outbound.length, 1);
@@ -199,21 +201,47 @@ test('仅配置Codex的账号可处理本人私聊，自动群聊不会使用个
     f.config.models.deepseek.enabled = true;
     f.emit({ type: 'private', userId: '111111', text: '/ds 显式切换到DeepSeek' });
     await waitFor(() => f.outbound.length === 2);
-    assert.deepEqual(f.calls.map((call) => call.provider), ['codex', 'deepseek']);
-    assert.equal(f.config.chat.provider, 'codex');
+    assert.deepEqual(f.calls.map((call) => call.provider), ['api_private', 'deepseek']);
+    assert.equal(f.config.chat.provider, 'api_private');
+    f.config.groups[0].send = true;
+    f.emit({ text: '/ai 现在按独立授权使用专用API' });
+    await waitFor(() => f.outbound.length === 3);
+    assert.deepEqual(f.calls.map((call) => call.provider), ['api_private', 'deepseek', 'api_private']);
+  } finally { await f.close(); }
+});
+
+test('旧 /gpt 私聊命令只返回退役指引，不调用订阅或静默切换付费 API', async () => {
+  const f = await fixture({ configure(config) {
+    config.permissions = { released: true, privateReplies: true };
+    config.chat.enabled = true; config.chat.provider = 'api_private';
+  } });
+  try {
+    for (const text of ['/gpt 旧订阅请求', '/gpt']) {
+      f.emit({ type: 'private', userId: '111111', text });
+      await f.idle();
+    }
+    assert.equal(f.calls.length, 0, '退役命令不能转发到当前 API 或其他计费通道');
+    assert.equal(f.outbound.length, 2);
+    for (const packet of f.outbound) {
+      const text = packet.params.message[0].data.text;
+      assert.match(text, /已移除|不再支持|已取消|已停用/);
+      assert.match(text, /API/);
+      assert.equal(packet.params.user_id, '111111');
+    }
+    assert.equal(f.config.chat.provider, 'api_private');
   } finally { await f.close(); }
 });
 
 test('私人任务推理中撤销私聊许可，正文和错误提示都不能继续发送', async () => {
   let resolveModel;
   const f = await fixture({ configure(config) {
-    config.permissions = { released: true, privateReplies: true }; config.chat.enabled = true;
-  }, codex: () => new Promise((resolve) => { resolveModel = resolve; }) });
+    config.permissions = { released: true, privateReplies: true }; config.chat.enabled = true; config.chat.provider = 'api_private';
+  }, compatible: () => new Promise((resolve) => { resolveModel = resolve; }) });
   try {
-    f.emit({ type: 'private', userId: '111111', text: '/gpt 推理中的私人请求' });
+    f.emit({ type: 'private', userId: '111111', text: '推理中的私人API请求' });
     await waitFor(() => Boolean(resolveModel));
     f.config.permissions.privateReplies = false;
-    resolveModel({ provider: 'codex', text: '已撤销私聊权限的结果' });
+    resolveModel({ provider: 'api_private', text: '已撤销私聊权限的结果' });
     await f.idle();
     assert.equal(f.outbound.length, 0);
   } finally { await f.close(); }
@@ -262,10 +290,10 @@ for (const permission of ['released', 'send', 'read', 'scenario']) {
 test('应用配置后旧私人任务失败不能通过错误回复重新取得发送权', async () => {
   let rejectModel;
   const f = await fixture({ configure(config) {
-    config.permissions = { released: true, privateReplies: true }; config.chat.enabled = true;
-  }, codex: () => new Promise((resolve, reject) => { rejectModel = reject; }) });
+    config.permissions = { released: true, privateReplies: true }; config.chat.enabled = true; config.chat.provider = 'api_private';
+  }, compatible: () => new Promise((resolve, reject) => { rejectModel = reject; }) });
   try {
-    f.emit({ type: 'private', userId: '111111', text: '/gpt 旧配置的私人请求' });
+    f.emit({ type: 'private', userId: '111111', text: '旧配置的私人API请求' });
     await waitFor(() => Boolean(rejectModel));
     f.config.permissions.released = false;
     await f.runtime.reload(); await f.runtime.connect();
@@ -296,7 +324,7 @@ test('长消息每段均重查权限，首段后撤权不会继续发送', async
 test('收藏模型独立于通知汇总，收藏和私人问题不会混入群聊上下文', async () => {
   const f = await fixture({ configure(config) {
     config.permissions = { released: true, privateReplies: true }; config.chat.enabled = true; config.groups[0].send = true;
-    config.summary.provider = 'codex'; config.summary.sendToOwner = true;
+    config.summary.provider = 'api_private'; config.summary.sendToOwner = true; config.chat.provider = 'api_private';
     config.favorites.enabled = true; config.favorites.provider = 'deepseek';
   } });
   try {
@@ -306,12 +334,13 @@ test('收藏模型独立于通知汇总，收藏和私人问题不会混入群�
     assert.equal(summary.delivery.state, 'not_requested');
     assert.match(f.calls[0].input, /仅收藏中的术语和通知/);
     assert.equal(f.config.summary.enabled, false);
-    f.emit({ type: 'private', userId: '111111', text: '/gpt 仅私聊中的秘密' });
+    f.emit({ type: 'private', userId: '111111', text: '仅私聊中的秘密' });
     await waitFor(() => f.outbound.length === 1);
+    f.config.chat.provider = 'deepseek';
     f.emit({ groupId: '333333', text: '仅工作群中的保密信息' });
     f.emit({ text: '/ai 只回答本群问题' });
     await waitFor(() => f.outbound.length === 2);
-    assert.deepEqual(f.calls.map((call) => call.provider), ['deepseek', 'codex', 'deepseek']);
+    assert.deepEqual(f.calls.map((call) => call.provider), ['deepseek', 'api_private', 'deepseek']);
     assert.equal(f.calls[1].input.includes('仅收藏中的术语和通知'), false);
     assert.equal(f.calls[2].input.includes('仅收藏中的术语和通知'), false);
     assert.equal(f.calls[2].input.includes('仅私聊中的秘密'), false);
@@ -344,8 +373,9 @@ test('实际定时器触发：释放前不消耗模型，释放只读群后自�
   const f = await fixture({ configure(config) {
     config.ownerQQ = '';
     config.summary.enabled = true; config.summary.scheduleEnabled = true;
-    config.summary.time = '18:00'; config.summary.provider = 'codex';
-    config.summary.backgroundAuthorized = true; config.summary.sendToOwner = false;
+    config.summary.time = '18:00'; config.summary.provider = 'api_private';
+    config.summary.backgroundAuthorized = true;
+    config.summary.sendToOwner = false;
     config.groups = [group('333333', 'work', { read: true, send: false })];
   } });
   try {
@@ -367,7 +397,7 @@ test('实际定时器触发：释放前不消耗模型，释放只读群后自�
     assert.equal(f.runtime.status().permissions.readOnly, true);
     t.mock.timers.tick(15_000);
     await waitFor(() => f.store.getTask('daily-summary:333333:2026-10-15')?.state === 'completed');
-    assert.deepEqual(f.calls.map((call) => call.provider), ['codex']);
+    assert.deepEqual(f.calls.map((call) => call.provider), ['api_private']);
     const [summary] = f.store.getSummaries();
     assert.equal(summary.source, 'schedule');
     assert.equal(summary.delivery.state, 'not_requested');
