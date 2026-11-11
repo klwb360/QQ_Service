@@ -8,6 +8,7 @@ import { createAccountCatalog, PLATFORMS } from './accounts.mjs';
 import { createAccountService } from './account-service.mjs';
 import { createNapcatSettings } from './napcat-settings.mjs';
 import { createPluginManager } from './plugins.mjs';
+import { isContainer, publicOrigins } from './network-policy.mjs';
 
 const projectDir = fileURLToPath(new URL('../', import.meta.url));
 const fail = (message, statusCode = 409) => Object.assign(new Error(message), { statusCode });
@@ -18,6 +19,7 @@ export function defaultDataDir() {
 }
 
 export function createDashboard({ dataDir = defaultDataDir(), installerFactory, runtimeFactory } = {}) {
+  const configuredOrigins = publicOrigins();
   const csrfToken = randomBytes(32).toString('hex');
   const catalog = createAccountCatalog(dataDir);
   const plugins = createPluginManager({ dataDir });
@@ -35,15 +37,20 @@ export function createDashboard({ dataDir = defaultDataDir(), installerFactory, 
   const safeErrorValue = value => typeof value === 'string' ? redactAll(value) : Array.isArray(value) ? value.map(safeErrorValue) : value && typeof value === 'object' ? Object.fromEntries(Object.entries(value).map(([key, item]) => [key, safeErrorValue(item)])) : value;
   const checkConflicts = (config, id) => {
     if (!config.qq.enabled) return;
-    const port = url => { const parsed = new URL(url); return Number(parsed.port || 80); };
-    const ports = [port(config.qq.wsUrl), port(config.qq.webUiUrl)];
-    if (ports[0] === ports[1]) throw fail('同一账号的 OneBot 和 WebUI 端口不能相同。');
+    const endpoint = value => {
+      const url = new URL(value), host = ['localhost', '127.0.0.1', '[::1]'].includes(url.hostname) ? 'loopback' : url.hostname;
+      return `${host}:${url.port || (['https:', 'wss:'].includes(url.protocol) ? '443' : '80')}`;
+    };
+    const resources = value => [endpoint(value.qq.wsUrl), ...(value.qq.backend === 'snowluma'
+      ? [endpoint(value.qq.httpUrl || value.qq.connections?.snowluma?.httpUrl || 'http://127.0.0.1:3000')] : [endpoint(value.qq.webUiUrl)])];
+    const ports = resources(config);
+    if (new Set(ports).size !== ports.length) throw fail('同一账号的 OneBot 和 WebUI 端口不能相同。');
     for (const [otherId, service] of services) {
       if (id === otherId) continue;
       for (const other of [service.store.getConfig(), ...(reservations.get(otherId) || [])]) {
         if (!other.qq.enabled) continue;
         if (config.botQQ && config.botQQ === other.botQQ) throw fail('这个 QQ 号已在另一个账号配置中启用或正在变更；请先停用原配置。');
-        if ([port(other.qq.wsUrl), port(other.qq.webUiUrl)].some(value => ports.includes(value))) throw fail('该 OneBot 或 WebUI 端口已用于另一个启用账号或配置事务，请为每个账号设置独立端口。');
+        if (resources(other).some(value => ports.includes(value))) throw fail('该 OneBot 或 WebUI 端口已用于另一个启用账号或配置事务，请为每个账号设置独立端口。');
       }
     }
   };
@@ -98,8 +105,10 @@ export function createDashboard({ dataDir = defaultDataDir(), installerFactory, 
   const checkLocal = request => {
     const port = server.address()?.port;
     const allowed = new Set([`127.0.0.1:${port}`, `localhost:${port}`]);
+    for (const origin of configuredOrigins) allowed.add(new URL(origin).host);
     if (!allowed.has(request.headers.host)) throw fail('拒绝非本机 Host。', 403);
-    if (request.headers.origin && ![...allowed].map(host => `http://${host}`).includes(request.headers.origin)) throw fail('拒绝跨站请求。', 403);
+    const origins = new Set([...configuredOrigins, `http://127.0.0.1:${port}`, `http://localhost:${port}`]);
+    if (request.headers.origin && !origins.has(request.headers.origin)) throw fail('拒绝跨站请求。', 403);
     if (request.headers['sec-fetch-site'] === 'cross-site') throw fail('拒绝跨站请求。', 403);
     if (request.method !== 'GET' && request.method !== 'HEAD') {
       const received = Buffer.from(request.headers['x-dashboard-token'] || ''), expected = Buffer.from(csrfToken);
@@ -158,6 +167,7 @@ export function createDashboard({ dataDir = defaultDataDir(), installerFactory, 
         draft.botQQ = account.qqNumber;
         draft.qq.wsUrl = `ws://127.0.0.1:${3001 + ordinal * 2}`;
         draft.qq.webUiUrl = `http://127.0.0.1:${6099 + ordinal * 2}`;
+        draft.qq.connections.napcat = { wsUrl: draft.qq.wsUrl, webUiUrl: draft.qq.webUiUrl };
         service.store.saveDraft(draft);
         // Establish only the new profile's disabled, read-only identity/ports.
         // The installer reads applied endpoints before the first QQ connection;
@@ -175,6 +185,10 @@ export function createDashboard({ dataDir = defaultDataDir(), installerFactory, 
           if (action === '/setup/status') return json(response, service.setupStatus());
           if (action === '/memory') return json(response, service.memoryRead(Object.fromEntries(url.searchParams)));
           if (action === '/memory/tree') return json(response, service.memoryTree());
+          if (action === '/persona/history') return json(response, service.personaHistory(Object.fromEntries(url.searchParams)));
+          if (action === '/experiences') return json(response, service.experienceRead(Object.fromEntries(url.searchParams)));
+          if (action === '/experiences/history') return json(response, service.experienceHistory(Object.fromEntries(url.searchParams)));
+          if (action === '/conversation/state') return json(response, service.conversationRead(Object.fromEntries(url.searchParams)));
           if (action === '/tools') {
             const settings = service.store.getConfig().tools || {};
             return json(response, { tools: service.runtime.listTools?.() || [], enabled: settings.enabled === true, triggers: settings.triggers || ['mention', 'poke', 'name'], prefix: settings.prefix || '/工具' });
@@ -198,7 +212,7 @@ export function createDashboard({ dataDir = defaultDataDir(), installerFactory, 
         }
         throw fail('接口不存在。', 404);
       }
-      const files = { '/': ['index.html', 'text/html'], '/index.html': ['index.html', 'text/html'], '/styles.css': ['styles.css', 'text/css'], '/app.js': ['app.js', 'text/javascript'], '/memory-ui.js': ['memory-ui.js', 'text/javascript'] };
+      const files = { '/': ['index.html', 'text/html'], '/index.html': ['index.html', 'text/html'], '/styles.css': ['styles.css', 'text/css'], '/app.js': ['app.js', 'text/javascript'], '/memory-ui.js': ['memory-ui.js', 'text/javascript'], '/persona-ui.js': ['persona-ui.js', 'text/javascript'] };
       if (request.method === 'GET' && files[route]) {
         const [file, type] = files[route];
         response.writeHead(200, { 'Content-Type': `${type}; charset=utf-8`, 'Cache-Control': 'no-cache' });
@@ -217,7 +231,8 @@ export function createDashboard({ dataDir = defaultDataDir(), installerFactory, 
     get installer() { return single().installer; },
     state: () => single().state(),
     async listen(port = 3210) {
-      await new Promise((resolve, reject) => { server.once('error', reject); server.listen(port, '127.0.0.1', resolve); });
+      const host = isContainer() && process.env.QQ_SERVICE_HOST === '0.0.0.0' ? '0.0.0.0' : '127.0.0.1';
+      await new Promise((resolve, reject) => { server.once('error', reject); server.listen(port, host, resolve); });
       started = true;
       for (const service of services.values()) { checkConflicts(service.store.getConfig(), service.account.id); await service.start(); }
       return server.address();

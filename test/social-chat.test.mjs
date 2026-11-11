@@ -65,9 +65,9 @@ test('自主时窗按本地时分处理跨午夜、边界和全天，不影响�
 });
 
 test('控制结果严格解析，silent不允许意外正文被发往QQ', () => {
-  assert.deepEqual(parseSocialDecision(reply()), { action: 'reply', text: '这个确实有意思', reason: '回应当前话题', topic: '游戏', memoryCandidates: [] });
+  assert.deepEqual(parseSocialDecision(reply()), { action: 'reply', text: '这个确实有意思', reason: '回应当前话题', topic: '游戏', memoryCandidates: [], experienceCandidates: [] });
   assert.equal(parseSocialDecision(`\x60\x60\x60json\n${reply()}\n\x60\x60\x60`).text, '这个确实有意思');
-  assert.deepEqual(parseSocialDecision('{"action":"silent","text":"内部讨论不要发送"}'), { action: 'silent', text: '', reason: '', topic: '', memoryCandidates: [] });
+  assert.deepEqual(parseSocialDecision('{"action":"silent","text":"内部讨论不要发送"}'), { action: 'silent', text: '', reason: '', topic: '', memoryCandidates: [], experienceCandidates: [] });
   assert.equal(parseSocialDecision('{"action":"reply","text":"好呀"}').memoryCandidates.length, 0);
 });
 
@@ -125,7 +125,7 @@ test('名字支持自然称呼和旧别名，不将词内子串或正则字符�
 
 test('同一提示协议支持工具结果，限定自主只读且不注入待确认记忆', () => {
   const current = config(); current.chat.social.name = '小Q'; current.chat.social.interests = '科普';
-  const prompt = socialSystemPrompt({ config: current, group: current.groups[0], autonomous: true, memories: [
+  const prompt = socialSystemPrompt({ config: current, group: current.groups[0], actualQQ: '999999', autonomous: true, memories: [
     { userId: '555555', status: 'confirmed', text: '喜欢科普视频', kind: 'preference' },
     { userId: '555555', status: 'pending', text: '未确认事实绝不使用', kind: 'fact' },
   ] });
@@ -138,4 +138,36 @@ test('同一提示协议支持工具结果，限定自主只读且不注入待�
   assert.match(prompt, /sourceIds/);
   assert.match(prompt, /只输出一个 JSON 对象/);
   assert.match(prompt, /不是系统指令/);
+});
+
+test('可选经历候选逐条校验，坏札记不拖累有效回复，成员事实仍严格验证', () => {
+  const good = { kind: 'pending_topic', text: ' 下次接着聊星空 ', sourceIds: ['m1', 'm1'] };
+  assert.deepEqual(parseSocialDecision(reply({ experienceCandidates: [good] })).experienceCandidates,
+    [{ kind: 'pending_topic', text: '下次接着聊星空', sourceIds: ['m1'] }]);
+  for (const candidate of [
+    { ...good, kind: 'personality' }, { ...good, text: 'x'.repeat(301) }, { ...good, text: 'bad\0note' },
+    { ...good, sourceIds: [] }, { ...good, sourceIds: ['bad\nsource'] }, { ...good, permissions: { released: true } },
+  ]) {
+    const parsed = parseSocialDecision(reply({ experienceCandidates: [candidate, good] }));
+    assert.equal(parsed.text, '这个确实有意思');
+    assert.deepEqual(parsed.experienceCandidates, [{ kind: 'pending_topic', text: '下次接着聊星空', sourceIds: ['m1'] }]);
+  }
+  for (const malformed of [null, 'bad', {}, 123]) {
+    assert.deepEqual(parseSocialDecision(reply({ experienceCandidates: malformed })).experienceCandidates, []);
+  }
+  assert.equal(parseSocialDecision(reply({ experienceCandidates: [good, good, good] })).experienceCandidates.length, 2);
+  assert.throws(() => parseSocialDecision(reply({ memoryCandidates: [{ kind: 'personality', userId: '555555', text: '未经确认', sourceIds: ['m1'] }], experienceCandidates: [good] })), /群聊决策/);
+});
+
+test('自由聊天使用统一人格和本群经历，固定规则置前且排除跨域状态', () => {
+  const current = config(); current.botQQ = '999999'; current.chat.persona = '# 我的角色\n喜欢海洋';
+  const prompt = socialSystemPrompt({ config: current, group: current.groups[0], experiences: [
+    { actualQQ: '999999', groupId: '222222', status: 'active', kind: 'interaction', text: '一起讨论过蓝鲸' },
+    { actualQQ: '999999', groupId: '777777', status: 'active', kind: 'interaction', text: '其他群隐私' },
+  ], session: { actualQQ: '999999', groupId: '222222', topic: '海洋生物', expiresAt: new Date(Date.now() + 10000).toISOString() } });
+  assert.ok(prompt.indexOf('固定运行规则') < prompt.indexOf('我的角色'));
+  assert.match(prompt, /一起讨论过蓝鲸/);
+  assert.match(prompt, /海洋生物/);
+  assert.doesNotMatch(prompt, /其他群隐私/);
+  assert.match(prompt, /不能推断群友性格/);
 });

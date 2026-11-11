@@ -63,6 +63,7 @@ async function launch() {
   const instance = await _electron.launch({ executablePath: electronBinary, args: launchArgs, env, timeout: 30_000 });
   app = instance;
   const window = await instance.firstWindow();
+  window.setDefaultTimeout(15_000);
   window.on('pageerror', error => pageErrors.push(error.message));
   await window.waitForFunction(() => location.hostname === '127.0.0.1' && window.qqBridgeDesktop?.isDesktop);
   await window.waitForFunction(() => document.querySelector('#server-label')?.textContent === '管理服务可访问'
@@ -116,9 +117,13 @@ async function configureAccount(window, account, { ownerQQ, secret, persona }) {
   }
   await window.locator('#account-llm-source').selectOption('deepseek');
   await window.locator('[data-secret="deepseekApiKey"]').fill(secret);
-  await window.locator('[data-page="scenarios"]').click();
-  await window.locator('[data-scenario-tab="tasks"]').click();
+  if (!await window.locator('[data-flow-stage="permissions"]').isVisible()) {
+    if (!await window.locator('[data-flow-stage="connection"]').isVisible()) await window.locator('[data-setup-skip="connection"]').click();
+    await window.locator('[data-setup-skip="permissions"]').click();
+  }
+  if (await window.locator('#persona-editor').getAttribute('open') === null) await window.locator('#persona-editor > summary').click();
   await window.locator('[data-config="chat.persona"]').fill(persona);
+  await window.locator('[data-page="scenarios"]').click();
   await window.locator('[data-scenario-tab="permissions"]').click();
   await window.locator('[data-config="ownerQQ"]').fill(ownerQQ);
   const applying = window.waitForResponse(response => response.url().endsWith(`/api/accounts/${account.id}/config/apply`) && response.request().method() === 'POST');

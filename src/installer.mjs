@@ -5,6 +5,7 @@ import { mkdir, readFile, readdir, rename, writeFile } from 'node:fs/promises';
 import net from 'node:net';
 import path from 'node:path';
 import { nativeNapcatStatus, openNativeNapcat, NATIVE_NAPCAT_INSTALL_URL } from './napcat-native.mjs';
+import { isContainer } from './network-policy.mjs';
 
 const NAPCAT_IMAGE = 'mlikiowa/napcat-docker:v4.18.37';
 const NAPCAT_VERSION = '4.18.37';
@@ -303,6 +304,9 @@ export function createInstaller({ dataDir, profileId, legacy = false, getConfig,
     const settings = getNapcatSettings();
     const native = settings.mode === 'native';
     const checks = { platform: process.platform, arch: process.arch, node: { version: process.version, supported: Number(process.versions.node.split('.')[0]) >= 24 } };
+    if (isContainer()) return { ...checks, container: true,
+      napcat: { available: true, status: 'external', message: '容器使用外部 OneBot 连接；实际 QQ 在线状态在账号连接中验证。' },
+      setupGuide: '在宿主机或其他容器启动 NapCat，使用显式允许的主机名、端口和 Token 连接。本容器不安装或启动宿主机模块。' };
     if (native) {
       const status = nativeNapcatStatus(settings);
       checks.napcat = { available: status.installed, status: status.state, message: status.message };
@@ -416,6 +420,7 @@ export function createInstaller({ dataDir, profileId, legacy = false, getConfig,
   }
 
   async function install(id, onLog) {
+    if (isContainer()) throw problem('容器模式连接外部 QQ 端，不管理宿主机模块。', 409);
     if (!MODULES.some((item) => item.id === id)) throw problem('未知模块。', 400);
     return exclusive(id, async () => {
       if (id === 'napcat') {
@@ -429,6 +434,7 @@ export function createInstaller({ dataDir, profileId, legacy = false, getConfig,
   }
 
   async function startNapcat(onLog) {
+    if (isContainer()) throw problem('请在宿主机或外部容器启动 NapCat。', 409);
     return exclusive('napcat', async () => {
       const settings = getNapcatSettings();
       if (settings.mode === 'native') {
@@ -476,6 +482,7 @@ export function createInstaller({ dataDir, profileId, legacy = false, getConfig,
   }
 
   async function stopNapcat(onLog) {
+    if (isContainer()) throw problem('请在外部连接端停止对应 QQ。', 409);
     return exclusive('napcat', async () => {
       if (getNapcatSettings().mode === 'native') throw problem('本地 NapCat 由其窗口或管理工具控制，请在那里停止对应账号。', 409);
       await requireDocker();
@@ -499,6 +506,10 @@ export function createInstaller({ dataDir, profileId, legacy = false, getConfig,
   }
 
   async function status() {
+    if (isContainer()) return MODULES.map(item => ({ ...item, kind: item.id === 'napcat' ? 'external' : item.kind,
+      installed: true, state: 'available', version: item.id === 'napcat' ? '' : 'builtin',
+      description: item.id === 'napcat' ? '在宿主机或其他容器独立运行；请在账号连接中验证 QQ 身份，不需要在本容器安装 Docker。' : item.description,
+      enabled: Boolean(item.id === 'napcat' ? getConfig().qq?.enabled : item.id === 'deepseek' ? getConfig().models?.deepseek?.enabled : getConfig()[item.id]?.enabled) }));
     const settings = getNapcatSettings();
     const native = settings.mode === 'native';
     const state = await records();

@@ -8,7 +8,7 @@ Never report a real login, deployment or Windows interaction as tested without p
 
 ```json
 {
-  "schemaVersion": 2,
+  "schemaVersion": 3,
   "ownerQQ": "",
   "botQQ": "",
   "permissions": {"released": false, "privateReplies": false},
@@ -178,3 +178,15 @@ The installer does not install or authenticate a model CLI. Model access is conf
 `createStore(dataDir)` provides draft/application/rollback state, staged encrypted secrets, message/evidence history, summaries, favorites, task deduplication and metrics. Each profile's database and retention are independent. Source records preserve QQ identity, group, message/CID, sender, time and original text. No cross-profile context or favorite reuse.
 
 Desktop native export accepts an optional profile ID and uses the corresponding fixed redacted endpoint. Application exit or parent IPC loss must close all profile runtimes and owned installer subprocesses. Never kill unrelated processes.
+
+## v0.8.0 persona, experiences and connector additions
+
+Account endpoints remain under `/api/accounts/:id`. Reads are `GET /persona/history?actualQQ`, `/experiences?actualQQ&groupId&status`, `/experiences/history?actualQQ&groupId&id` and `/conversation/state?actualQQ&groupId`. Mutations retain the same local Host/Origin and CSRF checks.
+
+- `POST /persona/preview {config, groupId?}` previews the unsaved form without calling a model. `POST /persona/restore {actualQQ, revision}` returns a role draft, without saving or applying permissions.
+- `POST /experiences/action` uses `{actualQQ,groupId,action,id,version,text?,kind?,targetVersion?}`. Actions are create/update/archive/restore/delete/rollback; create omits id/version. Delete removes text, sources and versions; one-way fingerprints prevent automatic relearning.
+- `POST /experiences/group {actualQQ,groupId,paused,version}` changes accumulation/retrieval. `POST /conversation/clear {actualQQ,groupId,version}` clears short context and cancels old work while retaining raw history and long-term memory.
+- Config schema 3 adds `qq.backend` (`napcat` or `snowluma`) and `qq.connections` snapshots. Top-level `qq.wsUrl/webUiUrl/httpUrl` are authoritative for the active backend. SnowLuma HTTP and WS credentials have separate encrypted names, `snowlumaHttpToken` and `snowlumaWsToken`; `napcatToken` remains unchanged. SnowLuma cannot be activated until the fixed production security gate is changed in a reviewed release.
+- `POST /connection/switch {backend,revision}` verifies the target connector identity and returns to read-only. Profiles and actual QQ identity are preserved. No automatic backend rotation or uncertain-send retry is permitted.
+
+Experiences and current conversation state are profile-local and keyed by actual QQ and group. Member facts keep their explicit confirmation requirement. Background browsing cannot become evidence for either store.

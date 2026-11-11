@@ -1,6 +1,6 @@
 # QQ_Service
 
-**在自己的 Windows 电脑上，按步骤连接 QQ，选择模型 API，并管理每个账号的功能与权限。**
+**在自己的电脑或 Docker 中，按步骤连接 QQ，选择模型 API，并管理每个账号的人格、记忆、功能与权限。**
 
 [![Windows build](https://github.com/klwb360/QQ_Service/actions/workflows/windows.yml/badge.svg?branch=main)](https://github.com/klwb360/QQ_Service/actions/workflows/windows.yml)
 [![Release](https://img.shields.io/github/v/release/klwb360/QQ_Service)](https://github.com/klwb360/QQ_Service/releases/latest)
@@ -11,6 +11,8 @@
 QQ_Service 是支持多个 QQ 账号同时在线的本地助手。「账号控制」集中管理创建与配置：每个账号是一条可展开的菜单，从账号信息开始逐段向下完成模型、QQ 登录、功能与权限配置，已填写的内容保留在上方。总览只显示关键统计、运行状态和最近任务，统计卡片可点击进入对应页面。支持 DeepSeek、OpenAI 和多组兼容 API。**新账号默认只读；填入 QQ 号或 API Key 都不会自动运行场景或获得发送权限。**
 
 v0.7.0 起仅通过 API 接入模型，已移除 ChatGPT 订阅／Codex 安装和登录。需要 OpenAI 专用 Key 时，见 [机器人专用 API 配置](docs/OPENAI_API_SETUP.md)。
+
+v0.8.0 增加角色卡预览与历史回退、自动经历札记、可清空的当前会话状态和 Docker 网页部署。NapCat Shell 可正常使用；SnowLuma 已准备独立适配和[安全审查记录](docs/SNOWLUMA_SECURITY_REVIEW.md)，Windows 隔离验证未完成前保持禁用。人格与记忆使用同一稳定账号身份，不因连接端改变而重建。见 [人格与记忆](docs/PERSONA_MEMORY.md)、[Docker 部署](docs/DOCKER.md)。
 
 ![QQ_Service 展开账号后的连续配置面板](docs/assets/account-control.png)
 
@@ -53,12 +55,12 @@ v0.7.0 起仅通过 API 接入模型，已移除 ChatGPT 订阅／Codex 安装�
 
 ## 下载与快速开始
 
-当前版本：**v0.7.0**，适用于 **Windows 10/11 x64**。
+当前版本：**v0.8.0**，桌面版适用于 **Windows 10/11 x64**，网页服务也可在 Docker 中运行。
 
 | 下载 | 说明 |
 | --- | --- |
-| [QQ_Service-0.7.0-Windows-x64.exe](https://github.com/klwb360/QQ_Service/releases/download/v0.7.0/QQ_Service-0.7.0-Windows-x64.exe) | 便携应用，自带 Node.js 和 npm，双击启动 |
-| [SHA256 校验文件](https://github.com/klwb360/QQ_Service/releases/download/v0.7.0/QQ_Service-0.7.0-Windows-x64.exe.sha256) | 用于核对下载文件 |
+| [QQ_Service-0.8.0-Windows-x64.exe](https://github.com/klwb360/QQ_Service/releases/download/v0.8.0/QQ_Service-0.8.0-Windows-x64.exe) | 便携应用，自带 Node.js 和 npm，双击启动 |
+| [SHA256 校验文件](https://github.com/klwb360/QQ_Service/releases/download/v0.8.0/QQ_Service-0.8.0-Windows-x64.exe.sha256) | 用于核对下载文件 |
 | [最新发布与更新说明](https://github.com/klwb360/QQ_Service/releases/latest) | 查看已发布版本和更新记录 |
 
 1. **创建账号配置**：创建入口只在「账号控制」显示。输入希望接入的 QQ 号，从下拉栏选择一个 API 厂商。每个账号的栏头与展开内容连为同一菜单，可点击栏头展开或收起，参数与数据分别保存，多个账号可以同时运行。完成一部分并继续后，下一部分带动画向下展开，之前的表单保持可见，无需切换顶部步骤标签。
@@ -69,6 +71,8 @@ v0.7.0 起仅通过 API 接入模型，已移除 ChatGPT 订阅／Codex 安装�
 6. **验证一次完整流程**：先确认 QQ 连接和身份，再检查模型；让选定群产生一条新消息，确认记录，最后按授权范围测试汇总或回复。面板将缺少的参数、连接或授权列为待办，见 [首次连接验证](docs/USAGE.md#6-验证一次完整流程)。
 
 EXE 当前未签名。详细操作、私聊命令与备份见 [使用指南](docs/USAGE.md)。
+
+Docker 用户在仓库目录运行 `docker compose up -d --build`，访问 `http://127.0.0.1:8787`。容器包含服务端和网页仪表盘，QQ 连接端独立运行；不需要把宿主机 Docker socket 或整个文件系统交给应用。详见 [部署与备份](docs/DOCKER.md)。
 
 ## 功能与实现
 
@@ -81,6 +85,9 @@ EXE 当前未签名。详细操作、私聊命令与备份见 [使用指南](doc
 | 插件与 AI 工具调用 | 模块页导入可信插件，为账号、群和调用人授权工具；支持真实 @、戳一戳及名字／别名唤醒，自定义 Skill 与插件独立加密凭据。AI 可选择已授权工具执行；写入需明确请求和额外授权。见 [开发指南](docs/PLUGIN_DEVELOPMENT.md)、[Bilibili 示例](examples/plugins/bilibili-assistant) |
 | 自由群聊与主动分享 | 每群单独开启；记录双向对话、合并短消息并接住追问，AI 判断接话或沉默；可使用独立授权的只读工具寻找素材，自行决定是否分享。见 [配置指南](docs/SOCIAL_CHAT.md) |
 | 群友记忆 | 设置中按账号、实际 QQ、群和成员管理明确事实与偏好；AI 提出候选，经主人确认后用于聊天，可编辑、删除或逐群暂停 |
+| 人格与经历 | 每个 QQ 一套人格，按群覆盖风格；Markdown 角色卡、提示预览和历史草稿回退；有真实来源的自身经历自动积累，可暂停、编辑、归档或删除 |
+| 当前会话 | 按群保存临时话题、近期参与者与待续事项，默认两小时有效；清空后不再向模型带入清空前短上下文，长期事实和历史原文保留 |
+| Docker 网页版 | Node.js 服务与仪表盘打包为非 root 容器，数据卷保存配置、加密凭据和 SQLite；默认仅本机访问 |
 | 多 AI 配置 | 提供 DeepSeek、OpenAI、百炼、智谱、Kimi、硅基流动及自定义兼容 API 选项；每个账号从下拉栏选择一个模型来源，已保存的其他接口参数可保留 |
 | 通知汇总 | 当前账号的可读工作群消息存入 SQLite，手动或定时交给所选模型解释；默认保存在本地，可授权私聊发送 |
 | 收藏整理 | 读取当前登录账号的收藏列表摘要，使用独立选择的整理模型，保存收藏 ID 和原摘要 |

@@ -1,0 +1,16 @@
+# Send only runtime sources to the builder. Credentials, data, desktop builds,
+# local dependencies and the Git directory never enter the build context.
+**
+!Dockerfile
+!package.json
+!package-lock.json
+!LICENSE
+!src/
+!src/**
+!public/
+!public/**
+!examples/
+!examples/plugins/
+!examples/plugins/**
+!scripts/
+!scripts/docker-healthcheck.mjs

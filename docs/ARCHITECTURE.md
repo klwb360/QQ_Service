@@ -2,7 +2,7 @@
 
 [返回首页](../README.md) · [使用指南](USAGE.md) · [开发指南](DEVELOPMENT.md) · [接口契约](CONTRACT.md)
 
-v0.7.0 使用一个 Electron 桌面壳和一个本地 Node.js 管理后台，同时运行多个相互隔离的 QQ 配置。每个账号拥有独立的配置、多组 API 凭据、SQLite、QQ 连接、任务调度及 NapCat 实例资料。模型只通过 API 接入，订阅／Codex 安装和登录流程已移除。
+v0.8.0 使用一个 Electron 桌面壳和一个本地 Node.js 管理后台，同时运行多个相互隔离的 QQ 配置。每个账号拥有独立的配置、多组 API 凭据、SQLite、QQ 连接、任务调度及 NapCat 实例资料。模型只通过 API 接入，订阅／Codex 安装和登录流程已移除。
 
 NapCat 是 QQ 连接组件，负责实际登录和消息接口；模型 API 负责分析文字；应用自己的后台决定执行什么任务、允许向哪里发送。输入 QQ 号不是登录动作，模型也不直接获得任意 QQ 操作能力。
 
@@ -172,3 +172,11 @@ Electron 渲染层关闭 Node integration，启用 context isolation 与 sandbox
 当前平台注册 QQ 为已实现，微信与 Telegram 为规划项；不能仅选择平台名称就使用。将来需增加真实连接、身份、消息、来源读取和受控发送适配器，并继续使用账号、会话、用途与权限门约束。AstrBot 也未作为本版必装依赖。
 
 自动测试使用模拟 OneBot 和模型。v0.2.1 已有 Windows CI 发布记录，本版结果以 [验证记录](VALIDATION.md) 为准；真实 QQ 扫码、真实模型账号以及 Windows 桌面、Docker Desktop/原生多账号操作仍需实际验收，不用协议模拟冒充账号联调。
+
+## v0.8.0 人格与容器运行
+
+人格装配统一由 `persona.mjs` 处理；角色版本、经历札记和临时会话分别存储于原账号 SQLite。经历复用正常聊天响应，经来源核验后自动采纳，不改变确认式成员事实。临时会话默认两小时失效，清空会话会过滤旧短上下文而不删除原文。
+
+OneBot适配层区分NapCat WebSocket与SnowLuma WebSocket收事件/HTTP动作，凭据独立；SnowLuma在Windows隔离审查完成前硬禁用。稳定profile与实际QQ仍是数据身份，不使用连接端名称作为记忆键。
+
+Docker复用同一Node服务与网页，不运行Electron；通过显式Host/Origin和OneBot主机许可连接外部QQ端，数据持久化至`/data`，不挂Docker socket。详见[人格与记忆](PERSONA_MEMORY.md)、[Docker](DOCKER.md)和[审查记录](SNOWLUMA_SECURITY_REVIEW.md)。

@@ -3,6 +3,9 @@ import { createStore } from './store.mjs';
 import { DEFAULT_CONFIG, validateConfig, getModelConfig, isCredentialName, apiSecretName, isApiProviderId, pluginSecretName, parsePluginSecretName } from './config.mjs';
 import { createInstaller } from './installer.mjs';
 import { createRuntime } from './runtime.mjs';
+import { normalizePersona, previewPersona } from './persona.mjs';
+import { connectorCatalog, assertBackendAvailable, resolveConnector } from './onebot-connector.mjs';
+import { isContainer } from './network-policy.mjs';
 
 const fail = (message, statusCode = 409, details) => Object.assign(new Error(message), { statusCode, ...(details ? { details } : {}) });
 
@@ -40,15 +43,17 @@ export function createAccountService({ account, dataDir, csrfToken, installerFac
     try { modules = await installer.status(); } catch (error) { modules = [{ id: 'napcat', name: 'NapCat', state: 'error', description: redact(error.message) }]; }
     const draft = store.getState().draft;
     const pluginCredentials = (pluginManager?.list() || []).flatMap(plugin => (plugin.secretsSchema || []).map(field => pluginSecretName(plugin.id, field.key)));
-    const secrets = Object.fromEntries(['deepseekApiKey', 'napcatToken', ...(draft.models.apis || []).map(model => apiSecretName(model.id)), ...pluginCredentials].map(name => [name, store.hasDraftSecret(name)]));
-    return { csrfToken, account: summary(), ...store.getState(), pendingChanges: store.pendingChanges(), secrets, secretsPendingChanges: store.secretsPending(), runtime: safeDetails(runtime.status()), setup: setupStatus(), modules, plugins: pluginManager?.list() || [], jobs: safeDetails(jobs.slice(-20)), logs: safeDetails(logs.slice(-100)), summaries: store.getSummaries(), favorites: store.getFavorites(), environment, metrics: store.metrics(), dataDir };
+    const secrets = Object.fromEntries(['deepseekApiKey', 'napcatToken', 'snowlumaWsToken', 'snowlumaHttpToken', ...(draft.models.apis || []).map(model => apiSecretName(model.id)), ...pluginCredentials].map(name => [name, store.hasDraftSecret(name)]));
+    return { csrfToken, account: summary(), ...store.getState(), pendingChanges: store.pendingChanges(), secrets, secretsPendingChanges: store.secretsPending(), runtime: safeDetails(runtime.status()), setup: setupStatus(), modules, connectors: Object.fromEntries(connectorCatalog().map(entry => [entry.id, entry])), container: isContainer(), plugins: pluginManager?.list() || [], jobs: safeDetails(jobs.slice(-20)), logs: safeDetails(logs.slice(-100)), summaries: store.getSummaries(), favorites: store.getFavorites(), environment, metrics: store.metrics(), dataDir };
   };
   const setupStatus = () => {
     const { draft, applied } = store.getState();
     const actual = runtime.status();
     const secretSnapshot = store.getSecretSnapshot();
     const napcatTokenPending = Object.hasOwn(secretSnapshot, 'draft:napcatToken') && secretSnapshot['draft:napcatToken'] !== secretSnapshot.napcatToken;
-    const verified = Boolean(actual.connected && actual.accountId && String(actual.accountId) === draft.botQQ && draft.qq.enabled && applied.qq.enabled && applied.botQQ === draft.botQQ && draft.qq.wsUrl === applied.qq.wsUrl && !napcatTokenPending);
+    const activeTokenNames = draft.qq.backend === 'snowluma' ? ['snowlumaWsToken', 'snowlumaHttpToken'] : ['napcatToken'];
+    const connectionSecretPending = activeTokenNames.some(name => Object.hasOwn(secretSnapshot, `draft:${name}`) && secretSnapshot[`draft:${name}`] !== secretSnapshot[name]);
+    const verified = Boolean(actual.connected && actual.accountId && String(actual.accountId) === draft.botQQ && draft.qq.enabled && applied.qq.enabled && applied.botQQ === draft.botQQ && draft.qq.backend === applied.qq.backend && draft.qq.wsUrl === applied.qq.wsUrl && draft.qq.httpUrl === applied.qq.httpUrl && !connectionSecretPending);
     const providers = ['deepseek', ...(draft.models.apis || []).map(model => model.id)].map(id => {
       const model = getModelConfig(draft, id);
       const credentialName = id === 'deepseek' ? 'deepseekApiKey' : apiSecretName(id);
@@ -113,7 +118,7 @@ export function createAccountService({ account, dataDir, csrfToken, installerFac
     let finishApply;
     applyFinished = new Promise(resolve => { finishApply = resolve; });
     const before = store.getState(), oldSecrets = store.getSecretSnapshot();
-    let touchedNapcat = false;
+    let touchedNapcat = false, switchedBackend = false;
     let releaseReservation = () => {};
     try {
       if (mode === 'rollback') store.rollback();
@@ -129,7 +134,8 @@ export function createAccountService({ account, dataDir, csrfToken, installerFac
       // explicit account-bound release transaction can authorize sending.
       store.restoreState({ ...current, draft: config });
       store.commitSecrets(); store.commitDraft();
-      if (oldSecrets.napcatToken !== store.getSecret('napcatToken') || before.applied.qq.wsUrl !== config.qq.wsUrl || before.applied.qq.webUiUrl !== config.qq.webUiUrl || before.applied.botQQ !== config.botQQ) {
+      switchedBackend = before.applied.qq.backend !== config.qq.backend;
+      if (!isContainer() && config.qq.backend === 'napcat' && (oldSecrets.napcatToken !== store.getSecret('napcatToken') || before.applied.qq.wsUrl !== config.qq.wsUrl || before.applied.qq.webUiUrl !== config.qq.webUiUrl || before.applied.botQQ !== config.botQQ)) {
         const modules = await installer.status();
         ensureOpen();
         if (modules.some(module => module.id === 'napcat' && module.state === 'running')) { touchedNapcat = true; await installer.startNapcat(line => log(line)); }
@@ -137,19 +143,24 @@ export function createAccountService({ account, dataDir, csrfToken, installerFac
       ensureOpen();
       await runtime.reload();
       ensureOpen();
-      if (mode === 'release') {
+      if (mode === 'release' || mode === 'switch') {
         if (typeof runtime.connect === 'function') await runtime.connect();
         ensureOpen();
         const actual = runtime.status();
         if (!actual.connected || String(actual.accountId || '') !== config.botQQ) throw Object.assign(fail('QQ 实际登录身份尚未确认或与接入 QQ 号不一致，权限未释放。'), { code: actual.connected ? 'QQ_IDENTITY_MISMATCH' : 'QQ_NOT_CONNECTED', field: 'botQQ', action: '在 NapCat 中登录本账号填写的 QQ，测试连接通过后再启动。', nextStep: 'connection' });
       }
+      store.recordPersona();
       log(mode === 'release' ? '已核对账号并释放本账号选定范围的权限。' : mode === 'rollback' ? '已恢复上一份参数，账号保持只读；发送需重新授权。' : `配置版本 ${store.getState().appliedRevision} 已应用，账号保持只读；请在群权限中显式授权。`);
     } catch (error) {
+      if (switchedBackend) {
+        for (const name of ['draft', 'applied', 'previous']) if (before[name]) before[name].permissions = { ...before[name].permissions, released: false };
+      }
       store.restoreState(before); store.restoreSecrets(oldSecrets);
       if (touchedNapcat && !closed) {
         try { await installer.startNapcat(line => log(line)); } catch (restoreError) { log(`NapCat 配置恢复失败：${restoreError.message}`, 'error'); }
       }
-      if (!closed) {
+      if (!closed && switchedBackend) await runtime.stop();
+      else if (!closed) {
         try { await runtime.reload(); } catch (restoreError) { log(`账号运行时恢复失败：${restoreError.message}`, 'error'); }
       }
       throw error;
@@ -232,8 +243,61 @@ export function createAccountService({ account, dataDir, csrfToken, installerFac
     return { records: actualQQ ? store.memory.list({ ...filters, actualQQ }) : [], groups: store.memory.groups() };
   };
   const memoryTree = () => { ensureOpen(); return store.memory.tree(); };
+  const personaHistory = (filters = {}) => {
+    ensureOpen(); const actualQQ = memoryIdentity(filters.actualQQ);
+    return { revisions: actualQQ ? store.personas.history({ actualQQ }) : [] };
+  };
+  const experienceRead = (filters = {}) => {
+    ensureOpen(); const actualQQ = memoryIdentity(filters.actualQQ);
+    if (!actualQQ || !filters.groupId) return { records: [], groups: store.experiences.groups(), group: null };
+    return { records: store.experiences.list({ ...filters, actualQQ }), group: store.experiences.getGroup({ actualQQ, groupId: filters.groupId }) };
+  };
+  const experienceHistory = (filters = {}) => {
+    ensureOpen(); const actualQQ = memoryIdentity(filters.actualQQ);
+    return { revisions: actualQQ ? store.experiences.history({ ...filters, actualQQ }) : [] };
+  };
+  const conversationRead = (filters = {}) => {
+    ensureOpen(); const actualQQ = memoryIdentity(filters.actualQQ);
+    return { state: actualQQ && filters.groupId ? store.conversationState.get({ actualQQ, groupId: filters.groupId }) : null };
+  };
   const invoke = async (route, body) => {
     ensureOpen();
+    if (isContainer() && (route === '/napcat/open' || route === '/setup/install' || /^\/modules\/[^/]+\/(?:start|stop|install)$/.test(route))) throw fail('容器版本连接外部运行的 QQ 连接端；请在宿主机启动或管理 NapCat，容器不会控制宿主机进程或 Docker。', 409);
+    if (route === '/persona/preview') return { value: previewPersona({ config: validateConfig(body.config || store.getState().draft), groupId: body.groupId }) };
+    if (route === '/persona/restore') {
+      const actualQQ = memoryIdentity(body.actualQQ);
+      const current = store.personas.get({ actualQQ });
+      const restored = store.personas.restore({ actualQQ, revision: body.revision, expectedRevision: current?.revision || 0 });
+      const config = store.getState().draft;
+      config.chat.persona = restored.persona.body;
+      Object.assign(config.chat.social, { name: restored.persona.name, aliases: restored.persona.aliases, interests: restored.persona.interests });
+      return { value: { ...restored, config } };
+    }
+    if (['/experiences/action', '/experiences/group', '/conversation/clear'].includes(route)) {
+      ensureIdle();
+      if (typeof body.actualQQ !== 'string') throw fail('请提供所选目录的实际 QQ。', 400);
+      const actualQQ = memoryIdentity(body.actualQQ), input = { ...body, actualQQ };
+      const allowed = route === '/experiences/group' ? ['actualQQ', 'groupId', 'paused', 'version']
+        : route === '/conversation/clear' ? ['actualQQ', 'groupId', 'version']
+        : ['actualQQ', 'groupId', 'action', 'id', 'version', 'text', 'kind', 'targetVersion'];
+      if (Object.keys(body).some(key => !allowed.includes(key))) throw fail('不支持的经历或会话操作字段。', 400);
+      const record = route === '/experiences/group' ? store.experiences.setGroup(input)
+        : route === '/conversation/clear' ? store.conversationState.clear(input) : store.experiences.mutate(input);
+      runtime.invalidateMemory?.({ ...input, ...(route === '/conversation/clear' ? { clearConversation: true } : {}) });
+      return { value: route === '/conversation/clear' ? { state: record } : { record, ...experienceRead(input) } };
+    }
+    if (route === '/connection/switch') {
+      ensureIdle(); assertBackendAvailable(body.backend);
+      if (body.revision !== store.getState().revision) throw fail('配置版本已变化，请刷新后再切换。');
+      const config = store.getState().draft, previous = resolveConnector(config);
+      config.qq.connections[previous.backend] = { wsUrl: config.qq.wsUrl, webUiUrl: config.qq.webUiUrl, ...(previous.backend === 'snowluma' ? { httpUrl: config.qq.httpUrl } : {}) };
+      const next = config.qq.connections[body.backend];
+      config.qq = { ...config.qq, ...next, backend: body.backend, httpUrl: next.httpUrl || '' };
+      config.permissions.released = false;
+      store.saveDraft(validateConfig(config));
+      await apply('switch', store.getState().revision);
+      return { value: await state() };
+    }
     if (route === '/memory/action' || route === '/memory/group') {
       if (applying) throw fail('账号参数正在应用，请稍后修改记忆。');
       if (!body || typeof body !== 'object' || Array.isArray(body)) throw fail('记忆操作参数无效。', 400);
@@ -307,7 +371,7 @@ export function createAccountService({ account, dataDir, csrfToken, installerFac
     throw fail('接口不存在。', 404);
   };
   return {
-    account, store, runtime, installer, summary, state, setupStatus, invoke, redact, ensureIdle, memoryRead, memoryTree,
+    account, store, runtime, installer, summary, state, setupStatus, invoke, redact, ensureIdle, memoryRead, memoryTree, personaHistory, experienceRead, experienceHistory, conversationRead,
     invalidateEnvironment() { environment = null; },
     async start() {
       if (started) return;
