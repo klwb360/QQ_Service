@@ -79,9 +79,18 @@ export function createStore(dataDir) {
     return personas.save({ actualQQ: config.botQQ, persona: normalizePersona(config), expectedRevision: current?.revision || 0 });
   };
   recordPersona();
+  const setupKey = actualQQ => `account-setup-completed:${actualQQ}`;
+  const recordSetupCompleted = actualQQ => {
+    if (!/^[1-9]\d{3,19}$/.test(actualQQ || '')) return;
+    db.prepare('INSERT OR IGNORE INTO tasks VALUES (?,?)').run(setupKey(actualQQ), JSON.stringify({ completedAt: new Date().toISOString() }));
+  };
+  // Existing explicitly started accounts stay in editing mode after a later
+  // apply returns them to read-only, or when the QQ transport goes offline.
+  for (const config of [state.applied, state.previous]) if (config?.permissions?.released === true) recordSetupCompleted(config.botQQ);
   return {
     dataDir,
-    memory, conversation, personas, experiences, conversationState, recordPersona,
+    memory, conversation, personas, experiences, conversationState, recordPersona, recordSetupCompleted,
+    isSetupCompleted: actualQQ => Boolean(db.prepare('SELECT 1 FROM tasks WHERE key=?').get(setupKey(actualQQ))),
     getState: () => structuredClone(state),
     getConfig: () => structuredClone(state.applied),
     getSecret: (name) => secrets[name] || '',

@@ -55,6 +55,15 @@
     { id: 'siliconflow', label: '硅基流动', url: 'https://api.siliconflow.cn/v1', hosts: ['api.siliconflow.cn'] },
     { id: 'custom', label: '自定义兼容 API', url: 'https://api.example.com/v1', hosts: [] }
   ];
+  const modelPresets = {
+    deepseek: ['deepseek-flash', 'deepseek-v4-pro'],
+    openai: ['gpt-4.1', 'gpt-4.1-mini', 'gpt-4o', 'gpt-4o-mini'],
+    dashscope: ['qwen-plus', 'qwen-turbo', 'qwen-max'],
+    zhipu: ['glm-5.3', 'glm-5.3-flash', 'glm-4.7'],
+    kimi: ['kimi-k3.1-pro', 'kimi-k3.1-pro-highspeed', 'kimi-k3'],
+    siliconflow: ['deepseek-ai/DeepSeek-V3.2', 'Pro/deepseek-ai/DeepSeek-V3.2', 'Qwen/Qwen3.6-27B'],
+    custom: []
+  };
   const accountSetupSteps = new Map();
   const accountFlowVersions = new Map();
   const accountSkippedStages = new Map();
@@ -64,6 +73,110 @@
   let customApiStructure = '';
   let activeGroupTriggerPicker = null;
   let groupTriggerPointerState = null;
+  let activeModelPicker = null;
+  let modelPickerSequence = 0;
+
+  function modelVendor(input) {
+    if (input.dataset.config === 'models.deepseek.model') return 'deepseek';
+    const index = /^models\.apis\.(\d+)\.model$/.exec(input.dataset.config || '')?.[1];
+    return index === undefined ? 'custom' : vendorForApi(draft?.models?.apis?.[Number(index)]);
+  }
+  function prepareModelComboboxes() {
+    $$('input[data-config="models.deepseek.model"], input[data-config^="models.apis."][data-config$=".model"]').forEach(input => {
+      let wrapper = input.closest('.model-combobox');
+      if (!wrapper) {
+        wrapper = document.createElement('div'); wrapper.className = 'model-combobox';
+        input.before(wrapper); wrapper.append(input);
+        const panelId = `model-presets-${++modelPickerSequence}`;
+        const button = document.createElement('button');
+        button.type = 'button'; button.className = 'model-combobox-toggle';
+        button.dataset.modelToggle = ''; button.setAttribute('aria-label', '展开模型预设');
+        button.setAttribute('aria-controls', panelId); button.setAttribute('aria-expanded', 'false');
+        button.innerHTML = '<svg viewBox="0 0 16 16" aria-hidden="true"><path d="m4 6 4 4 4-4"/></svg>';
+        const panel = document.createElement('div'); panel.id = panelId;
+        panel.className = 'model-picker-panel'; panel.setAttribute('popover', 'manual');
+        panel.setAttribute('role', 'listbox'); panel.setAttribute('aria-label', '模型名称预设');
+        wrapper.append(button, panel);
+        input.setAttribute('role', 'combobox'); input.setAttribute('aria-autocomplete', 'list');
+        input.setAttribute('aria-label', '模型名称'); input.setAttribute('aria-haspopup', 'listbox');
+        input.setAttribute('aria-controls', panelId); input.setAttribute('aria-expanded', 'false');
+        input.autocomplete = 'off';
+        const note = document.createElement('small'); note.className = 'model-presets-note';
+        note.textContent = '可选择预设，也可直接填写模型 ID；实际可用模型以厂商控制台为准。';
+        wrapper.after(note);
+      }
+      const vendor = modelVendor(input);
+      if (activeModelPicker?.input === input && (activeModelPicker.vendor !== vendor || !input.getClientRects().length)) closeModelPicker();
+      wrapper.dataset.modelVendor = vendor;
+      $('.model-combobox-toggle', wrapper).disabled = input.disabled;
+      const note = wrapper.nextElementSibling;
+      if (note?.classList.contains('model-presets-note')) note.textContent = '可选择预设，也可直接填写模型 ID；实际可用模型以厂商控制台为准。'
+        + (vendor === 'kimi' && /^kimi-k3(?:[.-]|$)/.test(input.value) ? '此系列温度由服务固定，填写值不会影响当前模型。' : '');
+    });
+    if (activeModelPicker && !activeModelPicker.input.isConnected) closeModelPicker();
+  }
+  function closeModelPicker({ restoreFocus = false } = {}) {
+    const previous = activeModelPicker;
+    if (!previous) return;
+    activeModelPicker = null;
+    if (previous.panel.matches(':popover-open')) previous.panel.hidePopover();
+    previous.input.setAttribute('aria-expanded', 'false');
+    previous.input.removeAttribute('aria-activedescendant');
+    previous.button.setAttribute('aria-expanded', 'false');
+    if (restoreFocus && previous.input.isConnected) previous.input.focus({ preventScroll: true });
+  }
+  function highlightModelOption(index) {
+    const active = activeModelPicker;
+    if (!active) return;
+    active.index = index;
+    $$('[data-model-option]', active.panel).forEach((option, position) => {
+      option.classList.toggle('highlighted', position === index);
+      option.setAttribute('aria-selected', String(option.dataset.modelOption === active.input.value));
+    });
+    const highlighted = $$('[data-model-option]', active.panel)[index];
+    if (highlighted) {
+      active.input.setAttribute('aria-activedescendant', highlighted.id);
+      if (highlighted.offsetTop < active.panel.scrollTop) active.panel.scrollTop = highlighted.offsetTop;
+      else if (highlighted.offsetTop + highlighted.offsetHeight > active.panel.scrollTop + active.panel.clientHeight) active.panel.scrollTop = highlighted.offsetTop + highlighted.offsetHeight - active.panel.clientHeight;
+    } else active.input.removeAttribute('aria-activedescendant');
+  }
+  function positionModelPicker() {
+    const active = activeModelPicker;
+    if (!active) return;
+    const anchor = active.wrapper.getBoundingClientRect(), margin = 10, gap = 5;
+    const width = document.documentElement.clientWidth, height = window.innerHeight;
+    if (!active.input.isConnected || !anchor.width || !anchor.height || anchor.bottom <= 0 || anchor.top >= height) return closeModelPicker();
+    active.panel.style.width = `${Math.min(Math.max(anchor.width, 260), width - margin * 2)}px`;
+    active.panel.style.maxHeight = `${Math.min(340, height - margin * 2)}px`;
+    const below = height - anchor.bottom - gap - margin, above = anchor.top - gap - margin;
+    const down = below >= active.panel.offsetHeight || below >= above;
+    active.panel.style.maxHeight = `${Math.max(0, Math.min(340, down ? below : above))}px`;
+    active.panel.style.left = `${Math.max(margin, Math.min(anchor.left, width - active.panel.offsetWidth - margin))}px`;
+    active.panel.style.top = `${Math.max(margin, down ? anchor.bottom + gap : anchor.top - gap - active.panel.offsetHeight)}px`;
+    active.anchor = { left: anchor.left, top: anchor.top };
+  }
+  function openModelPicker(wrapper, { last = false } = {}) {
+    closeModelPicker(); closeGroupTriggerPicker();
+    const input = $('input[data-config]', wrapper), button = $('.model-combobox-toggle', wrapper), panel = $('.model-picker-panel', wrapper);
+    if (!draft || input.disabled) return;
+    const vendor = modelVendor(input), choices = modelPresets[vendor] || [];
+    panel.innerHTML = choices.length ? choices.map((model, index) => `<button type="button" role="option" tabindex="-1" id="${panel.id}-option-${index}" data-model-option="${escapeHTML(model)}" aria-selected="${model === input.value}">${escapeHTML(model)}</button>`).join('') : '<p class="model-picker-empty">这个接口没有内置预设，可直接在输入框填写服务商提供的模型 ID。</p>';
+    activeModelPicker = { wrapper, input, button, panel, vendor, choices, index: -1, accountId: selectedAccountId };
+    input.setAttribute('aria-expanded', 'true'); button.setAttribute('aria-expanded', 'true');
+    panel.showPopover(); positionModelPicker();
+    const selected = choices.indexOf(input.value);
+    highlightModelOption(selected >= 0 ? selected : last ? choices.length - 1 : choices.length ? 0 : -1);
+    input.focus({ preventScroll: true });
+  }
+  function chooseModelOption(value) {
+    const active = activeModelPicker;
+    if (!active || active.accountId !== selectedAccountId || !active.input.isConnected || !active.choices.includes(value)) return closeModelPicker();
+    const input = active.input;
+    closeModelPicker({ restoreFocus: true });
+    input.value = value;
+    input.dispatchEvent(new Event('input', { bubbles: true }));
+    input.dispatchEvent(new Event('change', { bubbles: true }));
+  }
 
   function getPath(object, path) { return path.split('.').reduce((value, key) => value?.[key], object); }
   function setPath(object, path, value) {
@@ -286,6 +399,7 @@
   }
   async function selectAccount(id) {
     if (id === selectedAccountId && state) return;
+    closeModelPicker();
     closeGroupTriggerPicker();
     rememberEditor();
     selectedAccountId = id;
@@ -321,6 +435,7 @@
   }
   function navigate(page) {
     if (!Object.hasOwn(pageInfo, page)) page = 'overview';
+    closeModelPicker();
     closeGroupTriggerPicker();
     currentPage = page;
     const [caption, eyebrow, title, description] = pageInfo[page];
@@ -376,6 +491,7 @@
     aliases.disabled = !draft;
     renderProviderOptions();
     renderGroups();
+    prepareModelComboboxes();
   }
   function accountOnlineState(account) {
     const editor = editors.get(account.id);
@@ -685,6 +801,7 @@
     active.anchorPosition = { left: anchor.left, top: anchor.top };
   }
   function openGroupTriggerPicker(picker, { focusSelector = null, scrollTop = 0 } = {}) {
+    closeModelPicker();
     closeGroupTriggerPicker();
     const summary = $('summary', picker);
     const panel = $('.group-trigger-panel', picker);
@@ -1039,6 +1156,10 @@
     element.textContent = logs.length ? logs.map((entry) => typeof entry === 'string' ? entry : `${formatTime(entry.time ?? entry.timestamp ?? entry.createdAt)}  [${entry.level ?? 'info'}] ${entry.message ?? entry.text ?? JSON.stringify(entry)}`).join('\n') : '尚无后台运行日志。';
     if (atBottom) element.scrollTop = element.scrollHeight;
   }
+  function accountSetupCompleted() {
+    return Boolean(state && draft?.botQQ && draft.botQQ === state.draft?.botQQ
+      && (state.setup?.completed ?? state.applied?.permissions?.released === true));
+  }
   function renderPageContext() {
     const isAccountPage = currentPage === 'connections' || currentPage === 'settings';
     const context = $('.account-context');
@@ -1049,13 +1170,28 @@
     $('.account-context').classList.toggle('hidden', isAccountPage || currentPage === 'overview');
     const configBar = $('.config-bar');
     const saveFooter = $('#account-save-footer');
+    const completed = accountSetupCompleted();
+    const showEditorActions = currentPage === 'connections' && expandedAccountId === selectedAccountId && state && completed;
+    const authorizationRow = $('[data-flow-stage="verification"] .setup-stage-actions');
+    const startButton = $('[data-setup-start]');
+    // Keep the explicit authorization action in the same final editing bar.
+    // Put it back before moving configuration controls to another page.
+    if (!showEditorActions && startButton.parentElement !== authorizationRow) authorizationRow.append(startButton);
     // Account actions live directly at the end of its menu, without a separate card.
     const source = currentPage === 'connections' ? configBar : saveFooter;
     const destination = currentPage === 'connections' ? saveFooter : configBar;
     while (source.firstChild) destination.append(source.firstChild);
     $('#reset-account-defaults').classList.toggle('hidden', currentPage !== 'modules');
     configBar.classList.toggle('hidden', isAccountPage || currentPage === 'records' || currentPage === 'overview');
-    saveFooter.classList.toggle('hidden', currentPage !== 'connections' || !expandedAccountId || !state || (!dirty && !state.pendingChanges && !state.secretsPendingChanges));
+    saveFooter.classList.toggle('hidden', !showEditorActions);
+    if (showEditorActions) {
+      const actions = $('.config-actions', saveFooter);
+      if (startButton.parentElement !== actions) actions.append(startButton);
+      startButton.classList.remove('setup-continue-button');
+      startButton.classList.toggle('hidden', state.applied?.permissions?.released === true);
+      startButton.disabled = false; startButton.inert = false;
+      startButton.removeAttribute('aria-hidden'); delete startButton.dataset.continueActive;
+    }
     $('#no-accounts').classList.toggle('hidden', accounts.length !== 0 || isAccountPage);
     $('#runtime-badge').classList.toggle('hidden', currentPage === 'settings');
   }
@@ -1181,12 +1317,13 @@
     const active = configuredProviders().length === 1 ? configuredProviders()[0].id : '';
     const structure = `${selectedAccountId}:${entries.map((entry) => entry.id).join(',')}`;
     if (customApiStructure !== structure) {
+      closeModelPicker();
       customApiStructure = structure;
       $('#custom-api-cards').innerHTML = entries.map((entry, index) => `<section class="account-model-form custom-api-card hidden" data-api-card="${escapeHTML(entry.id)}" data-api-id="${escapeHTML(entry.id)}">
         <div class="form-grid"><label class="field field-wide">API Key <small class="api-secret-note"></small><input type="password" data-secret="apiKey:${escapeHTML(entry.id)}" autocomplete="new-password" value="${escapeHTML(secretUpdates[`apiKey:${entry.id}`] || '')}" placeholder="粘贴 API Key"></label><label class="field field-wide">模型名称<input data-config="models.apis.${index}.model" value="${escapeHTML(entry.model)}" spellcheck="false" placeholder="填写服务商提供的模型 ID"></label></div>
         <div class="account-model-tools"><button class="button button-secondary button-small" data-setup-model-test="${escapeHTML(entry.id)}">测试连接</button><div class="api-vendor-guide" data-api-guide></div></div>
         <p class="field-note openai-api-project-note ${vendorForApi(entry) === 'openai' ? '' : 'hidden'}" data-openai-api-note>建议为机器人创建独立项目和 API Key。符合条件的 Pro 额度需先在官方 Billing 激活。<a href="https://platform.openai.com/settings/organization/projects" target="_blank" rel="noopener noreferrer">项目与密钥 ↗</a> · <a href="https://developers.openai.com/api/docs/guides/chatgpt-api-credits" target="_blank" rel="noopener noreferrer">领取 API 额度 ↗</a></p>
-        <details class="account-advanced" ${vendorForApi(entry) === 'custom' ? 'open' : ''}><summary>接口与高级设置</summary><div class="form-grid"><label class="field field-wide">API 地址<input data-config="models.apis.${index}.baseUrl" value="${escapeHTML(entry.baseUrl)}" placeholder="https://api.example.com/v1" spellcheck="false"></label><label class="field field-wide">接口名称<input data-config="models.apis.${index}.label" value="${escapeHTML(entry.label)}" maxlength="80"></label><label class="field">最大输出 Token<input type="number" min="128" max="131072" data-config="models.apis.${index}.maxTokens" value="${escapeHTML(entry.maxTokens ?? 1024)}"></label><label class="field">Temperature<input type="number" min="0" max="2" step="0.1" data-config="models.apis.${index}.temperature" value="${escapeHTML(entry.temperature ?? .7)}"></label></div></details>
+        <details class="account-advanced" ${vendorForApi(entry) === 'custom' ? 'open' : ''}><summary>接口与高级设置</summary><div class="form-grid"><label class="field field-wide">API 地址<input data-config="models.apis.${index}.baseUrl" value="${escapeHTML(entry.baseUrl)}" placeholder="https://api.example.com/v1" spellcheck="false"></label><label class="field field-wide">接口名称<input data-config="models.apis.${index}.label" value="${escapeHTML(entry.label)}" maxlength="80"></label><label class="field">最大输出 Token<input type="number" min="128" max="131072" data-config="models.apis.${index}.maxTokens" value="${escapeHTML(entry.maxTokens ?? 1024)}"></label><label class="field">回答随机性（温度）<input type="number" min="0" max="2" step="0.1" data-config="models.apis.${index}.temperature" value="${escapeHTML(entry.temperature ?? .7)}"><small>较低更稳定，较高更多样；可用范围以模型说明为准。部分推理模型会忽略此项。</small></label></div></details>
       </section>`).join('');
     }
     $$('[data-api-card]').forEach((card) => {
@@ -1194,6 +1331,7 @@
       const entry = entries.find(item => item.id === card.dataset.apiCard);
       $('[data-openai-api-note]', card)?.classList.toggle('hidden', vendorForApi(entry) !== 'openai');
     });
+    prepareModelComboboxes();
   }
   async function saveAccountProfile() {
     const id = requireAccount();
@@ -1240,6 +1378,7 @@
   function renderContinueButtons(highest, animate, force = false) {
     const activeStage = setupSteps[highest]?.[0];
     const skipped = accountSkippedStages.get(selectedAccountId);
+    const completed = accountSetupCompleted();
     $$('[data-flow-stage]').forEach((section) => {
       const stage = section.dataset.flowStage;
       const row = $('.setup-stage-actions', section);
@@ -1247,7 +1386,7 @@
       row.dataset.flowActions = stage;
       for (const button of $$(':scope > button', row)) {
         const consumed = button.hasAttribute('data-setup-skip') && skipped?.has(stage);
-        const show = stage === activeStage && !consumed;
+        const show = !completed && stage === activeStage && !consumed;
         const primary = button.matches('[data-setup-save], [data-setup-apply], [data-setup-connect], [data-setup-start], [data-setup-step]:not(.button-quiet)');
         button.classList.toggle('setup-continue-button', primary);
         button.dataset.continueActive = String(show);
@@ -1258,7 +1397,7 @@
         // removed even when the user returns to this stage later in the session.
         button.classList.toggle('hidden', Boolean(consumed));
       }
-      setFlowDisclosure(row, stage === activeStage, { animate, force, duration: 230 });
+      setFlowDisclosure(row, !completed && stage === activeStage, { animate, force, duration: 230 });
     });
   }
   function renderSetupGuide({ animate = false } = {}) {
@@ -1283,9 +1422,17 @@
       const last = released ? 'verification' : hasTask || (draft.groups ?? []).length ? 'permissions' : verified ? 'scenarios' : draft.qq?.enabled || applied.qq?.enabled ? 'connection' : providers.length ? 'models' : 'identity';
       accountSetupSteps.set(selectedAccountId, normalizeSetupStep(last));
     }
+    // Completed profiles are edited as one expanded menu. The initial wizard
+    // remains available for incomplete identities, without a duplicate footer.
+    if (accountSetupCompleted()) accountSetupSteps.set(selectedAccountId, 'verification');
     const highest = setupSteps.findIndex(([id]) => id === accountSetupSteps.get(selectedAccountId));
     const sameAccount = renderedFlowAccount === selectedAccountId;
     $('#account-workspace').dataset.flowActive = setupSteps[highest][0];
+    if (!accountSetupCompleted()) {
+      const row = $('[data-flow-stage="verification"] .setup-stage-actions');
+      const start = $('[data-setup-start]');
+      if (start.parentElement !== row) row.append(start);
+    }
     // Reveal the next action before measuring its expanding section.
     renderContinueButtons(highest, animate && sameAccount, !sameAccount);
     $$('[data-flow-stage]').forEach((wrapper, index) => {
@@ -1659,6 +1806,7 @@
     $$('.record-content').forEach((panel) => panel.classList.toggle('hidden', panel.id !== `record-${tab}`));
   }
   document.addEventListener('pointerdown', (event) => {
+    if (activeModelPicker && !activeModelPicker.wrapper.contains(event.target)) closeModelPicker();
     const summary = event.target.closest('.group-trigger-picker > summary');
     // A summary is not a native popover invoker button: light-dismiss may run
     // before click, so remember whether this pointer was toggling an open one.
@@ -1673,6 +1821,24 @@
     previous.summary.setAttribute('aria-expanded', 'false');
   }, true);
   document.addEventListener('keydown', (event) => {
+    const modelInput = event.target.closest('.model-combobox input[role="combobox"]');
+    if (modelInput) {
+      const wrapper = modelInput.closest('.model-combobox');
+      const active = activeModelPicker?.input === modelInput ? activeModelPicker : null;
+      if (event.key === 'ArrowDown' || event.key === 'ArrowUp') {
+        event.preventDefault();
+        if (!active) openModelPicker(wrapper, { last: event.key === 'ArrowUp' });
+        else if (active.choices.length) highlightModelOption((active.index + (event.key === 'ArrowDown' ? 1 : -1) + active.choices.length) % active.choices.length);
+        return;
+      }
+      if (event.key === 'Enter' && active) {
+        event.preventDefault();
+        if (active.index >= 0) chooseModelOption(active.choices[active.index]); else closeModelPicker({ restoreFocus: true });
+        return;
+      }
+    }
+    if (activeModelPicker && event.key === 'Escape') { event.preventDefault(); closeModelPicker({ restoreFocus: true }); return; }
+    if (activeModelPicker && event.key === 'Tab') closeModelPicker();
     const summary = event.target.closest('.group-trigger-picker > summary');
     if (summary && event.key === 'ArrowDown') {
       event.preventDefault();
@@ -1683,6 +1849,7 @@
     }
   });
   document.addEventListener('focusin', (event) => {
+    if (activeModelPicker && !activeModelPicker.wrapper.contains(event.target)) closeModelPicker();
     if (activeGroupTriggerPicker && !activeGroupTriggerPicker.picker.contains(event.target)) closeGroupTriggerPicker();
   });
   document.addEventListener('scroll', (event) => {
@@ -1697,6 +1864,16 @@
     });
   }, true);
   window.addEventListener('resize', positionGroupTriggerPicker);
+  window.addEventListener('resize', positionModelPicker);
+  document.addEventListener('scroll', event => {
+    const active = activeModelPicker;
+    if (!active || active.panel.contains(event.target)) return;
+    requestAnimationFrame(() => {
+      if (activeModelPicker !== active) return;
+      const anchor = active.wrapper.getBoundingClientRect();
+      if (Math.abs(anchor.left - active.anchor.left) > .5 || Math.abs(anchor.top - active.anchor.top) > .5) closeModelPicker();
+    });
+  }, true);
   document.addEventListener('input', (event) => {
     const input = event.target;
     if (input.id === 'account-profile-name') { if (selectedAccountId) { const editor = editors.get(selectedAccountId); if (editor) editor.profileName = input.value; } return; }
@@ -1730,6 +1907,7 @@
     if (input.dataset.config && draft) {
       const value = input.type === 'checkbox' ? input.checked : input.type === 'number' ? (input.value === '' ? null : Number(input.value)) : input.value;
       setPath(draft, input.dataset.config, value);
+      if (activeModelPicker?.input === input) highlightModelOption(activeModelPicker.choices.indexOf(input.value));
       if (['qq.wsUrl', 'qq.httpUrl', 'qq.webUiUrl'].includes(input.dataset.config)) snapshotConnection();
       if (input.dataset.config.startsWith('chat.persona') || input.dataset.config.startsWith('chat.social')) $('#persona-preview-content').classList.add('hidden');
       markDirty(input);
@@ -1823,6 +2001,7 @@
 
   document.addEventListener('change', (event) => {
     if (event.target.id === 'account-llm-source' && draft) {
+      closeModelPicker();
       chooseSingleLlm(draft, event.target.value); markDirty(event.target); populateForm(); renderLiveState(); return;
     }
     if (['mode', 'trigger'].includes(event.target.dataset.groupField)) renderGroups();
@@ -1830,6 +2009,15 @@
     if (event.target.id === 'summary-group') rememberEditor();
   });
   document.addEventListener('click', (event) => {
+    const modelToggle = event.target.closest('[data-model-toggle]');
+    if (modelToggle) {
+      event.preventDefault();
+      const wrapper = modelToggle.closest('.model-combobox');
+      if (activeModelPicker?.wrapper === wrapper) closeModelPicker({ restoreFocus: true }); else openModelPicker(wrapper);
+      return;
+    }
+    const modelOption = event.target.closest('[data-model-option]');
+    if (modelOption) { event.preventDefault(); chooseModelOption(modelOption.dataset.modelOption); return; }
     const summary = event.target.closest('.group-trigger-picker > summary');
     if (summary) {
       event.preventDefault();

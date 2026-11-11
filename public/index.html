@@ -56,8 +56,9 @@
             <div id="legacy-model-warning" class="notice notice-warning hidden" role="status">旧配置使用了多个模型，请选择一个 AI 后保存。</div>
             <section class="account-model-form hidden" id="deepseek-model-card">
               <label class="field"><span>API Key <small id="deepseek-secret-state" class="secret-state"></small></span><input type="password" data-secret="deepseekApiKey" autocomplete="new-password" placeholder="粘贴 DeepSeek API Key"></label>
+              <label class="field deepseek-model-field">模型名称<input data-config="models.deepseek.model" spellcheck="false" placeholder="选择预设或填写模型 ID"></label>
               <div class="account-model-tools"><button class="button button-secondary button-small" data-setup-model-test="deepseek">测试连接</button><a href="https://platform.deepseek.com/" target="_blank" rel="noopener noreferrer">获取密钥 ↗</a></div>
-              <details class="account-advanced"><summary>高级设置</summary><div class="form-grid"><label class="field field-wide">API 地址<input data-config="models.deepseek.baseUrl" spellcheck="false"></label><label class="field field-wide">模型名称<input data-config="models.deepseek.model" spellcheck="false" placeholder="deepseek-chat"></label><label class="field">最大输出 Token<input type="number" min="128" max="8192" data-config="models.deepseek.maxTokens"></label><label class="field">Temperature<input type="number" min="0" max="2" step="0.1" data-config="models.deepseek.temperature"></label></div></details>
+              <details class="account-advanced"><summary>高级设置</summary><div class="form-grid"><label class="field field-wide">API 地址<input data-config="models.deepseek.baseUrl" spellcheck="false"></label><label class="field">最大输出 Token<input type="number" min="128" max="8192" data-config="models.deepseek.maxTokens"></label><label class="field">回答随机性（温度）<input type="number" min="0" max="2" step="0.1" data-config="models.deepseek.temperature"><small>较低更稳定，较高更多样；可用范围以模型说明为准。部分推理模型会忽略此项。</small></label></div></details>
             </section>
             <div id="custom-api-cards"></div>
             <div class="setup-stage-actions"><button class="button button-primary" data-setup-apply="connection">保存并继续</button><button class="button button-quiet" data-setup-skip="connection">稍后准备</button></div>
@@ -95,8 +96,8 @@
             <div class="section-heading"><h2 class="account-section-title">启动账号</h2><button class="button button-quiet button-small" data-setup-refresh>刷新状态</button></div><div id="setup-verification-checks" class="check-list"></div>
             <details class="account-advanced"><summary>测试与记录</summary><div id="setup-test-guide" class="notice notice-info"></div><div id="setup-live-metrics" class="setup-live-metrics"></div><div class="setup-send-test"><label class="field">发送测试消息到<select id="setup-test-group"></select></label><button class="button button-secondary" id="setup-send-test">发送测试消息</button><p class="field-note">需要先启动账号并授权此群发送，不调用 AI。</p><div id="setup-send-test-result" class="field-note" aria-live="polite"></div></div><div class="card-actions"><button class="button button-quiet button-small" data-go="records">查看执行记录 →</button></div></details>
             <div class="setup-stage-actions"><button class="button button-quiet" data-setup-back="permissions">返回上一步</button><button class="button button-primary" data-setup-start>启动账号</button></div>
-          </section></div></div>
           <div id="account-save-footer" class="account-save-footer hidden" aria-label="保存账号配置"></div>
+          </section></div></div>
         </div>
       </section>
 

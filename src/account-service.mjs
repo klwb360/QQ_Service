@@ -90,7 +90,7 @@ export function createAccountService({ account, dataDir, csrfToken, installerFac
       { id: 'verification', title: '验证效果', complete: Boolean(released && (!groupTestNeeded || actual.qqTest?.tested)), optional: !groupTestNeeded, description: groupTestNeeded ? '可主动向已授权群发送一条固定测试消息，不调用 AI。' : '当前方案无需向群发送测试消息；本地结果可在仪表盘查看。' },
     ];
     const nextStep = steps.find(step => !step.complete)?.id || 'complete';
-    return safeDetails({ accountId: account.id, readOnly: actual.permissions?.readOnly ?? !released, released, pendingChanges: store.pendingChanges(), nextStep, steps: steps.map(({ complete, ...step }) => ({ ...step, state: complete ? 'complete' : step.id === nextStep ? 'current' : 'pending' })), blockers, models: { configured: modelsReady, tested: selected.some(provider => provider.tested), providers }, connection: { state: actual.state || (actual.connected ? 'connected' : 'disconnected'), connected: Boolean(actual.connected), verified, expectedQQ: draft.botQQ, actualQQ: String(actual.accountId || ''), lastError: actual.lastError || '', issue: actual.issue || null }, verification: actual.qqTest || { tested: false } });
+    return safeDetails({ accountId: account.id, completed: store.isSetupCompleted(draft.botQQ), readOnly: actual.permissions?.readOnly ?? !released, released, pendingChanges: store.pendingChanges(), nextStep, steps: steps.map(({ complete, ...step }) => ({ ...step, state: complete ? 'complete' : step.id === nextStep ? 'current' : 'pending' })), blockers, models: { configured: modelsReady, tested: selected.some(provider => provider.tested), providers }, connection: { state: actual.state || (actual.connected ? 'connected' : 'disconnected'), connected: Boolean(actual.connected), verified, expectedQQ: draft.botQQ, actualQQ: String(actual.accountId || ''), lastError: actual.lastError || '', issue: actual.issue || null }, verification: actual.qqTest || { tested: false } });
   };
   const job = (label, action) => {
     ensureOpen();
@@ -150,6 +150,7 @@ export function createAccountService({ account, dataDir, csrfToken, installerFac
         if (!actual.connected || String(actual.accountId || '') !== config.botQQ) throw Object.assign(fail('QQ 实际登录身份尚未确认或与接入 QQ 号不一致，权限未释放。'), { code: actual.connected ? 'QQ_IDENTITY_MISMATCH' : 'QQ_NOT_CONNECTED', field: 'botQQ', action: '在 NapCat 中登录本账号填写的 QQ，测试连接通过后再启动。', nextStep: 'connection' });
       }
       store.recordPersona();
+      if (mode === 'release') store.recordSetupCompleted(config.botQQ);
       log(mode === 'release' ? '已核对账号并释放本账号选定范围的权限。' : mode === 'rollback' ? '已恢复上一份参数，账号保持只读；发送需重新授权。' : `配置版本 ${store.getState().appliedRevision} 已应用，账号保持只读；请在群权限中显式授权。`);
     } catch (error) {
       if (switchedBackend) {

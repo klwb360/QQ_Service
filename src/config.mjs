@@ -17,7 +17,7 @@ export const DEFAULT_CONFIG = {
     snowluma: { wsUrl: 'ws://127.0.0.1:3001', httpUrl: 'http://127.0.0.1:3000', webUiUrl: 'http://127.0.0.1:5099' },
   } },
   models: {
-    deepseek: { enabled: false, baseUrl: 'https://api.deepseek.com', model: 'deepseek-chat', maxTokens: 1024, temperature: 0.7 },
+    deepseek: { enabled: false, baseUrl: 'https://api.deepseek.com', model: 'deepseek-flash', maxTokens: 1024, temperature: 0.7 },
     apis: []
   },
   chat: { enabled: false, provider: 'deepseek', persona: '你是一个友好、简洁的群聊助手。', contextMessages: 12, social: structuredClone(DEFAULT_CHAT_SOCIAL) },
@@ -203,8 +203,8 @@ export function validateConfig(input, { applying = false, hasSecret = () => fals
     if (url.protocol !== 'https:' || !['api.deepseek.com'].includes(url.hostname) || url.username || url.password || url.search || url.hash || url.port) throw new Error();
     if (!['', '/', '/v1'].includes(url.pathname)) throw new Error();
   } catch { issue('models.deepseek.baseUrl', 'DeepSeek 官方通道仅支持 https://api.deepseek.com 或其 /v1 地址', '其他厂商或中转服务请添加“兼容 API”通道。'); }
-  result.models.deepseek.model = string(ds.model, 'deepseek-chat', 'DeepSeek 模型', 120, 'models.deepseek.model');
-  if (!/^[\w.:-]{1,120}$/.test(result.models.deepseek.model)) issue('models.deepseek.model', 'DeepSeek 模型名称无效', '请填写 deepseek-chat 或服务商提供的有效模型 ID。');
+  result.models.deepseek.model = string(ds.model, DEFAULT_CONFIG.models.deepseek.model, 'DeepSeek 模型', 120, 'models.deepseek.model');
+  if (!/^[\w.:-]{1,120}$/.test(result.models.deepseek.model)) issue('models.deepseek.model', 'DeepSeek 模型名称无效', '请选择预设模型，或填写服务商提供的有效模型 ID。');
   result.models.deepseek.maxTokens = number(ds.maxTokens, 1024, '输出 token 上限', 128, 8192, true, 'models.deepseek.maxTokens');
   result.models.deepseek.temperature = number(ds.temperature, 0.7, '温度', 0, 2, false, 'models.deepseek.temperature');
   if (models.apis !== undefined && !Array.isArray(models.apis)) issue('models.apis', '兼容 API 列表必须是数组', '请通过“添加 API”创建模型通道。');

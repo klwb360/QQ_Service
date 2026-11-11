@@ -35,6 +35,11 @@ export function createProviders({ fetchImpl = globalThis.fetch } = {}) {
     }
     if (!config.model) throw failure(`${label} 尚未设置模型名称，请填写服务商提供的模型 ID。`, 400);
     const url = new URL('chat/completions', base);
+    // Current Kimi K3 models require a fixed temperature. The documented
+    // compatible request omits it and lets the service apply its own default;
+    // keep the user's stored preference for other models and custom endpoints.
+    const fixedKimiTemperature = ['api.moonshot.cn', 'api.moonshot.ai'].includes(base.hostname)
+      && ['kimi-k3', 'kimi-k3.1-pro', 'kimi-k3.1-pro-highspeed'].includes(config.model);
     let response;
     try {
       response = await fetchImpl(url, {
@@ -46,7 +51,7 @@ export function createProviders({ fetchImpl = globalThis.fetch } = {}) {
           messages,
           stream: false,
           max_tokens: config.maxTokens,
-          temperature: config.temperature,
+          ...(!fixedKimiTemperature ? { temperature: config.temperature } : {}),
           ...(tools !== undefined ? { tools, tool_choice: toolChoice, parallel_tool_calls: false } : {}),
         }),
         signal: combineSignal(signal, 60_000),
