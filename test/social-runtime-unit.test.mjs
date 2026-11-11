@@ -143,7 +143,7 @@ async function memoryLookup(context, inputs, { autonomous = false } = {}) {
   } finally { clearTimeout(deadline); runtime.stop(); }
 }
 
-const historyMember = userId => ({ role: 'user', userId, messageId: `history-${userId}`, text: '先前的聊天' });
+const historyMember = userId => ({ role: 'user', userId, messageId: `history-${userId}`, text: '先前的聊天', time: Math.floor(Date.now() / 1000) });
 
 test('超过20位历史成员时仍查询本轮请求者的记忆并注入提示', async () => {
   const historyIds = Array.from({ length: 24 }, (_, index) => String(600000 + index));
@@ -173,4 +173,58 @@ test('没有本轮成员的主动检查仍只查询最近20位历史成员', asy
   const context = [...historyIds, historyIds[0]].map(historyMember);
   const { query } = await memoryLookup(context, [], { autonomous: true });
   assert.deepEqual(query.userIds, [historyIds[0], ...historyIds.slice(-19).reverse()]);
+});
+
+test('两小时会话过期会清内存话题和跟进状态，旧短历史不参与模型与检索', async () => {
+  const config = structuredClone(DEFAULT_CONFIG);
+  config.botQQ = '999999';
+  config.chat.enabled = config.models.deepseek.enabled = true;
+  config.chat.contextMessages = 50;
+  config.chat.social.batchMs = 0;
+  config.groups = [{ id: '222222', read: true, send: true, triggers: ['mention'],
+    social: { enabled: true, proactive: false, activeStart: '00:00', activeEnd: '00:00' } }];
+  const scope = { actualQQ: '999999', groupId: '222222' }, now = Math.floor(Date.now() / 1000);
+  let session = { ...scope, topic: '', pendingTopics: [], participants: [], version: 0, expired: false, expiresAt: null };
+  const firstDone = deferred(), secondDone = deferred(), queries = [], requests = [];
+  const runtime = createSocialRuntime({ getConfig: () => config, getIdentity: () => scope.actualQQ, getEpoch: () => 1,
+    store: {
+      conversation: { list: async () => [
+        { ...historyMember('555555'), messageId: 'old', text: '三小时前的旧短上下文', time: now - 3 * 3600 },
+        { ...historyMember('555555'), messageId: 'fresh', text: '当前的新鲜短上下文', time: now },
+      ] },
+      conversationState: { get: () => session },
+      memory: { getGroup: () => ({ enabled: true }), relevant: async input => { queries.push(input); return []; } },
+    }, gate() {}, listTools: () => [], grantedTools: () => [],
+    infer: async (provider, messages, signal, options) => {
+      await options.beforeCall(); requests.push(messages);
+      return { text: JSON.stringify(requests.length === 1
+        ? { action: 'reply', text: '第一轮已回复', topic: '缓存旧话题' }
+        : { action: 'silent', reason: 'TTL test' }) };
+    }, send: async () => {}, report: (level, message) => {
+      if (message.endsWith('已回复')) firstDone.resolve();
+      if (message.includes('TTL test')) secondDone.resolve();
+    },
+  });
+  let deadline;
+  try {
+    const timeout = new Promise((resolve, reject) => { deadline = setTimeout(() => reject(new Error('过期状态回归等待超时')), 5000); });
+    await runtime.handle({ messageType: 'group', groupId: scope.groupId, userId: '555555', messageId: 'first', text: '先聊这个', mentioned: true, time: now }, { action: 'chat' });
+    await Promise.race([firstDone.promise, timeout]);
+    assert.equal(runtime.status().groups[0].topic, '缓存旧话题');
+    assert.ok(runtime.status().groups[0].lastReplyAt > 0);
+    session = { ...scope, topic: '过期快照旧话题', pendingTopics: [], participants: [], version: 1, expired: true, expiresAt: null };
+    await runtime.handle({ messageType: 'group', groupId: scope.groupId, userId: '555555', messageId: 'second', text: '', mentioned: true, time: now }, { action: 'chat' });
+    await Promise.race([secondDone.promise, timeout]);
+    assert.equal(runtime.status().groups[0].topic, '');
+    assert.equal(runtime.status().groups[0].lastReplyAt, 0);
+    assert.equal(queries[1].query, '', '不能拿过期的内存话题当检索fallback');
+    for (const messages of requests) {
+      const packet = JSON.parse(messages.find(message => message.role === 'user').content);
+      assert.ok(packet.context.every(message => message.messageId !== 'old'));
+      assert.ok(packet.context.some(message => message.messageId === 'fresh'));
+      assert.ok(!messages[0].content.includes('过期快照旧话题'));
+    }
+    const secondPacket = JSON.parse(requests[1].find(message => message.role === 'user').content);
+    assert.ok(secondPacket.request.every(request => request.followUp === false));
+  } finally { clearTimeout(deadline); runtime.stop(); }
 });

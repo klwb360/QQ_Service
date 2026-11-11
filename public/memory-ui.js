@@ -11,6 +11,7 @@ window.QQMemoryUI = {
     const trees = new Map();
     let profiles = [], scope = null, records = [], selectedId = '', generation = 0;
     let busy = false, editing = null, deleting = null, pendingGroup = null, searchTimer = null;
+    let section = 'facts', experienceRecords = [], experienceGroup = null, sessionState = null, experienceFilter = 'active', editingExperience = null;
     const time = value => {
       if (!value) return '时间未提供';
       const date = new Date(typeof value === 'number' && value < 1e12 ? value * 1000 : value);
@@ -75,11 +76,11 @@ window.QQMemoryUI = {
       $('#memory-breadcrumbs').innerHTML = parts.join('<span aria-hidden="true">›</span>');
       $('#memory-scope-title').textContent = scope?.userId ? memberName(scope.userId) : currentGroup ? currentGroup.name || currentGroup.groupId : qq ? `QQ ${qq.actualQQ} 的记忆` : '选择记忆目录';
       $('#memory-scope-note').textContent = scope?.userId ? `QQ ${scope.userId} · 仅在当前群使用已确认记忆` : currentGroup ? `群 ${currentGroup.groupId} · 只使用你确认的事实与偏好` : '从左侧选择群或群友，查看来源并管理记忆。';
-      $('#memory-group-control').classList.toggle('hidden', !currentGroup);
+      $('#memory-group-control').classList.toggle('hidden', !currentGroup || section !== 'facts');
       $('#memory-group-enabled').checked = enabled;
       $('#memory-group-enabled').disabled = busy;
       $('#memory-group-state').textContent = pending ? enabled ? '正在启用…' : '正在暂停…' : enabled ? '群记忆已启用' : '群记忆已暂停';
-      $('#memory-paused').classList.toggle('hidden', !currentGroup || enabled);
+      $('#memory-paused').classList.toggle('hidden', !currentGroup || enabled || section !== 'facts');
       $('#memory-add').disabled = busy || !qq?.groups?.length;
       $('#memory-refresh').disabled = busy;
     }
@@ -100,7 +101,37 @@ window.QQMemoryUI = {
       $('#memory-detail').querySelectorAll('button').forEach(button => { button.disabled = busy; });
     }
 
-    function render() { renderTree(); renderScope(); renderList(); }
+    function renderSections() {
+      const facts = section === 'facts';
+      document.querySelectorAll('[data-memory-tab]').forEach(button => {
+        const active = button.dataset.memoryTab === section;
+        button.classList.toggle('active', active); button.setAttribute('aria-selected', String(active));
+      });
+      $('.memory-toolbar').classList.toggle('hidden', !facts);
+      $('.memory-content').classList.toggle('hidden', !facts);
+      $('#experience-workspace').classList.toggle('hidden', section !== 'experiences');
+      $('#conversation-workspace').classList.toggle('hidden', section !== 'session');
+      $('.memory-manager-footer').textContent = facts ? 'AI 随已有回复整理候选，由你确认后使用；只记录明确事实与偏好。' : section === 'experiences' ? '札记随真实互动自动积累；每个群独立保存，可暂停或回退，不改变人格和发送权限。' : '会话状态帮助接续当前话题，会过期；不会自动成为永久事实。';
+      if (!facts) {
+        $('#memory-scope-title').textContent = group() ? `${group().name || scope.groupId} · ${section === 'experiences' ? '经历札记' : '当前会话'}` : '先选择一个群';
+        $('#memory-scope-note').textContent = group() ? `QQ ${scope.actualQQ} · 群 ${scope.groupId}` : '从左侧目录选择群，查看此群独立保存的内容。';
+      }
+    }
+    const experienceKinds = { interaction: '共同经历', expression: '表达习惯', pending_topic: '待续话题' };
+    function renderExperiences() {
+      const container = $('#experience-workspace');
+      if (!scope?.groupId) { container.innerHTML = '<div class="memory-empty"><strong>先选择一个群</strong><p>经历札记只在对应账号和群内使用。</p></div>'; return; }
+      const filtered = experienceRecords.filter(record => record.status === experienceFilter);
+      container.innerHTML = `<div class="experience-toolbar"><label class="check-field"><input type="checkbox" id="experience-enabled" ${experienceGroup?.paused !== true ? 'checked' : ''} ${busy ? 'disabled' : ''}>自动积累与使用札记</label><select id="experience-status" aria-label="札记状态"><option value="active" ${experienceFilter === 'active' ? 'selected' : ''}>活跃札记</option><option value="archived" ${experienceFilter === 'archived' ? 'selected' : ''}>已归档</option></select></div><p class="field-note experience-scope-note">${experienceGroup?.eligible === false ? '这个群尚未同时开启读取和自由聊天，暂不积累新札记。' : experienceGroup?.paused ? '已暂停此群的积累与使用，已有记录保留。' : '随已有聊天记录简短经历，不增加定时模型调用。'}</p><div class="experience-list">${filtered.length ? filtered.map(record => `<article class="experience-card" data-experience-record="${escape(record.id)}"><div class="experience-card-heading"><span class="memory-badge">${escape(experienceKinds[record.kind] || '经历')}</span><span>${escape(time(record.updatedAt))}</span></div><p class="experience-text">${escape(record.text)}</p><div class="experience-card-actions">${record.status !== 'deleted' ? `<button type="button" class="button button-quiet button-small" data-experience-action="edit">编辑</button><button type="button" class="button button-quiet button-small" data-experience-action="${record.status === 'active' ? 'archive' : 'restore'}">${record.status === 'active' ? '归档' : '恢复使用'}</button><button type="button" class="button button-quiet button-small" data-experience-action="delete">删除</button>` : ''}<button type="button" class="button button-quiet button-small" data-experience-action="history">版本记录</button></div><details class="experience-sources"><summary>互动来源 · ${record.sources?.length || 0} 条</summary>${(record.sources || []).map(source => `<blockquote><p>${escape(source.text)}</p><footer>${source.role === 'assistant' ? 'AI 已发送回复' : `QQ ${escape(source.userId || '')}`} · ${escape(time(source.time))}<br>消息 ${escape(source.messageId || '')}</footer></blockquote>`).join('') || '<p class="field-note">没有关联来源。</p>'}</details><div class="experience-history" data-experience-history></div></article>`).join('') : '<div class="memory-empty"><strong>这里还没有札记</strong><p>开启自由聊天后，AI 可从真实互动中积累简短经历。</p></div>'}</div>`;
+    }
+    function renderSession() {
+      const container = $('#conversation-workspace');
+      if (!scope?.groupId) { container.innerHTML = '<div class="memory-empty"><strong>先选择一个群</strong><p>当前话题和参与者按群分别维护。</p></div>'; return; }
+      const item = sessionState;
+      if (!item) { container.innerHTML = '<div class="memory-empty"><strong>暂无当前会话</strong><p>群里发生互动后，这里会显示正在聊的话题和参与者。</p></div>'; return; }
+      container.innerHTML = `<div class="conversation-heading"><span class="memory-badge">${item.expired ? '会话已过期' : '当前会话'}</span><button type="button" class="button button-quiet button-small" data-conversation-clear ${busy ? 'disabled' : ''}>重置会话状态</button></div><section class="conversation-section"><h4>正在聊什么</h4><p>${escape(item.topic || '还没有明确话题')}</p></section><section class="conversation-section"><h4>待续话题</h4>${item.pendingTopics?.length ? `<ul>${item.pendingTopics.map(topic => `<li>${escape(typeof topic === 'string' ? topic : topic.text || '')}</li>`).join('')}</ul>` : '<p class="field-note">暂无待续事项。</p>'}</section><section class="conversation-section"><h4>最近参与者</h4><div class="conversation-participants">${(item.participants || []).map(person => `<span>${escape(person.displayName || person.userId || 'AI')}${person.userId ? `<small>QQ ${escape(person.userId)}</small>` : ''}</span>`).join('') || '<p class="field-note">暂无参与者。</p>'}</div></section><p class="field-note">最近互动：${escape(time(item.lastInteractionAt))}${item.expiresAt ? `<br>状态到期：${escape(time(item.expiresAt))}` : ''}<br>重置只清空当前会话状态，保留历史消息、札记和群友记忆。</p>`;
+    }
+    function render() { renderTree(); renderScope(); renderSections(); if (section === 'facts') renderList(); else if (section === 'experiences') renderExperiences(); else renderSession(); }
     async function refreshTree(profileId) {
       const data = await request(profileId, '/memory/tree', undefined, 'GET');
       if (!Array.isArray(data.identities) && !Array.isArray(data.accounts)) throw new Error('记忆目录响应不完整，请刷新重试。');
@@ -110,6 +141,16 @@ window.QQMemoryUI = {
       const token = ++generation;
       if (!scope?.profileId || !scope.actualQQ) { records = []; render(); return; }
       const captured = { ...scope };
+      if (section !== 'facts') {
+        const capturedSection = section;
+        if (!captured.groupId) { experienceRecords = []; experienceGroup = null; sessionState = null; render(); return; }
+        const params = new URLSearchParams({ actualQQ: captured.actualQQ, groupId: captured.groupId, ...(section === 'experiences' ? { status: 'all' } : {}) });
+        const data = await request(captured.profileId, `/${section === 'experiences' ? 'experiences' : 'conversation/state'}?${params}`, undefined, 'GET');
+        if (token !== generation || !scopeMatches(captured) || section !== capturedSection) return;
+        if (section === 'experiences') { experienceRecords = Array.isArray(data.records) ? data.records : []; experienceGroup = data.group || null; }
+        else sessionState = data.state || null;
+        render(); return;
+      }
       const params = new URLSearchParams({ actualQQ: captured.actualQQ, ...(captured.groupId ? { groupId: captured.groupId } : {}), ...(captured.userId ? { userId: captured.userId } : {}), status: $('#memory-status').value, query: $('#memory-search').value.trim() });
       const data = await request(captured.profileId, `/memory?${params}`, undefined, 'GET');
       if (token !== generation || !scopeMatches(captured)) return;
@@ -123,7 +164,7 @@ window.QQMemoryUI = {
     }
     async function select(value) {
       scope = { profileId: value.profileId, actualQQ: value.actualQQ || '', groupId: value.groupId || '', userId: value.userId || '' };
-      selectedId = ''; records = []; clearError();
+      selectedId = ''; records = []; experienceRecords = []; experienceGroup = null; sessionState = null; clearError();
       $('#memory-directory').classList.remove('memory-directory-visible');
       $('#memory-directory-toggle').setAttribute('aria-expanded', 'false');
       render();
@@ -131,6 +172,7 @@ window.QQMemoryUI = {
     }
     async function refresh() {
       clearError();
+      const previousScope = JSON.stringify(scope);
       profiles = getAccounts().map(account => ({ ...account }));
       const results = await Promise.allSettled(profiles.map(account => refreshTree(account.id)));
       const failed = results.find(result => result.status === 'rejected');
@@ -141,15 +183,19 @@ window.QQMemoryUI = {
         const qq = first && identities(first.id)[0];
         scope = qq ? { profileId: first.id, actualQQ: qq.actualQQ, groupId: qq.groups?.[0]?.groupId || '', userId: '' } : null;
       } else if (scope.groupId && !group()) scope = { ...scope, groupId: '', userId: '' };
+      if (JSON.stringify(scope) !== previousScope) { records = []; experienceRecords = []; experienceGroup = null; sessionState = null; }
       render();
       await loadRecords();
     }
+    function activityBusy() {
+      document.querySelectorAll('[data-memory-tab], #experience-workspace button, #experience-workspace input, #experience-workspace select, #conversation-workspace button').forEach(element => { element.disabled = busy; });
+    }
     async function run(operation, target = '#memory-error') {
       if (busy) return;
-      busy = true; clearError(target); renderScope(); renderDetail();
+      busy = true; clearError(target); renderScope(); renderSections(); renderDetail(); activityBusy();
       try { await operation(); }
       catch (error) { showError(error, target); }
-      finally { busy = false; renderScope(); renderDetail(); }
+      finally { busy = false; renderScope(); renderSections(); renderDetail(); activityBusy(); }
     }
     async function reloadAfterChange(profileId) {
       await refreshTree(profileId);
@@ -186,6 +232,34 @@ window.QQMemoryUI = {
       await reloadAfterChange(profileId);
       notify?.(action === 'confirm' ? '已确认这条记忆，后续聊天可使用。' : '已拒绝这条记忆。');
     }
+    const experienceScope = record => ({ actualQQ: record?.actualQQ || scope.actualQQ, groupId: record?.groupId || scope.groupId });
+    async function actExperience(action, record, extra = {}) {
+      const profileId = scope.profileId;
+      await request(profileId, '/experiences/action', { action, ...experienceScope(record), id: record.id, version: record.version, ...extra });
+      await loadRecords();
+      notify?.(action === 'delete' ? '札记及其历史已删除。' : action === 'rollback' ? '札记已回退到所选版本。' : '札记已更新。');
+    }
+    function editExperience(record, action = 'update') {
+      editingExperience = { ...record, profileId: scope.profileId, actualQQ: scope.actualQQ, groupId: scope.groupId, action };
+      const deleting = action === 'delete';
+      $('#experience-edit-title').textContent = deleting ? '删除这条经历札记？' : '编辑经历札记';
+      $('#experience-edit-text').value = record.text;
+      $('#experience-edit-text').readOnly = deleting;
+      $('#experience-edit-save').textContent = deleting ? '确认删除' : '保存';
+      $('#experience-edit-save').classList.toggle('button-danger', deleting);
+      $('#experience-edit-dialog .field-note').textContent = deleting ? '删除正文、互动来源和历史版本后无法回退；不影响群友记忆或基础人格。' : '这里只修改当前群的经历，不会改变基础人格或群友事实。';
+      clearError('#experience-edit-error');
+      $('#experience-edit-dialog').showModal();
+      if (!deleting) $('#experience-edit-text').focus();
+    }
+    async function experienceHistory(record) {
+      const params = new URLSearchParams({ ...experienceScope(record), id: record.id });
+      const data = await request(scope.profileId, `/experiences/history?${params}`, undefined, 'GET');
+      const panel = [...document.querySelectorAll('[data-experience-record]')].find(item => item.dataset.experienceRecord === record.id)?.querySelector('[data-experience-history]');
+      if (!panel) return;
+      const revisions = data.revisions || [];
+      panel.innerHTML = revisions.length ? `<label class="field">回退到<select data-experience-version>${revisions.map(revision => `<option value="${escape(revision.version)}">版本 ${escape(revision.version)} · ${escape(time(revision.updatedAt || revision.createdAt))} · ${escape(String(revision.text || '').slice(0, 45))}</option>`).join('')}</select></label><button type="button" class="button button-secondary button-small" data-experience-action="rollback">回退札记</button>` : '<p class="field-note">暂无历史版本。</p>';
+    }
 
     $('#open-memory-manager').addEventListener('click', () => {
       if (!dialog.open) dialog.showModal();
@@ -198,9 +272,40 @@ window.QQMemoryUI = {
       const open = $('#memory-directory').classList.toggle('memory-directory-visible');
       $('#memory-directory-toggle').setAttribute('aria-expanded', String(open));
     });
+    $('.memory-section-tabs').addEventListener('keydown', event => {
+      if (!['ArrowLeft', 'ArrowRight', 'Home', 'End'].includes(event.key) || busy) return;
+      const tabs = [...document.querySelectorAll('[data-memory-tab]')];
+      const current = tabs.indexOf(document.activeElement);
+      if (current < 0) return;
+      event.preventDefault();
+      const index = event.key === 'Home' ? 0 : event.key === 'End' ? tabs.length - 1 : (current + (event.key === 'ArrowRight' ? 1 : -1) + tabs.length) % tabs.length;
+      tabs[index].focus(); tabs[index].click();
+    });
     dialog.addEventListener('click', event => {
       const target = event.target.closest('button');
       if (!target) return;
+      if (target.dataset.memoryTab) {
+        section = target.dataset.memoryTab;
+        if (section !== 'facts' && scope) scope = { ...scope, userId: '' };
+        clearError(); render(); run(loadRecords); return;
+      }
+      if (target.dataset.experienceAction) {
+        const card = target.closest('[data-experience-record]');
+        const record = experienceRecords.find(item => item.id === card?.dataset.experienceRecord);
+        if (!record) return;
+        const action = target.dataset.experienceAction;
+        if (action === 'edit' || action === 'delete') editExperience(record, action === 'edit' ? 'update' : 'delete');
+        else if (action === 'history') run(() => experienceHistory(record));
+        else run(() => actExperience(action, record, action === 'rollback' ? { targetVersion: Number(card.querySelector('[data-experience-version]').value) } : {}));
+        return;
+      }
+      if (target.hasAttribute('data-conversation-clear')) {
+        if (scope?.groupId && sessionState) run(async () => {
+          await request(scope.profileId, '/conversation/clear', { actualQQ: scope.actualQQ, groupId: scope.groupId, version: sessionState.version });
+          await loadRecords(); notify?.('已重置当前会话状态，历史记忆和札记保留。');
+        });
+        return;
+      }
       if (target.hasAttribute('data-memory-profile')) {
         event.preventDefault();
         const data = target.dataset;
@@ -223,6 +328,29 @@ window.QQMemoryUI = {
       searchTimer = setTimeout(() => loadRecords().catch(showError), 180);
     });
     $('#memory-status').addEventListener('change', () => { renderList(); loadRecords().catch(showError); });
+    dialog.addEventListener('change', event => {
+      if (event.target.id === 'experience-status') { experienceFilter = event.target.value; renderExperiences(); }
+      if (event.target.id === 'experience-enabled' && scope?.groupId) {
+        const paused = !event.target.checked;
+        run(async () => {
+          await request(scope.profileId, '/experiences/group', { actualQQ: scope.actualQQ, groupId: scope.groupId, paused, version: experienceGroup?.version || 0 });
+          await loadRecords(); notify?.(paused ? '已暂停此群经历札记的积累与使用。' : '已恢复此群经历札记的积累与使用。');
+        });
+      }
+    });
+    ['#experience-edit-close', '#experience-edit-cancel'].forEach(selector => $(selector).addEventListener('click', () => $('#experience-edit-dialog').close()));
+    $('#experience-edit-form').addEventListener('submit', event => {
+      event.preventDefault();
+      if (!editingExperience || !$('#experience-edit-form').reportValidity()) return;
+      const item = { ...editingExperience };
+      run(async () => {
+        $('#experience-edit-save').disabled = true;
+        try {
+          await request(item.profileId, '/experiences/action', { action: item.action, actualQQ: item.actualQQ, groupId: item.groupId, id: item.id, version: item.version, ...(item.action === 'update' ? { text: $('#experience-edit-text').value.trim() } : {}) });
+          $('#experience-edit-dialog').close(); await loadRecords(); notify?.(item.action === 'delete' ? '札记及其历史已删除。' : '札记已保存。');
+        } finally { $('#experience-edit-save').disabled = false; }
+      }, '#experience-edit-error');
+    });
     $('#memory-add').addEventListener('click', () => openEditor());
     $('#memory-group-enabled').addEventListener('change', event => {
       if (!scope?.groupId) return;

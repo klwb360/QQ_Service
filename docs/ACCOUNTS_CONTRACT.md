@@ -1,12 +1,12 @@
 # Account control implementation contract
 
-This document describes the v0.7.0 API-only guided account-control flow. The user requires multiple saved accounts that can run concurrently; account/model setup remains read-only until permissions are released in the group permissions subpage.
+This document describes the v0.8.0 API-only guided account-control flow. The user requires multiple saved accounts that can run concurrently; account/model setup remains read-only until permissions are released in the group permissions subpage.
 
 ## Configuration and authorization
 
 Each profile has its own existing configuration document. Version 2 retains `botQQ` as the connected QQ identity and `ownerQQ` as the optional private command/summary recipient; UI labels must explain those roles without small/main account terminology.
 
-- `schemaVersion: 2`.
+- `schemaVersion: 3`.
 - `permissions: { released: false, privateReplies: false }` is the account-wide authorization. Saving model credentials never sets it.
 - `chat` adds `enabled: false` and `provider: 'deepseek'`. The owner default conversation model can be DeepSeek or a configured compatible API. Existing persona/context fields remain.
 - Each group retains its existing fields and adds `read: true`, `send: false`. `triggers` is a multiselect OR list, default mention only; legacy single `trigger` normalizes to the corresponding list. Clear means no automatic replies, and select all never grants permissions. Group mode describes the workflow; sending requires explicit per-group permission and account release. Group creation never authorizes sending.

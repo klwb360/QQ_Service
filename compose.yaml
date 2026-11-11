@@ -1,0 +1,31 @@
+services:
+  qq-service:
+    build:
+      context: .
+    image: qq-service:local
+    init: true
+    restart: unless-stopped
+    ports:
+      - "127.0.0.1:8787:3210"
+    environment:
+      QQ_SERVICE_CONTAINER: "1"
+      QQ_SERVICE_HOST: "0.0.0.0"
+      QQ_DASHBOARD_PORT: "3210"
+      QQ_DASHBOARD_DATA_DIR: /data
+      QQ_SERVICE_PUBLIC_ORIGIN: "http://127.0.0.1:8787,http://localhost:8787"
+      QQ_SERVICE_ONEBOT_HOSTS: host.docker.internal
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
+    volumes:
+      - qq-service-data:/data
+    read_only: true
+    tmpfs:
+      - /tmp:size=64m,mode=1777
+    cap_drop:
+      - ALL
+    security_opt:
+      - no-new-privileges:true
+    stop_grace_period: 30s
+
+volumes:
+  qq-service-data:

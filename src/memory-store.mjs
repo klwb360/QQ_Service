@@ -17,6 +17,26 @@ const seconds = value => {
 };
 const fingerprint = text => createHash('sha256').update(text.normalize('NFKC').replace(/\s+/gu, '').toLowerCase()).digest('hex');
 const counts = () => ({ pending: 0, confirmed: 0, rejected: 0, total: 0 });
+
+/** Bounded lexical search: Chinese bigrams find topics inside a longer question.
+ * These terms rank stored evidence; they do not add inferred member facts. */
+export function memorySearchTerms(query) {
+  if (typeof query !== 'string') return [];
+  const tokens = query.slice(0, 2000).normalize('NFKC').toLowerCase().match(/[a-z0-9]{2,}|[\p{Script=Han}]{2,}/gu) || [];
+  const stop = new Set(['什么', '这个', '那个', '一下', '可以', '我们', '你们', '有没有', '怎么', '还是', '就是']);
+  const terms = [];
+  for (const token of tokens) {
+    if (!stop.has(token)) terms.push(token);
+    if (/\p{Script=Han}/u.test(token)) {
+      const chars = [...token];
+      for (let i = 0; i < chars.length - 1; i++) {
+        const term = chars[i] + chars[i + 1];
+        if (!stop.has(term)) terms.push(term);
+      }
+    }
+  }
+  return [...new Set(terms)].slice(0, 40);
+}
 const fromRow = row => row ? ({
   id: row.id, actualQQ: row.actual_qq, groupId: row.group_id, userId: row.user_id,
   text: row.text, kind: row.kind, status: row.status, origin: row.origin, version: row.version,
@@ -52,9 +72,12 @@ export function createMemoryStore({ db, getState }) {
     return [state.applied, state.draft].filter(Boolean);
   };
   const selected = (actualQQ, groupId, appliedOnly = false) => (appliedOnly ? [getState().applied] : configurations()).some(config => config?.botQQ === actualQQ && config.groups?.some(group => group.id === groupId && group.read === true));
+  const optionalTables = () => ['experiences', 'dialogue_states', 'persona_revisions'].filter(name =>
+    db.prepare("SELECT 1 FROM sqlite_master WHERE type='table' AND name=?").get(name));
   const identities = () => [...new Set([
     ...configurations().map(config => config.botQQ),
     ...db.prepare('SELECT DISTINCT actual_qq FROM member_memories UNION SELECT DISTINCT actual_qq FROM memory_groups UNION SELECT DISTINCT actual_qq FROM conversation_messages UNION SELECT DISTINCT account_id FROM messages').all().map(row => row.actual_qq),
+    ...optionalTables().flatMap(name => db.prepare(`SELECT DISTINCT actual_qq FROM ${name}`).all().map(row => row.actual_qq)),
   ].filter(value => typeof value === 'string' && /^[1-9]\d{3,19}$/.test(value)))];
   const getGroup = input => {
     const { actualQQ, groupId } = scope(input);
@@ -144,10 +167,13 @@ export function createMemoryStore({ db, getState }) {
       if (!getGroup({ actualQQ, groupId }).enabled || !selected(actualQQ, groupId, true) || !Array.isArray(userIds) || !userIds.length) return [];
       const members = [...new Set(userIds.slice(0, 50).map(String).filter(value => /^[1-9]\d{3,19}$/.test(value) && value !== actualQQ))];
       if (!members.length) return [];
-      const terms = typeof query === 'string' ? (query.toLowerCase().match(/[a-z0-9]{2,}|[\p{Script=Han}]{2,}/gu) || []).slice(0, 30) : [];
-      const records = db.prepare(`SELECT * FROM member_memories WHERE actual_qq=? AND group_id=? AND status='confirmed' AND user_id IN (${members.map(() => '?').join(',')}) ORDER BY updated_at DESC,id DESC LIMIT 1000`).all(actualQQ, groupId, ...members).map(fromRow);
+      const terms = memorySearchTerms(query);
+      // Rank matching facts before the bounded load so an older relevant fact
+      // is not displaced by a prolific member's newer unrelated memories.
+      const order = terms.length ? `${terms.map(() => 'CASE WHEN instr(lower(text),?)>0 THEN 1 ELSE 0 END').join('+')} DESC,` : '';
+      const records = db.prepare(`SELECT * FROM member_memories WHERE actual_qq=? AND group_id=? AND status='confirmed' AND user_id IN (${members.map(() => '?').join(',')}) ORDER BY ${order}updated_at DESC,id DESC LIMIT 1000`).all(actualQQ, groupId, ...members, ...terms).map(fromRow);
       return records
-        .map((record, index) => ({ record, score: terms.reduce((score, term) => score + Number(record.text.toLowerCase().includes(term)), 0), index }))
+        .map((record, index) => ({ record, score: terms.reduce((score, term) => score + Number(record.text.normalize('NFKC').toLowerCase().includes(term)), 0), index }))
         .sort((a, b) => b.score - a.score || a.index - b.index).slice(0, Math.max(1, Math.min(20, Math.floor(Number(limit) || 8)))).map(item => item.record);
     },
     mutate(input) {
@@ -203,6 +229,12 @@ export function createMemoryStore({ db, getState }) {
         for (const entry of config.groups || []) group(config.botQQ, entry.id, entry.name);
       }
       for (const entry of groups()) group(entry.actualQQ, entry.groupId);
+      // A group may have only an owner-created experience or transient state.
+      // Keep it discoverable after the configured QQ changes, without injecting
+      // its data into the new identity's conversations.
+      for (const name of optionalTables().filter(name => name !== 'persona_revisions')) {
+        for (const row of db.prepare(`SELECT DISTINCT actual_qq,group_id FROM ${name}`).all()) group(row.actual_qq, row.group_id);
+      }
       for (const row of db.prepare("SELECT actual_qq,group_id,user_id,display_name FROM conversation_messages WHERE role='user' GROUP BY actual_qq,group_id,user_id ORDER BY max(time)").all()) member(group(row.actual_qq, row.group_id), row.user_id, row.display_name);
       for (const row of db.prepare('SELECT actual_qq,group_id,user_id,status,count(*) AS n FROM member_memories GROUP BY actual_qq,group_id,user_id,status').all()) {
         const node = group(row.actual_qq, row.group_id), user = member(node, row.user_id);

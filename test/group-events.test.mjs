@@ -22,7 +22,7 @@ test('群触发条件可同时选择、全选和清空，并保留旧版单选�
   }
   config.groups[0] = { id: '123456', mode: 'social' };
   assert.deepEqual(validateConfig(config).groups[0].triggers, ['mention']);
-  assert.equal(validateConfig(config).schemaVersion, 2);
+  assert.equal(validateConfig(config).schemaVersion, 3);
 });
 
 test('无效触发条件给出字段提示，不能从畸形配置意外恢复自动回复', () => {

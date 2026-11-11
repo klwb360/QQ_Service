@@ -102,7 +102,7 @@ test('账号创建默认只读，多个账号的配置、密钥、后台模块�
     const [a, b] = await Promise.all([f.create('资料账号', '111111'), f.create('社交账号', '999999')]);
     assert.notEqual(a.account.id, b.account.id);
     for (const created of [a, b]) {
-      assert.equal(created.state.draft.schemaVersion, 2);
+      assert.equal(created.state.draft.schemaVersion, 3);
       assert.equal(created.state.draft.permissions.released, false);
       assert.equal(created.state.draft.permissions.privateReplies, false);
       assert.equal(created.state.draft.chat.enabled, false);
@@ -274,7 +274,7 @@ test('旧单账号原地迁移只发生一次，工作群不获发送权，新�
   try {
     assert.equal(f.initial.accounts.length, 1); firstId = f.initial.accounts[0].id;
     const state = (await f.get(`/api/accounts/${firstId}/state`)).body;
-    assert.equal(state.applied.schemaVersion, 2); assert.equal(state.appliedRevision, 7);
+    assert.equal(state.applied.schemaVersion, 3); assert.equal(state.appliedRevision, 7);
     assert.equal(state.applied.groups.find(g => g.id === '222222').send, true);
     assert.equal(state.applied.groups.find(g => g.id === '333333').send, false);
     assert.equal(f.contexts.get(firstId).installerContext.dataDir, dataDir);

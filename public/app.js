@@ -75,6 +75,102 @@
     }
     parent[keys.at(-1)] = value;
   }
+  function connectionBackend(config = draft) { return config?.qq?.backend === 'snowluma' ? 'snowluma' : 'napcat'; }
+  function connectionChanged(editor) {
+    if (!editor) return false;
+    const before = editor.state?.applied?.qq ?? {};
+    const after = editor.draft?.qq ?? {};
+    return ['enabled', 'backend', 'wsUrl', 'httpUrl', 'webUiUrl'].some(key => (after[key] ?? '') !== (before[key] ?? ''))
+      || ['napcatToken', 'snowlumaWsToken', 'snowlumaHttpToken'].some(key => Boolean(editor.secretUpdates?.[key]));
+  }
+  function snapshotConnection(config = draft) {
+    if (!config?.qq) return;
+    const backend = connectionBackend(config);
+    config.qq.connections ??= {};
+    config.qq.connections[backend] = { wsUrl: config.qq.wsUrl || '', webUiUrl: config.qq.webUiUrl || '', ...(backend === 'snowluma' ? { httpUrl: config.qq.httpUrl || '' } : {}) };
+  }
+  function renderConnector() {
+    const backend = connectionBackend();
+    const snow = backend === 'snowluma';
+    const available = state?.connectors?.snowluma?.available === true;
+    const reason = state?.connectors?.snowluma?.reason || '正在补全 Windows 隔离运行验证，暂未开放接入。';
+    const option = $('#qq-backend option[value="snowluma"]');
+    option.disabled = !available;
+    option.textContent = available ? 'SnowLuma · 实验接入' : 'SnowLuma · 实验功能待验证';
+    $('#qq-backend').value = backend;
+    $('#connector-availability').textContent = available ? '每个账号独立选择；切换后保持只读，需要重新确认登录 QQ 和发送范围。' : `SnowLuma：${reason}`;
+    $('#snowluma-security-note').textContent = reason;
+    $('#snowluma-security-note').classList.toggle('hidden', !snow || available);
+    $('#napcat-token-field').classList.toggle('hidden', snow);
+    $('#snowluma-ws-token-field').classList.toggle('hidden', !snow);
+    $('#snowluma-http-fields').classList.toggle('hidden', !snow);
+    $$('[data-open-napcat-program]', $('#napcat-connect-toolbar')).forEach(button => button.classList.toggle('hidden', snow));
+    $('.napcat-mode-meta', $('#napcat-connect-toolbar')).classList.toggle('hidden', snow);
+    $('#connector-webui-label').textContent = snow ? 'SnowLuma 管理页面' : 'NapCat 管理页面';
+    $('#connector-help-text').textContent = snow ? '自行启动已验证的 SnowLuma 并登录此 QQ。分别填写这个 QQ 的 WS、HTTP 地址和 Token，再测试连接。' : 'NapCat 登录的 QQ 应与当前账号一致。启用正向 WebSocket，再将连接地址和 OneBot Token 填到上方。';
+    if (snow) $('#connection-napcat-hint').textContent = available ? '先自行打开 SnowLuma 并登录此 QQ，再打开登录页、测试连接。' : reason;
+    if (state?.container === true && !snow) {
+      $$('[data-open-napcat-program]', $('#napcat-connect-toolbar')).forEach(button => button.classList.add('hidden'));
+      $('.napcat-mode-meta', $('#napcat-connect-toolbar')).classList.add('hidden');
+      $('#connection-napcat-hint').textContent = '容器内连接外部 NapCat。请先从宿主机或独立容器启动它，再填写可访问的 OneBot 地址。';
+    }
+  }
+  async function previewPersona() {
+    const id = requireAccount();
+    const revision = editors.get(id).editVersion;
+    const result = await accountApi('/persona/preview', { config: clone(editors.get(id).draft) }, 'POST', id);
+    if (id !== selectedAccountId || editors.get(id)?.editVersion !== revision) return;
+    const preview = $('#persona-preview-content');
+    preview.textContent = result.text || result.preview?.text || '当前没有可预览的人格内容。';
+    preview.dataset.accountId = id;
+    preview.classList.remove('hidden');
+  }
+  async function showPersonaHistory() {
+    const id = requireAccount();
+    const actualQQ = editors.get(id).draft?.botQQ || '';
+    if (!actualQQ) throw new Error('请先填写这个账号的 QQ 号。');
+    const result = await accountApi(`/persona/history?${new URLSearchParams({ actualQQ })}`, undefined, 'GET', id);
+    const revisions = result.revisions || [];
+    if (!revisions.length) return toast('保存并应用人格后，这里会保留版本记录。', 'info');
+    const html = `<p>恢复为当前账号的待保存内容，应用参数后才会影响聊天。</p><label class="field">选择版本<select id="persona-history-selection">${revisions.map((revision, index) => `<option value="${index}">版本 ${escapeHTML(revision.revision ?? revision.id ?? revision.version)} · ${escapeHTML(formatTime(revision.createdAt || revision.updatedAt))}</option>`).join('')}</select></label>`;
+    if (!await openDialog('人格版本记录', html, '恢复到待保存内容')) return;
+    const selected = revisions[Number($('#persona-history-selection').value)];
+    const submittedEditVersion = editors.get(id)?.editVersion;
+    const restored = await accountApi('/persona/restore', { actualQQ, revision: selected.revision ?? selected.id ?? selected.version }, 'POST', id);
+    const persona = restored.persona;
+    if (!persona || typeof persona.body !== 'string') throw new Error('人格版本响应不完整，请刷新后重试。');
+    const editor = editors.get(id);
+    if (!editor || editor.editVersion !== submittedEditVersion) throw new Error('等待期间这个账号的输入已修改，未覆盖新内容；请重新选择人格版本。');
+    editor.draft.chat.persona = persona.body;
+    editor.draft.chat.social = { ...editor.draft.chat.social, name: persona.name ?? '', aliases: persona.aliases || [], interests: persona.interests ?? '' };
+    if (id === selectedAccountId) { draft = editor.draft; markDirty(); populateForm(); renderLiveState(); }
+    else { editor.dirty = true; editor.editVersion = (editor.editVersion || 0) + 1; }
+    toast(`「${accountName(id)}」已恢复人格到待保存内容，保存并应用后生效。`, 'info');
+  }
+  async function importPersona(file) {
+    const id = requireAccount();
+    if (!/\.(md|markdown)$/i.test(file.name) || file.size > 64 * 1024) throw new Error('请选择不超过 64 KB 的 Markdown 角色卡。');
+    const body = await file.text();
+    if (!body.trim() || body.length > 4000 || body.includes('\0')) throw new Error('角色卡正文需要填写 1–4000 个字符。');
+    const editor = editors.get(id);
+    if (!editor?.draft) throw new Error('原账号配置已关闭，请重新导入。');
+    editor.draft.chat.persona = body;
+    if (id === selectedAccountId) {
+      draft = editor.draft;
+      const input = $('[data-config="chat.persona"]');
+      input.value = body; markDirty(input);
+      $('#persona-preview-content').classList.add('hidden');
+    } else { editor.dirty = true; editor.editVersion = (editor.editVersion || 0) + 1; }
+    toast(`「${accountName(id)}」角色卡正文已导入，保存并应用后生效。`, 'info');
+  }
+  function exportPersona() {
+    requireAccount();
+    const url = URL.createObjectURL(new Blob([draft.chat?.persona || ''], { type: 'text/markdown;charset=utf-8' }));
+    const link = document.createElement('a');
+    link.href = url; link.download = `QQ_Service-${draft.botQQ || 'persona'}-persona.md`;
+    document.body.append(link); link.click(); link.remove();
+    setTimeout(() => URL.revokeObjectURL(url), 1000);
+  }
   function currentAccount() { return accounts.find((account) => account.id === selectedAccountId) ?? state?.account; }
   function accountName(id = selectedAccountId) { return accounts.find((account) => account.id === id)?.name ?? editors.get(id)?.state?.account?.name ?? '当前账号'; }
   function rememberEditor() {
@@ -260,6 +356,7 @@
     if (currentScenarioTab === 'permissions') renderGroups();
   }
   function populateForm() {
+    if ($('#persona-preview-content').dataset.accountId !== selectedAccountId) $('#persona-preview-content').classList.add('hidden');
     $('#account-profile-name').value = editors.get(selectedAccountId)?.profileName ?? accountName();
     renderLlmSelector();
     renderCustomApis();
@@ -289,7 +386,7 @@
     const configured = String(editor?.draft?.botQQ ?? account.qqNumber ?? '');
     if (runtime.issue?.code === 'QQ_IDENTITY_MISMATCH' || runtime.connected === true && actual && expected && actual !== expected) return { status: 'mismatch', label: '身份不匹配' };
     if (runtime.connected !== true) return { status: 'offline', label: '离线' };
-    const localConnectionChanged = editor && (String(editor.draft?.botQQ ?? '') !== expected || ['enabled', 'wsUrl'].some((key) => editor.draft?.qq?.[key] !== applied?.qq?.[key]) || Boolean(editor.secretUpdates?.napcatToken));
+    const localConnectionChanged = editor && (String(editor.draft?.botQQ ?? '') !== expected || connectionChanged(editor));
     return actual && expected && actual === expected && configured === expected && !localConnectionChanged ? { status: 'online', label: '在线' } : { status: 'unverified', label: '待验证' };
   }
   function accountOnlineBadge(online) {
@@ -409,13 +506,14 @@
     $$('#apply-config, #group-apply').forEach(button => { button.disabled = !state || (!dirty && !pending); });
     $('#release-permissions').disabled = !state;
     $('#reset-account-defaults').disabled = !state;
+    $$('#persona-preview, #persona-history, #persona-import, #persona-export').forEach(button => { button.disabled = !state; });
     $('#revoke-permissions').disabled = !state || state.applied?.permissions?.released !== true;
     $$('[data-action], [data-module-action], #add-group, #open-napcat, #napcat-login-token, #export-config, #rollback-config, #preview-policy').forEach((button) => { button.disabled = !state; });
-    $$('[data-open-napcat-program]').forEach(button => { button.disabled = !state || Boolean(pendingNapcatSettings) || getJobs().some(job => job.status === 'running'); });
+    $$('[data-open-napcat-program]').forEach(button => { button.disabled = !state || state.container === true || connectionBackend() !== 'napcat' || Boolean(pendingNapcatSettings) || getJobs().some(job => job.status === 'running'); });
     updatePluginRunButtons();
   }
   function renderSecrets() {
-    [['deepseekApiKey', '#deepseek-secret-state'], ['napcatToken', '#napcat-secret-state']].forEach(([name, selector]) => {
+    [['deepseekApiKey', '#deepseek-secret-state'], ['napcatToken', '#napcat-secret-state'], ['snowlumaWsToken', '#snowluma-ws-secret-state'], ['snowlumaHttpToken', '#snowluma-http-secret-state']].forEach(([name, selector]) => {
       const saved = Boolean(state?.secrets?.[name]);
       $(selector).textContent = saved ? '已保存，留空保留' : '未设置';
       $(selector).classList.toggle('missing', !saved);
@@ -626,14 +724,14 @@
     const settings = pendingNapcatSettings ?? napcatSettings();
     const isNative = settings.mode !== 'docker';
     const saving = Boolean(pendingNapcatSettings);
-    $('#napcat-mode-options').disabled = !savedNapcatSettings || saving;
+    $('#napcat-mode-options').disabled = !savedNapcatSettings || saving || state?.container === true;
     $$('input[name="napcatMode"]').forEach(input => { input.checked = input.value === settings.mode; });
     $('#napcat-native-settings').classList.toggle('hidden', !isNative);
     $('#napcat-docker-settings').classList.toggle('hidden', isNative);
     $('#napcat-docker-download').classList.toggle('hidden', isNative);
     $('#napcat-executable-path').value = settings.executablePath;
     $('#napcat-executable-path').title = settings.executablePath;
-    $('#choose-napcat-executable').disabled = !savedNapcatSettings || saving;
+    $('#choose-napcat-executable').disabled = !savedNapcatSettings || saving || state?.container === true;
     $('#napcat-settings-save-state').textContent = saving ? '保存中…' : napcatSettingsError ? '未保存' : savedNapcatSettings ? '已保存' : '加载中…';
     $('#napcat-settings-error').textContent = napcatSettingsError;
     $('#napcat-settings-error').classList.toggle('hidden', !napcatSettingsError);
@@ -680,6 +778,7 @@
   }
   async function openNapcatProgram() {
     const id = requireAccount();
+    if (connectionBackend() !== 'napcat') throw new Error('请自行启动已验证的 SnowLuma，再打开登录页和测试连接。');
     if (!savedNapcatSettings || pendingNapcatSettings) throw new Error('请等待 NapCat 全局设置加载或保存完成。');
     const settings = napcatSettings();
     if (settings.mode === 'native' && !settings.executablePath) {
@@ -695,15 +794,16 @@
     try {
       url = new URL(editors.get(id).draft.qq.webUiUrl);
       if (url.protocol !== 'http:' || !['localhost', '127.0.0.1', '[::1]'].includes(url.hostname) || url.username || url.password || url.search || url.hash || !['/', '/webui', '/webui/'].includes(url.pathname)) throw new Error();
-    } catch { throw new Error('请在连接帮助中填写有效的本机 NapCat 管理页面地址。'); }
+    } catch { throw new Error('请在连接帮助中填写有效的本机管理页面地址。'); }
     window.open(url.href, '_blank', 'noopener,noreferrer');
   }
   function renderModules() {
     const modules = getModules();
+    const container = state?.container === true;
     const settings = napcatSettings();
     const native = settings.mode !== 'docker';
     const known = [
-      { id: 'napcat', name: 'NapCat · QQ 连接组件', kind: 'external', description: native ? '按官方说明安装，选择启动文件后即可直接打开。' : '通过 Docker 安装和管理此账号的 NapCat 容器。', icon: '⇄' },
+      { id: 'napcat', name: 'NapCat · QQ 连接组件', kind: 'external', description: container ? '当前服务在容器中运行。请从宿主机或独立容器启动 NapCat，再填写 OneBot 连接地址。' : native ? '按官方说明安装，选择启动文件后即可直接打开。' : '通过 Docker 安装和管理此账号的 NapCat 容器。', icon: '⇄' },
       { id: 'deepseek', name: 'DeepSeek 接入', kind: 'builtin', description: '此账号独立 API Key。配置模型不等于启用社交回复或释放消息权限。', path: 'models.deepseek.enabled', icon: '◈' },
       { id: 'summary', name: '通知汇总', kind: 'builtin', description: '此账号独立通知参数和任务模型；默认保存在本地，可另外授权指定私聊目标。', path: 'summary.enabled', icon: '▤' },
       { id: 'favorites', name: 'QQ 收藏读取', kind: 'builtin', description: '读取此账号的收藏列表与摘要，使用独立收藏模型进行本地整理。', path: 'favorites.enabled', icon: '☆' }
@@ -715,7 +815,7 @@
       const actualStatus = module ? module.state ?? module.status ?? (module.installed ? 'installed' : 'missing') : 'unknown';
       let actions;
       if (builtin) actions = `<button class="button button-secondary button-small" data-go="${definition.id === 'deepseek' ? 'connections' : 'scenarios'}">${enabled ? '查看当前账号参数' : '为当前账号配置'} →</button>`;
-      else if (definition.id === 'napcat') actions = native
+      else if (definition.id === 'napcat') actions = container ? '<button class="button button-secondary button-small" data-go="connections">配置外部连接 →</button>' : native
         ? '<button class="button button-secondary button-small" data-open-napcat-program>打开 NapCat</button><a class="module-help-link" href="#settings">选择启动文件 →</a>'
         : '<button class="button button-secondary button-small" data-module-action="install" data-module="napcat">安装 / 检查</button><button class="button button-quiet button-small" data-open-napcat-program>打开 NapCat</button><button class="button button-quiet button-small" data-module-action="stop" data-module="napcat">停止</button>';
       const napcat = definition.id === 'napcat';
@@ -1167,7 +1267,7 @@
     const connection = state.setup?.connection;
     const actualQQ = String(connection?.actualQQ ?? runtime.accountId ?? '');
     const expectedQQ = String(draft.botQQ ?? '');
-    const connectionUnchanged = ['enabled', 'wsUrl'].every((key) => draft.qq?.[key] === state.applied?.qq?.[key]) && !secretUpdates.napcatToken;
+    const connectionUnchanged = !connectionChanged({ draft, state, secretUpdates });
     const verified = connectionUnchanged && Boolean(actualQQ) && actualQQ === expectedQQ && state.applied?.botQQ === expectedQQ && (connection ? connection.verified === true : runtime.connected === true);
     renderLlmSelector();
     renderCustomApis();
@@ -1337,6 +1437,7 @@
     renderPermissions();
     renderModules();
     renderNapcatSettings();
+    renderConnector();
     renderJobs();
     renderSummaryGroupSelect();
     renderSummaries();
@@ -1599,6 +1700,15 @@
   document.addEventListener('input', (event) => {
     const input = event.target;
     if (input.id === 'account-profile-name') { if (selectedAccountId) { const editor = editors.get(selectedAccountId); if (editor) editor.profileName = input.value; } return; }
+    if (input.dataset.config === 'qq.backend' && draft) {
+      const backend = input.value === 'snowluma' ? 'snowluma' : 'napcat';
+      if (backend === 'snowluma' && state?.connectors?.snowluma?.available !== true) { renderConnector(); return; }
+      snapshotConnection();
+      draft.qq.backend = backend;
+      const next = draft.qq.connections?.[backend] || (backend === 'snowluma' ? { wsUrl: 'ws://127.0.0.1:3001', httpUrl: 'http://127.0.0.1:3000', webUiUrl: 'http://127.0.0.1:5099' } : { wsUrl: 'ws://127.0.0.1:3001', webUiUrl: 'http://127.0.0.1:6099' });
+      Object.assign(draft.qq, { wsUrl: next.wsUrl, webUiUrl: next.webUiUrl, httpUrl: backend === 'snowluma' ? next.httpUrl : '' });
+      snapshotConnection(); markDirty(input); populateForm(); renderLiveState(); return;
+    }
     if (input.hasAttribute('data-social-aliases') && draft) {
       setPath(draft, 'chat.social.aliases', [...new Set(input.value.split(/[,，]+/).map(value => value.trim()).filter(Boolean))]);
       markDirty(input); return;
@@ -1620,6 +1730,8 @@
     if (input.dataset.config && draft) {
       const value = input.type === 'checkbox' ? input.checked : input.type === 'number' ? (input.value === '' ? null : Number(input.value)) : input.value;
       setPath(draft, input.dataset.config, value);
+      if (['qq.wsUrl', 'qq.httpUrl', 'qq.webUiUrl'].includes(input.dataset.config)) snapshotConnection();
+      if (input.dataset.config.startsWith('chat.persona') || input.dataset.config.startsWith('chat.social')) $('#persona-preview-content').classList.add('hidden');
       markDirty(input);
       renderPermissions();
       if (input.dataset.config.includes('.provider') || input.dataset.config.startsWith('models.')) { renderProviderOptions(); renderSetupGuide(); }
@@ -1861,6 +1973,14 @@
     toast(`「${accountName(id)}」已加入只读配置；保存应用后开始采集。`, 'info');
   }));
   $('#open-napcat').addEventListener('click', (event) => withButton(event.currentTarget, openNapcatLogin));
+  $('#persona-preview').addEventListener('click', event => withButton(event.currentTarget, previewPersona));
+  $('#persona-history').addEventListener('click', event => withButton(event.currentTarget, showPersonaHistory));
+  $('#persona-import').addEventListener('click', () => { requireAccount(); $('#persona-file').click(); });
+  $('#persona-export').addEventListener('click', event => withButton(event.currentTarget, exportPersona));
+  $('#persona-file').addEventListener('change', event => {
+    const file = event.currentTarget.files?.[0];
+    if (file) withButton($('#persona-import'), async () => { try { await importPersona(file); } finally { $('#persona-file').value = ''; } });
+  });
   $('#napcat-login-token').addEventListener('click', (event) => withButton(event.currentTarget, openNapcatGuide));
   $('#export-config')?.addEventListener('click', (event) => withButton(event.currentTarget, async () => {
     const id = requireAccount();
@@ -1913,7 +2033,7 @@
   });
   window.addEventListener('hashchange', () => navigate(location.hash.slice(1)));
   if (window.qqBridgeDesktop?.isDesktop) {
-    $('.sidebar-version span').textContent = window.qqBridgeDesktop.version || '0.7.0';
+    $('.sidebar-version span').textContent = window.qqBridgeDesktop.version || '0.8.0';
     $('.sidebar-note small').textContent = '各账号独立运行；关闭窗口后留在托盘，退出停止所有后台。';
     $('.page-footer span').textContent = 'QQ_Service · Windows 桌面应用';
     $('.page-footer span:last-child').textContent = '模型配置 ≠ 发送授权 · 关闭窗口留在托盘';

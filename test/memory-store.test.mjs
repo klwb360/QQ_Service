@@ -176,3 +176,14 @@ test('服务端可用群友现有昵称搜索，百分号和下划线按普通�
     assert.deepEqual(f.store.memory.list({ actualQQ, groupId: '888888', query: '星空' }), []);
   } finally { f.close(); }
 });
+
+test('中文长问句按词组召回，并在限额前找到同一成员更早的相关事实', () => {
+  const f = fixture();
+  try {
+    f.store.memory.setGroup({ actualQQ, groupId, enabled: true });
+    const old = f.store.memory.mutate({ action: 'create', actualQQ, groupId, userId, text: '喜欢科幻电影，尤其是太空题材', kind: 'preference' });
+    for (let index = 0; index < 1001; index++) f.store.memory.mutate({ action: 'create', actualQQ, groupId, userId, text: `无关的近期事项 ${index}` });
+    const records = f.store.memory.relevant({ actualQQ, groupId, userIds: [userId], query: '有没有适合他的科幻电影推荐', limit: 1 });
+    assert.equal(records[0].id, old.id);
+  } finally { f.close(); }
+});

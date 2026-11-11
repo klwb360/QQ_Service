@@ -22,6 +22,11 @@ const result = (text = '好呀，一起聊聊。', extra = {}) => ({ provider: '
   action: 'reply', text, reason: 'direct', topic: '一起聊天', memoryCandidates: [], ...extra,
 }) });
 
+const modelRequestId = args => {
+  const packet = JSON.parse(args.messages.find(message => message.role === 'user').content);
+  return packet.request.at(-1).messageId;
+};
+
 function deferred() {
   let resolve;
   const promise = new Promise(complete => { resolve = complete; });
@@ -119,6 +124,89 @@ function enableProbe(f) {
     { tool: 'social-probe/update', groupIds: ['222222'], userIds: ['555555'], allowWrite: true },
   ];
 }
+
+test('已发送互动自动保存有来源经历和待续话题，下一轮统一装配且不增加模型调用', async () => {
+  const f = await fixture({ infer: async args => result('好，我们下次继续聊星空。', { topic: '天文与星空', experienceCandidates: [
+    { kind: 'interaction', text: '一起讨论过天文与星空', sourceIds: [modelRequestId(args)] },
+    { kind: 'pending_topic', text: '下次继续聊星空摄影', sourceIds: [modelRequestId(args)] },
+  ] }) });
+  try {
+    const sourceId = f.emit({ message: '阿服，聊聊星空摄影吧' }); await f.idle();
+    const scope = { actualQQ: '999999', groupId: '222222' };
+    const notes = f.store.experiences.list(scope);
+    assert.equal(notes.length, 2);
+    assert.ok(notes.every(note => note.status === 'active' && note.sources[0].messageId === sourceId));
+    assert.ok(notes.every(note => note.sources[0].text === '阿服，聊聊星空摄影吧'), '证据保留原始文字而非已去掉称呼的模型请求');
+    const session = f.store.conversationState.get(scope);
+    assert.equal(session.topic, '天文与星空');
+    assert.deepEqual(session.pendingTopics, ['下次继续聊星空摄影']);
+    assert.ok(session.participants.some(member => member.userId === '555555'));
+    assert.equal(f.requests.length, 1, '经历整理复用现有模型轮');
+    f.setInfer(async () => result('继续聊吧。'));
+    f.emit(); await f.idle();
+    assert.equal(f.requests.length, 2);
+    assert.match(f.requests[1].messages[0].content, /一起讨论过天文与星空/);
+    assert.match(f.requests[1].messages[0].content, /下次继续聊星空摄影/);
+    assert.equal(f.outbound.length, 2);
+  } finally { await f.close(); }
+});
+
+test('沉默可以更新当前话题，不保存伪造的已完成互动或发送回复', async () => {
+  const f = await fixture({ infer: async args => result('', { action: 'silent', topic: '正在讨论星空', experienceCandidates: [
+    { kind: 'interaction', text: '已经详细介绍了星空摄影', sourceIds: [modelRequestId(args)] },
+  ] }) });
+  try {
+    f.emit(); await f.idle();
+    const scope = { actualQQ: '999999', groupId: '222222' };
+    assert.equal(f.requests.length, 1);
+    assert.equal(f.outbound.length, 0);
+    assert.deepEqual(f.store.experiences.list(scope), []);
+    assert.equal(f.store.conversationState.get(scope).topic, '正在讨论星空');
+  } finally { await f.close(); }
+});
+
+test('发送失败不记录已完成经历、不采纳待续事项，也不产生额外整理调用', async () => {
+  const f = await fixture({ failSend: true, infer: async args => result('这条没有发送成功。', { topic: '不应记录的完成话题', experienceCandidates: [
+    { kind: 'interaction', text: '已成功向群友解释星空摄影', sourceIds: [modelRequestId(args)] },
+    { kind: 'pending_topic', text: '下次继续讲', sourceIds: [modelRequestId(args)] },
+  ] }) });
+  try {
+    f.emit(); await f.idle();
+    const scope = { actualQQ: '999999', groupId: '222222' };
+    assert.deepEqual(f.store.experiences.list(scope), []);
+    assert.deepEqual(f.store.conversationState.get(scope).pendingTopics, []);
+    assert.notEqual(f.store.conversationState.get(scope).topic, '不应记录的完成话题');
+    assert.equal(f.requests.length, 1);
+  } finally { await f.close(); }
+});
+
+test('清空当前会话同步内存状态并隔离旧短上下文，同秒新消息与长期资料保留', async () => {
+  const f = await fixture({ infer: async () => result('清空前的回答', { topic: '清空前的话题' }) });
+  try {
+    const scope = { actualQQ: '999999', groupId: '222222' };
+    const firstId = f.emit({ message: '阿服，清空前的问题' }); await f.idle();
+    assert.equal(f.runtime.status().social.groups[0].topic, '清空前的话题');
+    assert.ok(f.runtime.status().social.groups[0].lastReplyAt > 0);
+    f.store.memory.setGroup({ ...scope, enabled: true });
+    const fact = f.store.memory.mutate({ ...scope, action: 'create', userId: '555555', kind: 'preference', text: '喜欢天文学' });
+    const note = f.store.experiences.mutate({ ...scope, action: 'create', kind: 'expression', text: '喜欢简洁地说明问题' });
+    const priorRows = f.store.conversation.list({ ...scope, limit: 50 });
+    f.store.conversationState.clear(scope);
+    f.runtime.invalidateMemory(scope);
+    assert.equal(f.runtime.status().social.groups[0].topic, '');
+    assert.equal(f.runtime.status().social.groups[0].lastReplyAt, 0);
+    f.setInfer(async () => result('新会话回答', { topic: '新的话题' }));
+    const secondId = f.emit({ message: '这是新会话消息', time: priorRows.find(row => row.messageId === firstId).time }); await f.idle();
+    const packet = JSON.parse(f.requests[1].messages.find(message => message.role === 'user').content);
+    assert.ok(packet.context.every(row => row.messageId !== firstId && row.text !== '清空前的回答'));
+    assert.ok(packet.context.some(row => row.messageId === secondId), '同秒发送的新消息不能被清空水位误删');
+    assert.equal(packet.direct, false, '清空前的直接互动不再让此成员沿用旧线程');
+    assert.ok(packet.request.every(request => request.followUp === false));
+    assert.ok(f.store.conversation.list({ ...scope, limit: 50 }).some(row => row.messageId === firstId), '原文只停止注入，不删除');
+    assert.ok(f.store.memory.list(scope).some(row => row.id === fact.id));
+    assert.ok(f.store.experiences.list(scope).some(row => row.id === note.id));
+  } finally { await f.close(); }
+});
 
 test('自由聊天中没有授权工具的真实 @ 仍正常回答，不被工具入口吞掉', async () => {
   const f = await fixture();
@@ -510,10 +598,64 @@ test('外部写工具运行中修改记忆，已执行操作只回固定状态�
     assert.equal(probe.calls[0].name, 'update');
     assert.equal(f.outbound.length, 1);
     const receipt = f.outbound[0].params.message[0].data.text;
-    assert.match(receipt, /工具操作已执行/);
+    assert.match(receipt, /工具操作结果尚未确认|工具操作已执行/);
     assert.equal(receipt.includes('偏好手绘科幻动画'), false);
     assert.equal(receipt.includes('根据旧记忆'), false);
   } finally { resumed.resolve(); await f.close(); }
+});
+
+for (const mode of ['batch', 'next-round', 'batch-receipt-failure']) test(`第一条写操作在途时清空会话，阻止${mode === 'next-round' ? '下一轮推理和写操作' : '同批第二三条写操作'}${mode === 'batch-receipt-failure' ? '，回执发送失败仍不重试' : ''}`, async () => {
+  const started = deferred(), resumed = deferred();
+  const probe = toolProbe({ read: async args => {
+    if (args.name === 'update') { started.resolve(); await resumed.promise; }
+    return { text: '第一次外部写入已返回结果' };
+  } });
+  const name = toolFunctionName('social-probe/update');
+  const f = await fixture({ pluginManager: probe.manager, failSend: mode === 'batch-receipt-failure', infer: async args => {
+    if (args.messages.some(message => message.role === 'tool')) return call(name, '不应执行的下一轮写操作', 'next-round-write');
+    const first = call(name, '第一条测试记录', 'write-first');
+    if (mode !== 'next-round') first.toolCalls.push(...[
+      call(name, '不应执行的第二条测试记录', 'write-second').toolCalls[0],
+      call(name, '不应执行的第三条测试记录', 'write-third').toolCalls[0],
+    ]);
+    return first;
+  } });
+  try {
+    enableProbe(f);
+    f.emit({ message: [{ type: 'at', data: { qq: '999999' } }, { type: 'text', data: { text: ' 在测试应用里创建三条测试记录。' } }] });
+    await started.promise;
+    const scope = { actualQQ: '999999', groupId: '222222' };
+    f.store.conversationState.clear(scope);
+    f.runtime.invalidateMemory({ ...scope, clearConversation: true });
+    resumed.resolve(); await f.idle();
+    assert.equal(probe.calls.length, 1, '已在途操作允许完成，第二第三条操作不能启动');
+    assert.equal(f.requests.length, 1, '状态失效后不能再付费推理或请求下一次工具');
+    assert.equal(f.outbound.length, 1, '只尝试一次不含旧上下文的状态回执');
+    assert.match(f.outbound[0].params.message[0].data.text, /已停止后续操作/);
+    assert.doesNotMatch(f.outbound[0].params.message[0].data.text, /不应执行|第一条测试记录|第一次外部写入已返回结果/);
+  } finally { resumed.resolve(); await f.close(); }
+});
+
+test('清空当前会话会取消尚未开始的旧批次和计时器，新消息仍可正常处理', async () => {
+  const f = await fixture();
+  try {
+    f.config.chat.social.batchMs = 100;
+    f.emit({ message: '阿服，这是一条应该取消的旧批次' });
+    await waitFor(() => f.runtime.status().social.pending > 0);
+    const scope = { actualQQ: '999999', groupId: '222222' };
+    f.store.conversationState.clear(scope);
+    f.runtime.invalidateMemory({ ...scope, clearConversation: true });
+    await new Promise(resolve => setTimeout(resolve, 130));
+    assert.equal(f.runtime.status().social.pending, 0);
+    assert.equal(f.requests.length, 0);
+    assert.equal(f.outbound.length, 0);
+    f.emit({ message: '阿服，这是清空之后的新消息' }); await f.idle();
+    assert.equal(f.requests.length, 1);
+    const packet = JSON.parse(f.requests[0].messages.find(message => message.role === 'user').content);
+    assert.ok(packet.request.every(request => !request.text.includes('应该取消的旧批次')));
+    assert.ok(packet.context.every(message => !message.text.includes('应该取消的旧批次')));
+    assert.equal(f.outbound.length, 1);
+  } finally { await f.close(); }
 });
 
 test('合并不同成员消息时不借最后一位成员的写权限执行其他人的任务', async () => {

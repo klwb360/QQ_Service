@@ -1,4 +1,5 @@
 import { createHash } from 'node:crypto';
+import { onebotHosts } from './network-policy.mjs';
 
 export const DEFAULT_CHAT_SOCIAL = Object.freeze({
   name: '', aliases: [], interests: '', batchMs: 1500, followUpSeconds: 120, accountCallsPerHour: 30,
@@ -9,9 +10,12 @@ export const DEFAULT_GROUP_SOCIAL = Object.freeze({
 });
 
 export const DEFAULT_CONFIG = {
-  schemaVersion: 2, ownerQQ: '', botQQ: '',
+  schemaVersion: 3, ownerQQ: '', botQQ: '',
   permissions: { released: false, privateReplies: false },
-  qq: { enabled: false, wsUrl: 'ws://127.0.0.1:3001', webUiUrl: 'http://127.0.0.1:6099' },
+  qq: { enabled: false, backend: 'napcat', wsUrl: 'ws://127.0.0.1:3001', webUiUrl: 'http://127.0.0.1:6099', httpUrl: '', connections: {
+    napcat: { wsUrl: 'ws://127.0.0.1:3001', webUiUrl: 'http://127.0.0.1:6099' },
+    snowluma: { wsUrl: 'ws://127.0.0.1:3001', httpUrl: 'http://127.0.0.1:3000', webUiUrl: 'http://127.0.0.1:5099' },
+  } },
   models: {
     deepseek: { enabled: false, baseUrl: 'https://api.deepseek.com', model: 'deepseek-chat', maxTokens: 1024, temperature: 0.7 },
     apis: []
@@ -49,7 +53,7 @@ export const pluginSecretName = (id, key) => {
   if (!parsePluginSecretName(name)) throw new TypeError('插件凭据名称无效');
   return name;
 };
-export const isCredentialName = value => value === 'deepseekApiKey' || value === 'napcatToken'
+export const isCredentialName = value => value === 'deepseekApiKey' || ['napcatToken', 'snowlumaWsToken', 'snowlumaHttpToken'].includes(value)
   || Boolean(parsePluginSecretName(value)) || (typeof value === 'string' && value.startsWith('apiKey:') && isApiProviderId(value.slice(7)));
 export function getModelConfig(config, provider) {
   if (provider === 'deepseek') return config?.models?.deepseek;
@@ -70,12 +74,12 @@ export function effectiveGroupTriggers(group) {
 // permissions. A new/malformed document must never gain legacy send rights.
 export function migrateConfig(input) {
   if (!input || typeof input !== 'object' || Array.isArray(input)) throw new ConfigError(['配置必须是 JSON 对象']);
-  if (![1, 2].includes(input.schemaVersion)) throw new ConfigError(['配置版本必须为 1 或 2']);
-  if (input.schemaVersion === 2) return retireSubscription(structuredClone(input));
+  if (![1, 2, 3].includes(input.schemaVersion)) throw new ConfigError(['配置版本必须为 1、2 或 3']);
+  if (input.schemaVersion !== 1) return upgradeConnections(retireSubscription(structuredClone(input)));
   const config = structuredClone(input);
   const connected = config.qq?.enabled === true;
   const hasRecipient = typeof config.ownerQQ === 'string' && Boolean(config.ownerQQ.trim()) && config.ownerQQ !== config.botQQ;
-  return retireSubscription({
+  return upgradeConnections(retireSubscription({
     ...config,
     schemaVersion: 2,
     permissions: { released: connected, privateReplies: connected && hasRecipient },
@@ -88,7 +92,22 @@ export function migrateConfig(input) {
       ? { ...group, read: true, send: group.mode === 'social' } : group) : config.groups,
     summary: { ...config.summary, sendToOwner: config.summary?.sendToOwner ?? true },
     favorites: { ...config.favorites, provider: config.summary?.provider ?? 'deepseek' },
-  });
+  }));
+}
+
+function upgradeConnections(config) {
+  config.schemaVersion = 3;
+  const previous = config.qq || {};
+  if (typeof previous !== 'object' || Array.isArray(previous)) throw new ConfigError(['QQ 连接配置必须是对象']);
+  if (previous.connections !== undefined && (!previous.connections || typeof previous.connections !== 'object' || Array.isArray(previous.connections))) throw new ConfigError(['连接端配置必须是对象']);
+  config.qq = { ...structuredClone(DEFAULT_CONFIG.qq), ...previous,
+    connections: { ...structuredClone(DEFAULT_CONFIG.qq.connections), ...previous.connections } };
+  const backend = config.qq.backend;
+  if (['napcat', 'snowluma'].includes(backend)) config.qq.connections[backend] = {
+    ...config.qq.connections[backend], wsUrl: config.qq.wsUrl, webUiUrl: config.qq.webUiUrl,
+    ...(backend === 'snowluma' ? { httpUrl: config.qq.httpUrl || config.qq.connections.snowluma.httpUrl } : {}),
+  };
+  return config;
 }
 
 // Read legacy documents without ever turning a retired subscription into a
@@ -144,15 +163,36 @@ export function validateConfig(input, { applying = false, hasSecret = () => fals
   result.permissions.privateReplies = bool(permissions.privateReplies, false, '私聊回复权限', 'permissions.privateReplies');
   const qq = section('qq');
   result.qq.enabled = bool(qq.enabled, false, 'QQ 接入', 'qq.enabled');
+  if (!['napcat', 'snowluma'].includes(qq.backend)) issue('qq.backend', '不支持的 QQ 连接端');
+  result.qq.backend = qq.backend === 'snowluma' ? 'snowluma' : 'napcat';
   for (const [key, protocols] of [['wsUrl', ['ws:']], ['webUiUrl', ['http:']]]) {
     result.qq[key] = string(qq[key], result.qq[key], key, 300, `qq.${key}`);
     try {
       const url = new URL(result.qq[key]);
-      if (!protocols.includes(url.protocol) || !['127.0.0.1', 'localhost', '[::1]'].includes(url.hostname) || url.username || url.password || url.search || url.hash) throw new Error();
+      if (!protocols.includes(url.protocol) || !onebotHosts().includes(url.hostname) || url.username || url.password || url.search || url.hash) throw new Error();
       if (key === 'wsUrl' && !['', '/'].includes(url.pathname)) throw new Error();
       if (key === 'webUiUrl' && !['', '/', '/webui', '/webui/'].includes(url.pathname)) throw new Error();
     } catch { issue(`qq.${key}`, `${key} 必须是无凭据、查询参数的本机 ${protocols[0]} 地址`, key === 'wsUrl' ? '在 NapCat 的 OneBot 服务中启用正向 WebSocket，再复制本机地址；Token 请填写在独立的凭据栏。' : '请填写 NapCat 本机 WebUI 地址，例如 http://127.0.0.1:6099。'); }
   }
+  const endpoint = (value, fallback, key, protocol) => {
+    const text = string(value, fallback, key, 300, key);
+    try {
+      const url = new URL(text);
+      if (url.protocol !== protocol || !onebotHosts().includes(url.hostname) || url.username || url.password || url.search || url.hash
+        || !['', '/', ...(key.endsWith('webUiUrl') ? ['/webui', '/webui/'] : [])].includes(url.pathname)) throw new Error();
+    } catch { issue(key, '连接地址必须为本机或容器显式允许的 OneBot 地址，且不能包含凭据或查询参数。'); }
+    return text;
+  };
+  result.qq.httpUrl = qq.httpUrl ? endpoint(qq.httpUrl, '', 'qq.httpUrl', 'http:') : '';
+  if (!object(qq.connections) || Object.keys(qq.connections).some(key => !['napcat', 'snowluma'].includes(key))) issue('qq.connections', '连接端配置无效');
+  for (const backend of ['napcat', 'snowluma']) {
+    const entry = qq.connections?.[backend];
+    if (entry !== undefined && !object(entry)) issue(`qq.connections.${backend}`, '连接端配置必须为对象');
+    const defaults = DEFAULT_CONFIG.qq.connections[backend];
+    result.qq.connections[backend] = Object.fromEntries(Object.keys(defaults).map(key => [key, endpoint(entry?.[key], defaults[key], `qq.connections.${backend}.${key}`, key === 'wsUrl' ? 'ws:' : 'http:')]));
+  }
+  result.qq.connections[result.qq.backend] = { wsUrl: result.qq.wsUrl, webUiUrl: result.qq.webUiUrl,
+    ...(result.qq.backend === 'snowluma' ? { httpUrl: result.qq.httpUrl || result.qq.connections.snowluma.httpUrl } : {}) };
   const models = section('models');
   if (models.deepseek !== undefined && !object(models.deepseek)) issue('models.deepseek', 'DeepSeek 模型配置必须是对象', '请通过模型设置重新保存此通道。');
   const ds = object(models.deepseek) ? models.deepseek : {};
@@ -345,7 +385,8 @@ export function validateConfig(input, { applying = false, hasSecret = () => fals
   }
   if (applying) {
     if (result.qq.enabled && !result.botQQ) issue('botQQ', '启用 QQ 连接前请填写控制的 QQ 号', '先在账号配置中填写准备登录 NapCat 的 QQ 号码。');
-    if (result.qq.enabled && !hasSecret('napcatToken')) issue('secrets.napcatToken', '请先安装 NapCat 或填写其 OneBot Token', '先在 NapCat 登录此 QQ、启用正向 WebSocket，再填写同一个 OneBot Token 并测试连接。');
+    if (result.qq.enabled && result.qq.backend === 'napcat' && !hasSecret('napcatToken')) issue('secrets.napcatToken', '请先安装 NapCat 或填写其 OneBot Token', '先在 NapCat 登录此 QQ、启用正向 WebSocket，再填写同一个 OneBot Token 并测试连接。');
+    if (result.qq.enabled && result.qq.backend === 'snowluma') issue('qq.backend', 'SnowLuma 的 Windows 隔离运行安全检查尚未完成，实验接入暂未开放。', '请继续使用 NapCat Shell；审核报告可在项目文档中查看。');
     if (result.models.deepseek.enabled && !hasSecret('deepseekApiKey')) issue('models.deepseek.apiKey', '启用 DeepSeek 前请填写 API Key', '在模型配置中填写 DeepSeek 开放平台的 API Key，保存后再测试。');
     for (const [i, api] of result.models.apis.entries()) if (api.enabled && isApiProviderId(api.id) && !hasSecret(apiSecretName(api.id))) issue(`models.apis.${i}.apiKey`, `${api.label}尚未填写 API Key`, '在此 API 通道的密钥栏填写服务商 API Key，保存后再测试。');
     if (result.summary.enabled && !getModelConfig(result, result.summary.provider)?.enabled) issue('summary.provider', '汇总选用的模型通道尚未启用', '请启用所选模型，或为通知汇总选择另一个已启用的模型。');

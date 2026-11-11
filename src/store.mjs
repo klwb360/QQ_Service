@@ -4,6 +4,9 @@ import { DatabaseSync } from 'node:sqlite';
 import { randomBytes, createCipheriv, createDecipheriv } from 'node:crypto';
 import { DEFAULT_CONFIG, configHash, migrateConfig, isCredentialName } from './config.mjs';
 import { createMemoryStore } from './memory-store.mjs';
+import { createPersonaStore, normalizePersona } from './persona.mjs';
+import { createExperienceStore } from './experience-store.mjs';
+import { createConversationStateStore } from './conversation-state.mjs';
 
 export function atomicJson(file, value) {
   const temp = `${file}.${process.pid}.tmp`;
@@ -38,8 +41,8 @@ export function createStore(dataDir) {
   if (needsMigration) {
     // Only configuration changes. Retired login directories and account data
     // remain untouched, including when no schema-version bump is needed.
-    const schemaUpgrade = ['draft', 'applied', 'previous'].some(name => state[name]?.schemaVersion === 1);
-    const backupFile = path.join(dataDir, schemaUpgrade ? 'config.v1.backup.json' : 'config.pre-api-only.backup.json');
+    const oldVersion = Math.min(...['draft', 'applied', 'previous'].map(name => state[name]?.schemaVersion || 3));
+    const backupFile = path.join(dataDir, oldVersion < 3 ? `config.v${oldVersion}.backup.json` : 'config.pre-api-only.backup.json');
     if (!fs.existsSync(backupFile)) {
       fs.copyFileSync(configFile, backupFile, fs.constants.COPYFILE_EXCL);
       fs.chmodSync(backupFile, 0o600);
@@ -54,6 +57,10 @@ export function createStore(dataDir) {
     CREATE TABLE IF NOT EXISTS summaries (id TEXT PRIMARY KEY, payload TEXT NOT NULL, created_at TEXT NOT NULL);
     CREATE TABLE IF NOT EXISTS tasks (key TEXT PRIMARY KEY,value TEXT NOT NULL);
     CREATE TABLE IF NOT EXISTS favorites (id INTEGER PRIMARY KEY CHECK(id=1), payload TEXT NOT NULL);`);
+  db.exec(`CREATE TABLE IF NOT EXISTS event_receipts (
+    actual_qq TEXT NOT NULL,backend TEXT NOT NULL,event_key TEXT NOT NULL,cross_key TEXT NOT NULL,received_at INTEGER NOT NULL,
+    PRIMARY KEY(actual_qq,backend,event_key));
+    CREATE INDEX IF NOT EXISTS receipts_recent ON event_receipts(actual_qq,received_at);`);
   const saveSecrets = () => {
     const iv = randomBytes(12); const cipher = createCipheriv('aes-256-gcm', key, iv);
     const encrypted = Buffer.concat([cipher.update(JSON.stringify(secrets), 'utf8'), cipher.final()]);
@@ -63,9 +70,18 @@ export function createStore(dataDir) {
   const stagedSecretNames = () => Object.keys(secrets).filter(name => name.startsWith('draft:') && isCredentialName(name.slice(6)));
   const secretsPending = () => stagedSecretNames().some(name => secrets[name] !== secrets[name.slice(6)]);
   const { memory, conversation } = createMemoryStore({ db, getState: () => state });
+  const personas = createPersonaStore({ db });
+  const experiences = createExperienceStore({ db, getState: () => state });
+  const conversationState = createConversationStateStore({ db, getState: () => state });
+  const recordPersona = (config = state.applied) => {
+    if (!/^[1-9]\d{3,19}$/.test(config.botQQ || '')) return;
+    const current = personas.get({ actualQQ: config.botQQ });
+    return personas.save({ actualQQ: config.botQQ, persona: normalizePersona(config), expectedRevision: current?.revision || 0 });
+  };
+  recordPersona();
   return {
     dataDir,
-    memory, conversation,
+    memory, conversation, personas, experiences, conversationState, recordPersona,
     getState: () => structuredClone(state),
     getConfig: () => structuredClone(state.applied),
     getSecret: (name) => secrets[name] || '',
@@ -90,6 +106,14 @@ export function createStore(dataDir) {
       saveState({ draft: previous, applied: previous, revision: state.revision + 1, appliedRevision: state.revision + 1, previous: structuredClone(state.applied) });
     },
     pendingChanges: () => configHash(state.draft) !== configHash(state.applied) || secretsPending(),
+    claimEvent({ actualQQ, backend, key: eventKey, crossKey }) {
+      const cutoff = Date.now() - 120_000;
+      db.prepare('DELETE FROM event_receipts WHERE received_at < ?').run(cutoff);
+      const duplicate = db.prepare('SELECT 1 FROM event_receipts WHERE actual_qq=? AND (event_key=? OR (cross_key=? AND backend<>?)) LIMIT 1').get(actualQQ, eventKey, crossKey, backend);
+      if (duplicate) return false;
+      db.prepare('INSERT INTO event_receipts VALUES (?,?,?,?,?)').run(actualQQ, backend, eventKey, crossKey, Date.now());
+      return true;
+    },
     recordMessage(record) {
       const time = Number(record.time) || Math.floor(Date.now() / 1000);
       const rawText = String(record.text);
