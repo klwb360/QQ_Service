@@ -111,7 +111,7 @@ test('constructing a stdio descriptor is inert; explicit connect uses the bundle
 test('Windows wrappers never invoke unknown batch files or interpolate shell/env text', () => {
   const settings = { platform: 'win32', nodeExecutable: '/bundled/node.exe', appDir: '/app root', exists: () => true };
   assert.deepEqual(resolveMcpStdioCommand('npx.cmd', ['-y', 'fixture', '$(echo secret)'], settings), {
-    command: '/bundled/node.exe', args: ['/bundled/node_modules/npm/bin/npx-cli.js', '-y', 'fixture', '$(echo secret)'],
+    command: '/bundled/node.exe', args: [path.join(path.dirname(settings.nodeExecutable), 'node_modules', 'npm', 'bin', 'npx-cli.js'), '-y', 'fixture', '$(echo secret)'],
   });
   assert.deepEqual(resolveMcpStdioCommand('node', ['{appDir}/examples/server.mjs', '$HOME', '{HOME}'], settings).args,
     ['/app root/examples/server.mjs', '$HOME', '{HOME}']);
