@@ -8,7 +8,8 @@ data/
 /accounts/
 accounts.json
 config.json
-config.v1.backup.json
+config.v*.backup.json
+config.pre-api-only.backup.json
 module-state.json
 codex-home/
 codex-workspace/

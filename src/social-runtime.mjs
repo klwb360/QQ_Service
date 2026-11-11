@@ -161,6 +161,7 @@ export function createSocialRuntime({ getConfig, getIdentity, getEpoch, store, i
     let tools = autonomous ? availableBackgroundTools(group) : config.tools?.enabled && requester ? grantedTools(state.groupId, requester.userId) : [];
     // Ordinary participation/continuation can never turn into an external write.
     const authors = new Set(entries.filter(entry => !entry.input.isNotice).map(entry => entry.input.userId));
+    scope.explicitRequested = Boolean(requester && !requester.isNotice && !requester.wake && requester.text?.trim() && authors.size === 1);
     if (!requester || requester.isNotice || requester.wake || !requester.text?.trim() || authors.size !== 1) tools = tools.filter(tool => tool.effect === 'read');
     let requestBudget = 6000;
     const requests = entries.slice().reverse().flatMap(entry => {
@@ -263,7 +264,7 @@ export function createSocialRuntime({ getConfig, getIdentity, getEpoch, store, i
     explain(state, autonomous ? '检查素材并判断是否值得分享' : direct ? '处理直接互动或连续追问' : '判断是否适合参与话题', 'thinking');
     let result;
     try {
-      result = tools.length ? await runToolConversation({ messages, tools, signal: controller.signal,
+      result = tools.length ? await runToolConversation({ messages, tools, signal: controller.signal, catalogMode: config.tools?.catalogMode || 'auto',
       infer: model, execute: async (tool, args) => {
         assertSnapshot();
         if (tool.effect === 'write') state.writeAttempted = true;

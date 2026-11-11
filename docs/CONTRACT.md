@@ -1,6 +1,6 @@
 # Implementation contract
 
-Windows-first, local-only Node 24 application, version 0.7.0. Model access is API-only. One Electron window and one management server host multiple concurrent account profiles. QQ uses NapCat OneBot v11; models use DeepSeek, multiple OpenAI-compatible Chat Completions APIs. WeChat and Telegram are planned registry entries, not implemented adapters. See [account-control design](ACCOUNTS_CONTRACT.md) and [architecture](ARCHITECTURE.md).
+Windows-first, local-only Node 24 application. Published v0.8.0 uses schema 3; the current development branch adds schema 4 and standard MCP tools. Model access is API-only. One Electron window and one management server host multiple concurrent account profiles. QQ uses NapCat OneBot v11; models use DeepSeek, multiple OpenAI-compatible Chat Completions APIs. WeChat and Telegram are planned registry entries, not implemented adapters. See [account-control design](ACCOUNTS_CONTRACT.md) and [architecture](ARCHITECTURE.md).
 
 Never report a real login, deployment or Windows interaction as tested without performing it.
 
@@ -8,19 +8,20 @@ Never report a real login, deployment or Windows interaction as tested without p
 
 ```json
 {
-  "schemaVersion": 3,
+  "schemaVersion": 4,
   "ownerQQ": "",
   "botQQ": "",
   "permissions": {"released": false, "privateReplies": false},
   "qq": {"enabled": false, "wsUrl": "ws://127.0.0.1:3001", "webUiUrl": "http://127.0.0.1:6099"},
   "models": {
     "apis": [],
-    "deepseek": {"enabled": false, "baseUrl": "https://api.deepseek.com", "model": "deepseek-chat", "maxTokens": 1024, "temperature": 0.7}
+    "deepseek": {"enabled": false, "baseUrl": "https://api.deepseek.com", "model": "deepseek-flash", "maxTokens": 1024, "temperature": 0.7}
   },
   "chat": {"enabled": false, "provider": "deepseek", "persona": "你是一个友好、简洁的群聊助手。", "contextMessages": 12},
   "groups": [],
   "plugins": [],
-  "tools": {"enabled": false, "triggers": ["mention", "poke", "name"], "aliases": [], "prefix": "/工具", "skill": "", "grants": []},
+  "mcp": {"servers": []},
+  "tools": {"enabled": false, "builtinQQ": false, "catalogMode": "auto", "triggers": ["mention", "poke", "name"], "aliases": [], "prefix": "/工具", "skill": "", "grants": []},
   "summary": {"enabled": false, "provider": "deepseek", "scheduleEnabled": false, "time": "18:00", "backgroundAuthorized": false, "sendToOwner": false, "retentionDays": 7, "maxMessages": 200},
   "favorites": {"enabled": false, "provider": "deepseek", "count": 50}
 }
@@ -60,11 +61,39 @@ The legacy profile retains the original root data directory, login state and man
 
 Secrets are `deepseekApiKey`, `napcatToken`, `apiKey:<api-ID>`, and declared `pluginSecret:<plugin-ID>:<key>`, never returned in configuration or exports. Plugin credential updates require a matching installed declaration and current profile entry; handlers receive only their own declared plugin credentials, never model/NapCat/other-profile keys. Empty key fields preserve existing values. Updates are staged until apply. Retired subscription directories are left in place without loading their authentication or starting their CLI. Logs must redact credentials across all profiles and include their profile ID.
 
+## Standard MCP services (development branch)
+
+Each profile owns `mcp.servers`, its encrypted credentials and its own client manager. A server descriptor is `{id,label,enabled,transport,command,args,url,envKeys,headerKeys,timeoutSeconds,tools}`; transports are `stdio`, `http` and `sse`. Imports are draft-only, disabled and unapproved. `tools` policies use `{name,enabled,effect,definitionHash,connectionHash}`. No tool is enabled merely because the server advertises `readOnlyHint`.
+
+Approval binds the raw remote definition and a profile-vault-key HMAC of the connection descriptor plus only that server's credentials. Connection/credentials or definition changes require renewed approval. Labels and timeouts do not change connection identity. MCP tool IDs are `mcp:<server-id>/<24-hex-name-hash>` and enter the same `tools.grants` and `groups[].social.readTools` scopes as native tools. The remote name never becomes an executable host command.
+
+`mcpSecret:<server-id>:env:<name>` and `mcpSecret:<server-id>:header:<lowercase-name>` values are staged and encrypted, not returned or exported. Local programs receive a restricted base environment and only their own declared env values; remote headers are scoped to that service and cannot follow redirects or cross-origin SSE POST endpoints. Stdio is trusted user-installed code, not an OS sandbox. Importing never installs packages; explicitly testing an owner-configured command can run a launcher such as npm.
+
+The SDK client advertises no roots, sampling or elicitation. Only tools are supported; OAuth browser flows, resources and prompts are not implemented. Tool input/output schemas are bounded and compiled/validated in cancellable workers; external schema references are rejected. The entire model-proposed batch validates before its first external operation. Lifecycle changes invalidate old calls; failed external writes never automatically retry.
+
+Scoped endpoints under `/api/accounts/:id`:
+
+| Method/path | Contract |
+| --- | --- |
+| `GET /mcp` | `{servers,status,tools,secretsPresent}`; values remain private |
+| `POST /mcp/import` | `{document,config,secretUpdates?,revision}`; merge disabled imported servers into captured draft and return state; duplicate IDs/stale revisions fail |
+| `POST /mcp/test` | `{serverId,config,secretUpdates?,revision?}`; supplied revision must still match the profile; temporary connect/discover/close, return `{server}`; no save/apply or activation |
+| `POST /mcp/refresh` | `{serverId}`; invalidate and rediscover an applied connected server, return MCP state |
+| `POST /mcp/disconnect` | `{serverId}`; close the applied connection and withdraw tools without changing saved configuration, return MCP state |
+
+All mutation endpoints retain the local Host/Origin/CSRF checks. Saving configuration does not connect. Applying enabled servers schedules independent background connections; an optional offline service does not stop QQ startup. Application shutdown closes active and temporary transports before closing the profile database. Resetting functional parameters preserves MCP connection descriptors and encrypted credentials, but disables all services and tools.
+
+Schema 1–3 migration retains existing API/plugin and QQ permissions, adds an empty MCP list, and backs up the original schema file. Any MCP-shaped data in pre-4 documents is imported disabled with old MCP grants removed; it cannot silently acquire newly supported permissions.
+
 ## AI tool calling
 
-The registered-plugin function-calling protocol is documented in [PLUGIN_DEVELOPMENT.md](PLUGIN_DEVELOPMENT.md). It is not an MCP stdio/HTTP implementation or arbitrary website automation. Account `tools` defaults off; at most 20 grants each identify `{tool:'plugin/name',groupIds:[],userIds:[],allowWrite:false}`. Reads may allow every member of explicitly selected groups through an empty `userIds`; writes require `allowWrite:true` and an explicit matching requester. QQ read/send permissions do not grant access to external apps by themselves.
+Native plugin function calling is documented in [PLUGIN_DEVELOPMENT.md](PLUGIN_DEVELOPMENT.md). The development branch also implements a standard MCP tools client, documented in [MCP.md](MCP.md), using explicit stdio, Streamable HTTP or legacy SSE transports. Neither grants arbitrary website control without a configured service implementing it. Account `tools` defaults off; at most 20 grants each identify `{tool:'plugin/name',groupIds:[],userIds:[],allowWrite:false}`. Reads may allow every member of explicitly selected groups through an empty `userIds`; writes require `allowWrite:true` and an explicit matching requester. QQ read/send permissions do not grant access to external apps by themselves.
 
 Wake modes are real OneBot mentions, notices that poke the controlled QQ, configured names/aliases at the start of a message, and an optional command prefix. Bare mentions/names/pokes only return a wake response without inference or external tool execution. An explicit request requires enabled API chat, an applied installed plugin, matching tool grants, current QQ identity, read/send group access and account release. All model invocations use configured APIs. Tool routing precedes ordinary chat/plugin callbacks to avoid duplicate execution.
+
+`tools.catalogMode` is `auto` by default, with `all` as an owner-selectable alternative. Automatic mode uses host-local `search_available_tools` when the authorized catalog exceeds six tools or 16 KiB of definitions. Discovery searches only this request's already-authorized snapshot, supports Chinese/English terms, and exposes at most five matching real tools plus the search function within a 96 KiB definition budget. Discovery counts toward the existing three-call/four-inference budget. The host never substitutes a generic remote `call_tool` that could bypass per-tool schemas, write receipts or runtime checks. Unsearched function names remain unavailable.
+
+`tools.builtinQQ` defaults false. Enabling it exposes `qq:current_group_recent` and `qq:current_group_search` as read-only host tools; each still requires explicit group/requester grants, and background use requires the independent group readTools whitelist. Their only arguments are bounded `limit`, and `query` for search. The active runtime binds account and group; model-provided identity/target fields are rejected. They inspect at most the latest 100 locally received/confirmed-sent messages within the 30-day conversation retention window, verify source records and apply cleared-conversation tombstones. They never fetch complete QQ history or inspect another profile/group, and local calls without a current authorized group scope fail. Outputs contain bounded text and real source message IDs for attribution.
 
 The host offers only currently authorized descriptors to the API model; each candidate call is schema-checked before any batch executes, re-authorized on execution and final delivery, and bounded to three tool calls/four model requests. Results are `tool` role data, not system instructions. Errors fail without automatic retry or billing fallback. Same-request duplicate writes and persistent same-message write replays are blocked; cancelling a tool cannot roll back effects already accepted by an external app.
 

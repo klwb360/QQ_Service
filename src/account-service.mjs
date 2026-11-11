@@ -6,14 +6,17 @@ import { createRuntime } from './runtime.mjs';
 import { normalizePersona, previewPersona } from './persona.mjs';
 import { connectorCatalog, assertBackendAvailable, resolveConnector } from './onebot-connector.mjs';
 import { isContainer } from './network-policy.mjs';
+import { createMcpManager } from './mcp-manager.mjs';
+import { importMcpConfig, mcpSecretName, parseMcpSecretName } from './mcp-config.mjs';
 
 const fail = (message, statusCode = 409, details) => Object.assign(new Error(message), { statusCode, ...(details ? { details } : {}) });
 
-export function createAccountService({ account, dataDir, csrfToken, installerFactory = createInstaller, runtimeFactory = createRuntime, pluginManager, ensurePluginReady = () => {}, getNapcatSettings = () => ({ mode: 'docker', executablePath: '', revision: 0 }), redactAll = value => String(value), checkConflicts = () => {}, reserveConfig = () => () => {} }) {
+export function createAccountService({ account, dataDir, csrfToken, installerFactory = createInstaller, runtimeFactory = createRuntime, mcpManagerFactory = createMcpManager, pluginManager, ensurePluginReady = () => {}, getNapcatSettings = () => ({ mode: 'docker', executablePath: '', revision: 0 }), redactAll = value => String(value), checkConflicts = () => {}, reserveConfig = () => () => {} }) {
   const store = createStore(dataDir);
   const logs = [], jobs = [];
-  let environment = null, activeJob = null, applying = false, started = false, closed = false;
+  let environment = null, activeJob = null, applying = false, started = false, closed = false, mcpBusy = false;
   let applyFinished = Promise.resolve();
+  let mcpFinished = Promise.resolve();
   const ensureOpen = () => { if (closed) throw fail('账号后台正在退出，操作已取消。'); };
   const redact = value => {
     let text = String(value ?? '').replace(/\x1b\[[0-9;]*m/g, '');
@@ -28,7 +31,20 @@ export function createAccountService({ account, dataDir, csrfToken, installerFac
   };
   const safeDetails = value => typeof value === 'string' ? redact(value) : Array.isArray(value) ? value.map(safeDetails) : value && typeof value === 'object' ? Object.fromEntries(Object.entries(value).map(([key, item]) => [key, safeDetails(item)])) : value;
   const installer = installerFactory({ dataDir, platform: account.platform, profileId: account.id, accountId: account.id, legacy: account.id === 'legacy', getConfig: store.getConfig, getNapcatSettings, getSecret: store.getSecret, setSecret: store.setSecret, log });
-  const runtime = runtimeFactory({ platform: account.platform, profileId: account.id, accountId: account.id, getConfig: store.getConfig, getSecret: store.getSecret, store, installer, pluginManager, log });
+  let runtime;
+  const mcpManager = mcpManagerFactory({ getConfig: store.getConfig, getSecret: store.getSecret, store, log,
+    fingerprint: (server, getter) => store.mcpConnectionHash(server, getter),
+    onToolsChanged: () => runtime?.invalidateTools?.() });
+  runtime = runtimeFactory({ platform: account.platform, profileId: account.id, accountId: account.id, getConfig: store.getConfig, getSecret: store.getSecret, store, installer, pluginManager, mcpManager, log });
+  const mcpCredentialNames = config => (config.mcp?.servers || []).flatMap(server => [
+    ...(server.envKeys || []).map(key => mcpSecretName(server.id, 'env', key)),
+    ...(server.headerKeys || []).map(key => mcpSecretName(server.id, 'header', key)),
+  ]);
+  const mcpRead = () => {
+    ensureOpen();
+    return { servers: mcpManager.catalog(), status: mcpManager.status(), tools: mcpManager.listTools(),
+      secretsPresent: Object.fromEntries(mcpCredentialNames(store.getState().draft).map(name => [name, store.hasDraftSecret(name)])) };
+  };
   const validatePlugins = config => {
     if (pluginManager) config.plugins = pluginManager.validateEntries(config.plugins || []);
     else if (config.plugins?.some(plugin => plugin.enabled)) throw fail('当前后台没有可用的插件管理器。', 400);
@@ -43,8 +59,8 @@ export function createAccountService({ account, dataDir, csrfToken, installerFac
     try { modules = await installer.status(); } catch (error) { modules = [{ id: 'napcat', name: 'NapCat', state: 'error', description: redact(error.message) }]; }
     const draft = store.getState().draft;
     const pluginCredentials = (pluginManager?.list() || []).flatMap(plugin => (plugin.secretsSchema || []).map(field => pluginSecretName(plugin.id, field.key)));
-    const secrets = Object.fromEntries(['deepseekApiKey', 'napcatToken', 'snowlumaWsToken', 'snowlumaHttpToken', ...(draft.models.apis || []).map(model => apiSecretName(model.id)), ...pluginCredentials].map(name => [name, store.hasDraftSecret(name)]));
-    return { csrfToken, account: summary(), ...store.getState(), pendingChanges: store.pendingChanges(), secrets, secretsPendingChanges: store.secretsPending(), runtime: safeDetails(runtime.status()), setup: setupStatus(), modules, connectors: Object.fromEntries(connectorCatalog().map(entry => [entry.id, entry])), container: isContainer(), plugins: pluginManager?.list() || [], jobs: safeDetails(jobs.slice(-20)), logs: safeDetails(logs.slice(-100)), summaries: store.getSummaries(), favorites: store.getFavorites(), environment, metrics: store.metrics(), dataDir };
+    const secrets = Object.fromEntries(['deepseekApiKey', 'napcatToken', 'snowlumaWsToken', 'snowlumaHttpToken', ...(draft.models.apis || []).map(model => apiSecretName(model.id)), ...pluginCredentials, ...mcpCredentialNames(draft)].map(name => [name, store.hasDraftSecret(name)]));
+    return { csrfToken, account: summary(), ...store.getState(), pendingChanges: store.pendingChanges(), secrets, secretsPendingChanges: store.secretsPending(), runtime: safeDetails(runtime.status()), setup: setupStatus(), modules, connectors: Object.fromEntries(connectorCatalog().map(entry => [entry.id, entry])), container: isContainer(), plugins: pluginManager?.list() || [], mcp: mcpRead(), jobs: safeDetails(jobs.slice(-20)), logs: safeDetails(logs.slice(-100)), summaries: store.getSummaries(), favorites: store.getFavorites(), environment, metrics: store.metrics(), dataDir };
   };
   const setupStatus = () => {
     const { draft, applied } = store.getState();
@@ -94,7 +110,7 @@ export function createAccountService({ account, dataDir, csrfToken, installerFac
   };
   const job = (label, action) => {
     ensureOpen();
-    if (applying || activeJob) throw fail('该账号已有配置、安装或授权任务正在执行，请等待它结束。');
+    if (applying || activeJob || mcpBusy) throw fail('该账号已有配置、安装或连接任务正在执行，请等待它结束。');
     const item = { id: randomUUID(), accountId: account.id, label, status: 'running', startedAt: new Date().toISOString(), logs: [] };
     jobs.push(item); if (jobs.length > 30) jobs.shift(); activeJob = item;
     const onLog = line => { item.logs.push(redact(line)); if (item.logs.length > 150) item.logs.shift(); };
@@ -105,7 +121,13 @@ export function createAccountService({ account, dataDir, csrfToken, installerFac
     }).finally(() => { item.finishedAt = new Date().toISOString(); activeJob = null; });
     return { job: item };
   };
-  const ensureIdle = () => { ensureOpen(); ensurePluginReady(); if (applying || activeJob) throw fail('该账号的配置或模块任务正在执行，请稍后重试。'); };
+  const ensureIdle = () => { ensureOpen(); ensurePluginReady(); if (applying || activeJob || mcpBusy) throw fail('该账号的配置、模块或 MCP 连接任务正在执行，请稍后重试。'); };
+  const mcpTask = async action => {
+    ensureIdle(); mcpBusy = true;
+    let finish; mcpFinished = new Promise(resolve => { finish = resolve; });
+    try { return await action(); }
+    finally { mcpBusy = false; finish(); }
+  };
   const checkEnvironment = async () => {
     const revision = getNapcatSettings().revision;
     const result = await installer.environment();
@@ -134,6 +156,11 @@ export function createAccountService({ account, dataDir, csrfToken, installerFac
       // explicit account-bound release transaction can authorize sending.
       store.restoreState({ ...current, draft: config });
       store.commitSecrets(); store.commitDraft();
+      // Retire the old MCP generation immediately after committing credentials.
+      // QQ restart/login may await I/O; no old connector may retain approval in
+      // that interval, even when the remote tool metadata is unchanged.
+      runtime.invalidateTools?.();
+      await mcpManager.reload();
       switchedBackend = before.applied.qq.backend !== config.qq.backend;
       if (!isContainer() && config.qq.backend === 'napcat' && (oldSecrets.napcatToken !== store.getSecret('napcatToken') || before.applied.qq.wsUrl !== config.qq.wsUrl || before.applied.qq.webUiUrl !== config.qq.webUiUrl || before.applied.botQQ !== config.botQQ)) {
         const modules = await installer.status();
@@ -149,6 +176,7 @@ export function createAccountService({ account, dataDir, csrfToken, installerFac
         const actual = runtime.status();
         if (!actual.connected || String(actual.accountId || '') !== config.botQQ) throw Object.assign(fail('QQ 实际登录身份尚未确认或与接入 QQ 号不一致，权限未释放。'), { code: actual.connected ? 'QQ_IDENTITY_MISMATCH' : 'QQ_NOT_CONNECTED', field: 'botQQ', action: '在 NapCat 中登录本账号填写的 QQ，测试连接通过后再启动。', nextStep: 'connection' });
       }
+      ensureOpen();
       store.recordPersona();
       if (mode === 'release') store.recordSetupCompleted(config.botQQ);
       log(mode === 'release' ? '已核对账号并释放本账号选定范围的权限。' : mode === 'rollback' ? '已恢复上一份参数，账号保持只读；发送需重新授权。' : `配置版本 ${store.getState().appliedRevision} 已应用，账号保持只读；请在群权限中显式授权。`);
@@ -164,6 +192,7 @@ export function createAccountService({ account, dataDir, csrfToken, installerFac
       else if (!closed) {
         try { await runtime.reload(); } catch (restoreError) { log(`账号运行时恢复失败：${restoreError.message}`, 'error'); }
       }
+      if (!closed) await mcpManager.reload();
       throw error;
     } finally { applying = false; releaseReservation(); finishApply(); }
   };
@@ -180,7 +209,9 @@ export function createAccountService({ account, dataDir, csrfToken, installerFac
   const validateSecretUpdates = (updates = {}, config) => {
     if (!updates || typeof updates !== 'object' || Array.isArray(updates)) throw fail('凭据更新格式无效。', 400);
     for (const [name, value] of Object.entries(updates)) {
-      if (!isCredentialName(name) || (name.startsWith('apiKey:') && !(config.models.apis || []).some(model => apiSecretName(model.id) === name)) || typeof value !== 'string' || value.length > 2000 || /[\r\n]/.test(value)) throw fail('凭据字段无效。', 400);
+      const mcp = parseMcpSecretName(name);
+      if (!isCredentialName(name) || (name.startsWith('apiKey:') && !(config.models.apis || []).some(model => apiSecretName(model.id) === name)) || typeof value !== 'string' || value.length > (mcp ? 16384 : 2000) || value.includes('\0') || ((!mcp || mcp.kind === 'header') && /[\r\n]/.test(value))) throw fail('凭据字段无效。', 400);
+      if (mcp && !mcpCredentialNames(config).includes(name)) throw fail('MCP 凭据没有对应的本账号服务声明。', 400);
       const plugin = parsePluginSecretName(name);
       if (plugin && (!config.plugins?.some(entry => entry.id === plugin.pluginId) || !pluginManager?.get(plugin.pluginId)?.secretsSchema.some(field => field.key === plugin.key))) throw fail('插件凭据没有对应的已安装声明和账号配置。', 400);
     }
@@ -189,11 +220,13 @@ export function createAccountService({ account, dataDir, csrfToken, installerFac
   const save = async body => {
     ensureOpen();
     ensurePluginReady();
-    if (applying) throw fail('配置正在应用，请稍后保存。');
+    if (applying || mcpBusy) throw fail('配置正在应用或测试 MCP，请稍后保存。');
     const config = validatePlugins(validateConfig(body.config));
     config.permissions.released = false;
     const updates = validateSecretUpdates(body.secretUpdates || {}, config);
-    store.stageSecrets(updates); store.saveDraft(config);
+    const before = store.getState(), oldSecrets = store.getSecretSnapshot();
+    try { store.stageSecrets(updates); store.saveDraft(config); }
+    catch (error) { try { store.restoreState(before); } finally { store.restoreSecrets(oldSecrets); } throw error; }
     log('参数已保存；应用后只读，发送需单独释放权限。');
     return state();
   };
@@ -213,6 +246,8 @@ export function createAccountService({ account, dataDir, csrfToken, installerFac
     for (const section of ['chat', 'summary', 'favorites']) config[section] = { ...structuredClone(DEFAULT_CONFIG[section]), provider };
     config.groups = structuredClone(DEFAULT_CONFIG.groups);
     config.plugins = [];
+    config.mcp.servers = config.mcp.servers.map(server => ({ ...server, enabled: false,
+      tools: server.tools.map(tool => ({ ...tool, enabled: false })) }));
     config.tools = structuredClone(DEFAULT_CONFIG.tools);
     config.permissions = structuredClone(DEFAULT_CONFIG.permissions);
     const oldSecrets = store.getSecretSnapshot();
@@ -264,6 +299,43 @@ export function createAccountService({ account, dataDir, csrfToken, installerFac
   const invoke = async (route, body) => {
     ensureOpen();
     if (isContainer() && (route === '/napcat/open' || route === '/setup/install' || /^\/modules\/[^/]+\/(?:start|stop|install)$/.test(route))) throw fail('容器版本连接外部运行的 QQ 连接端；请在宿主机启动或管理 NapCat，容器不会控制宿主机进程或 Docker。', 409);
+    if (route === '/mcp/import') {
+      ensureIdle();
+      if (Object.keys(body).some(key => !['document', 'config', 'secretUpdates', 'revision'].includes(key))) throw fail('MCP 导入字段无效。', 400);
+      if (body.revision !== store.getState().revision) throw fail('配置版本已变化，请刷新后重新导入。');
+      const config = validateConfig(body.config), imported = importMcpConfig(body.document);
+      const ids = new Set(config.mcp.servers.map(server => server.id));
+      if (imported.servers.some(server => ids.has(server.id))) throw fail('存在相同标识的 MCP 服务；请修改导入服务的 id，或先移除旧配置。', 400);
+      config.mcp.servers.push(...imported.servers);
+      const validated = validateConfig(config);
+      const updates = validateSecretUpdates(body.secretUpdates || {}, validated);
+      // Import is a draft-only transaction. It never enables a server or starts
+      // a downloaded/local program, even if the imported file requests it.
+      return { value: await save({ config: validated, secretUpdates: { ...updates, ...imported.secretUpdates } }) };
+    }
+    if (route === '/mcp/test') return mcpTask(async () => {
+      if (Object.keys(body).some(key => !['serverId', 'config', 'secretUpdates', 'revision'].includes(key))) throw fail('MCP 测试字段无效。', 400);
+      if (body.revision !== undefined && body.revision !== store.getState().revision) throw fail('配置版本已变化，请重新核对启动程序后再测试。');
+      const config = validateConfig(body.config), updates = validateSecretUpdates(body.secretUpdates || {}, config);
+      const server = config.mcp.servers.find(item => item.id === body.serverId);
+      if (!server) throw fail('请选择本账号的 MCP 服务。', 400);
+      const allowed = new Set(mcpCredentialNames({ mcp: { servers: [server] } }));
+      const getSecret = name => {
+        if (!allowed.has(name)) throw fail('MCP 凭据超出当前服务范围。', 403);
+        return updates[name] || store.getDraftSecret(name);
+      };
+      const result = await mcpManager.test(server, { getSecret });
+      ensureOpen();
+      return { value: { server: result } };
+    });
+    if (route === '/mcp/refresh' || route === '/mcp/disconnect') return mcpTask(async () => {
+      if (typeof body.serverId !== 'string' || Object.keys(body).some(key => key !== 'serverId')) throw fail('请提供 MCP 服务标识。', 400);
+      if (!store.getConfig().mcp.servers.some(server => server.id === body.serverId)) throw fail('当前账号尚未应用此 MCP 服务。', 404);
+      if (route === '/mcp/refresh') await mcpManager.refresh(body.serverId);
+      else await mcpManager.disconnect(body.serverId);
+      ensureOpen();
+      return { value: mcpRead() };
+    });
     if (route === '/persona/preview') return { value: previewPersona({ config: validateConfig(body.config || store.getState().draft), groupId: body.groupId }) };
     if (route === '/persona/restore') {
       const actualQQ = memoryIdentity(body.actualQQ);
@@ -372,19 +444,20 @@ export function createAccountService({ account, dataDir, csrfToken, installerFac
     throw fail('接口不存在。', 404);
   };
   return {
-    account, store, runtime, installer, summary, state, setupStatus, invoke, redact, ensureIdle, memoryRead, memoryTree, personaHistory, experienceRead, experienceHistory, conversationRead,
+    account, store, runtime, installer, mcpManager, mcpRead, summary, state, setupStatus, invoke, redact, ensureIdle, memoryRead, memoryTree, personaHistory, experienceRead, experienceHistory, conversationRead,
     invalidateEnvironment() { environment = null; },
     async start() {
       if (started) return;
       started = true;
       Promise.resolve().then(checkEnvironment).catch(error => log(`环境检查失败：${error.message}`, 'error'));
       await runtime.reload();
+      await mcpManager.start();
     },
     async close() {
       if (closed) return;
       closed = true;
-      const results = await Promise.allSettled([runtime.stop(), installer.dispose?.()]);
-      await applyFinished;
+      const results = await Promise.allSettled([runtime.stop(), installer.dispose?.(), mcpManager.close()]);
+      await Promise.all([applyFinished, mcpFinished]);
       store.close();
       const failure = results.find(result => result.status === 'rejected');
       if (failure) throw failure.reason;

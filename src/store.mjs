@@ -1,12 +1,13 @@
 import fs from 'node:fs';
 import path from 'node:path';
 import { DatabaseSync } from 'node:sqlite';
-import { randomBytes, createCipheriv, createDecipheriv } from 'node:crypto';
+import { randomBytes, createCipheriv, createDecipheriv, createHmac } from 'node:crypto';
 import { DEFAULT_CONFIG, configHash, migrateConfig, isCredentialName } from './config.mjs';
 import { createMemoryStore } from './memory-store.mjs';
 import { createPersonaStore, normalizePersona } from './persona.mjs';
 import { createExperienceStore } from './experience-store.mjs';
 import { createConversationStateStore } from './conversation-state.mjs';
+import { canonicalMcpConnection, mcpSecretName, parseMcpSecretName } from './mcp-config.mjs';
 
 export function atomicJson(file, value) {
   const temp = `${file}.${process.pid}.tmp`;
@@ -41,8 +42,8 @@ export function createStore(dataDir) {
   if (needsMigration) {
     // Only configuration changes. Retired login directories and account data
     // remain untouched, including when no schema-version bump is needed.
-    const oldVersion = Math.min(...['draft', 'applied', 'previous'].map(name => state[name]?.schemaVersion || 3));
-    const backupFile = path.join(dataDir, oldVersion < 3 ? `config.v${oldVersion}.backup.json` : 'config.pre-api-only.backup.json');
+    const oldVersion = Math.min(...['draft', 'applied', 'previous'].filter(name => state[name]).map(name => state[name].schemaVersion || 4));
+    const backupFile = path.join(dataDir, oldVersion < 4 ? `config.v${oldVersion}.backup.json` : 'config.pre-api-only.backup.json');
     if (!fs.existsSync(backupFile)) {
       fs.copyFileSync(configFile, backupFile, fs.constants.COPYFILE_EXCL);
       fs.chmodSync(backupFile, 0o600);
@@ -94,13 +95,24 @@ export function createStore(dataDir) {
     getState: () => structuredClone(state),
     getConfig: () => structuredClone(state.applied),
     getSecret: (name) => secrets[name] || '',
+    getDraftSecret: name => secrets[`draft:${name}`] ?? secrets[name] ?? '',
+    mcpConnectionHash(server, getSecretValue = name => secrets[name] || '') {
+      const descriptor = canonicalMcpConnection(server);
+      const read = (kind, name) => {
+        const value = getSecretValue(mcpSecretName(descriptor.id, kind, name));
+        if (typeof value !== 'string') throw new TypeError('MCP 连接指纹需要同步文字凭据读取器。');
+        return [name, value];
+      };
+      const credentials = { env: descriptor.envKeys.map(name => read('env', name)), headers: descriptor.headerKeys.map(name => read('header', name)) };
+      return createHmac('sha256', key).update(JSON.stringify({ version: 1, descriptor, credentials })).digest('hex');
+    },
     hasSecret: (name) => Boolean(secrets[name]),
     hasDraftSecret: (name) => Boolean(secrets[`draft:${name}`] ?? secrets[name]),
     getSecretSnapshot: () => structuredClone(secrets),
     restoreSecrets(snapshot) { secrets = structuredClone(snapshot); saveSecrets(); },
     stageSecrets(updates) {
       for (const [name, value] of Object.entries(updates)) if (!isCredentialName(name) || typeof value !== 'string') throw new TypeError('凭据字段无效');
-      for (const [name, value] of Object.entries(updates)) if (value.trim()) secrets[`draft:${name}`] = value.trim();
+      for (const [name, value] of Object.entries(updates)) if (value.trim()) secrets[`draft:${name}`] = parseMcpSecretName(name) ? value : value.trim();
       saveSecrets();
     },
     commitSecrets() { for (const stagedName of stagedSecretNames()) { secrets[stagedName.slice(6)] = secrets[stagedName]; delete secrets[stagedName]; } saveSecrets(); },

@@ -12,6 +12,8 @@ QQ_Service 的自有源码采用 [MIT](LICENSE) 许可证。这个许可不替�
 | npm | 11.17.0 | [npm CLI](https://github.com/npm/cli)，Artistic License 2.0 及依赖许可证；保留 npm 包及其依赖的 LICENSE 文件 |
 | ws | 8.22.0 | [ws](https://github.com/websockets/ws)，MIT；保留 `resources/backend/node_modules/ws/LICENSE` |
 
+开发分支的 MCP 功能另附带 `@modelcontextprotocol/sdk` 1.32.2、`ajv` 8.20.0 和 `ajv-formats` 3.0.1，均为 MIT。Windows 打包按锁文件复制完整生产依赖及其许可证文件，详见 `resources/backend/node_modules/`；已发布 v0.8.0 不含这些新增依赖。第三方 MCP 服务由用户另行配置，其代码、依赖与服务条款需分别遵守。
+
 Electron 构建工具仅作为开发依赖，依其许可证使用。发布源码包含锁定依赖元数据；构建时从上游下载运行环境。
 
 ## 用户按需另行安装或访问

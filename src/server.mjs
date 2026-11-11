@@ -18,7 +18,7 @@ export function defaultDataDir() {
     : path.join(os.homedir(), '.local', 'share', 'qq-bridge-dashboard'));
 }
 
-export function createDashboard({ dataDir = defaultDataDir(), installerFactory, runtimeFactory } = {}) {
+export function createDashboard({ dataDir = defaultDataDir(), installerFactory, runtimeFactory, mcpManagerFactory } = {}) {
   const configuredOrigins = publicOrigins();
   const csrfToken = randomBytes(32).toString('hex');
   const catalog = createAccountCatalog(dataDir);
@@ -64,7 +64,7 @@ export function createDashboard({ dataDir = defaultDataDir(), installerFactory, 
   };
   const buildService = account => {
     if (services.has(account.id)) return services.get(account.id);
-    const service = createAccountService({ account, dataDir: catalog.directory(account.id), csrfToken, installerFactory, runtimeFactory, pluginManager: plugins, ensurePluginReady, getNapcatSettings: napcatSettings.get, redactAll, checkConflicts, reserveConfig });
+    const service = createAccountService({ account, dataDir: catalog.directory(account.id), csrfToken, installerFactory, runtimeFactory, mcpManagerFactory, pluginManager: plugins, ensurePluginReady, getNapcatSettings: napcatSettings.get, redactAll, checkConflicts, reserveConfig });
     services.set(account.id, service);
     return service;
   };
@@ -93,7 +93,7 @@ export function createDashboard({ dataDir = defaultDataDir(), installerFactory, 
   const readBody = async request => {
     if (!(request.headers['content-type'] || '').toLowerCase().startsWith('application/json')) throw fail('请求须为 application/json。', 415);
     const chunks = []; let size = 0;
-    for await (const chunk of request) { size += chunk.length; if (size > 128 * 1024) throw fail('配置体积过大。', 413); chunks.push(chunk); }
+    for await (const chunk of request) { size += chunk.length; if (size > 1024 * 1024) throw fail('配置体积过大。', 413); chunks.push(chunk); }
     let body;
     try { body = JSON.parse(Buffer.concat(chunks).toString('utf8') || '{}'); } catch { throw fail('JSON 格式无效。', 400); }
     // Reading a request body yields to shutdown. Recheck before any catalog,
@@ -183,6 +183,7 @@ export function createDashboard({ dataDir = defaultDataDir(), installerFactory, 
         if (request.method === 'GET') {
           if (action === '/state') return json(response, await service.state());
           if (action === '/setup/status') return json(response, service.setupStatus());
+          if (action === '/mcp') return json(response, service.mcpRead());
           if (action === '/memory') return json(response, service.memoryRead(Object.fromEntries(url.searchParams)));
           if (action === '/memory/tree') return json(response, service.memoryTree());
           if (action === '/persona/history') return json(response, service.personaHistory(Object.fromEntries(url.searchParams)));
@@ -191,7 +192,9 @@ export function createDashboard({ dataDir = defaultDataDir(), installerFactory, 
           if (action === '/conversation/state') return json(response, service.conversationRead(Object.fromEntries(url.searchParams)));
           if (action === '/tools') {
             const settings = service.store.getConfig().tools || {};
-            return json(response, { tools: service.runtime.listTools?.() || [], enabled: settings.enabled === true, triggers: settings.triggers || ['mention', 'poke', 'name'], prefix: settings.prefix || '/工具' });
+            return json(response, { tools: service.runtime.listTools?.() || [], enabled: settings.enabled === true,
+              builtinQQ: settings.builtinQQ === true, catalogMode: settings.catalogMode || 'auto',
+              triggers: settings.triggers || ['mention', 'poke', 'name'], prefix: settings.prefix || '/工具' });
           }
           if (action === '/config/export') {
             response.setHeader('Content-Disposition', 'attachment; filename="qq-service-config.json"');

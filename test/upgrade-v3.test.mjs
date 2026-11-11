@@ -26,11 +26,11 @@ function oldConfig(version) {
   return config;
 }
 
-test('v1/v2 migrate to v3 without changing persona, QQ identity, endpoints or intended permissions', () => {
+test('v1/v2 migrate to v4 without changing persona, QQ identity, endpoints or intended permissions', () => {
   for (const version of [1, 2]) {
     const input = oldConfig(version), snapshot = structuredClone(input), migrated = migrateConfig(input);
     assert.deepEqual(input, snapshot, 'migration must not mutate caller data');
-    assert.equal(migrated.schemaVersion, 3);
+    assert.equal(migrated.schemaVersion, 4);
     assert.equal(migrated.qq.backend, 'napcat');
     assert.equal(migrated.qq.connections.napcat.wsUrl, input.qq.wsUrl);
     assert.equal(migrated.qq.connections.napcat.webUiUrl, input.qq.webUiUrl);
@@ -63,7 +63,7 @@ test('store upgrade retains encrypted credentials, confirmed memory and rollback
       const vault = fs.readFileSync(path.join(dir, 'vault.json')), key = fs.readFileSync(path.join(dir, 'vault.key'));
       store = createStore(dir);
       const upgraded = store.getState();
-      for (const name of ['draft', 'applied', 'previous']) assert.equal(upgraded[name].schemaVersion, 3);
+      for (const name of ['draft', 'applied', 'previous']) assert.equal(upgraded[name].schemaVersion, 4);
       assert.equal(upgraded.revision, 8); assert.equal(upgraded.appliedRevision, 7);
       assert.equal(upgraded.applied.chat.persona, legacy.chat.persona);
       assert.equal(upgraded.applied.permissions.released, true);
@@ -78,7 +78,7 @@ test('store upgrade retains encrypted credentials, confirmed memory and rollback
       assert.deepEqual(fs.readFileSync(path.join(dir, 'config.json')), first);
       assert.equal(store.personas.get({ actualQQ: '111111' }).persona.body, legacy.chat.persona);
       store.rollback();
-      assert.equal(store.getConfig().schemaVersion, 3);
+      assert.equal(store.getConfig().schemaVersion, 4);
       assert.equal(store.getConfig().permissions.released, false);
     } finally { store?.close(); fs.rmSync(dir, { recursive: true, force: true }); }
   }

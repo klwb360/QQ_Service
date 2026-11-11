@@ -24,7 +24,7 @@ test('新账号配置模型和 QQ 连接仍不授予发送或自动聊天权限'
   config.models.deepseek.enabled = true;
   config.groups = [{ id: '123456', mode: 'social' }, { id: '234567', mode: 'work' }];
   const result = validateConfig(config, { applying: true, hasSecret: () => true });
-  assert.equal(result.schemaVersion, 3);
+  assert.equal(result.schemaVersion, 4);
   assert.deepEqual(result.permissions, { released: false, privateReplies: false });
   assert.equal(result.ownerQQ, '');
   assert.equal(result.chat.enabled, false);
@@ -104,7 +104,7 @@ test('v1 显式迁移精确保留既有社交群及本人私聊权限，且幂�
   assert.equal(migrated.favorites.provider, 'deepseek');
   assert.equal(migrated.summary.sendToOwner, true);
   assert.deepEqual(migrateConfig(migrated), migrated);
-  assert.equal(validateConfig(legacy).schemaVersion, 3);
+  assert.equal(validateConfig(legacy).schemaVersion, 4);
   const offline = legacyConfig();
   offline.models.codex = { enabled: true, model: '', timeoutSeconds: 180 };
   offline.ownerQQ = '111111';
@@ -149,7 +149,7 @@ test('存储迁移覆盖草稿、应用及回滚版本，保留凭据与 CLI 登
     const keyBefore = fs.readFileSync(path.join(dir, 'vault.key'));
     store = createStore(dir);
     const migrated = store.getState();
-    for (const name of ['draft', 'applied', 'previous']) assert.equal(migrated[name].schemaVersion, 3);
+    for (const name of ['draft', 'applied', 'previous']) assert.equal(migrated[name].schemaVersion, 4);
     assert.equal(migrated.revision, 14);
     assert.equal(migrated.appliedRevision, 12);
     assert.equal(migrated.draft.botQQ, '999999');
@@ -169,7 +169,7 @@ test('存储迁移覆盖草稿、应用及回滚版本，保留凭据与 CLI 登
     assert.deepEqual(store.getState(), migrated);
     assert.equal(fs.readFileSync(path.join(dir, 'config.v1.backup.json'), 'utf8'), beforeConfig);
     store.rollback();
-    assert.equal(store.getConfig().schemaVersion, 3);
+    assert.equal(store.getConfig().schemaVersion, 4);
     assert.equal(store.getConfig().permissions.released, false);
   } finally {
     store?.close();

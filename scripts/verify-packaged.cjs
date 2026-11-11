@@ -33,6 +33,22 @@ async function verifyWindowsPackage(appOutDir, expectedVersion) {
     path.join(backend, 'src', 'social-runtime.mjs'),
     path.join(backend, 'src', 'social-chat.mjs'),
     path.join(backend, 'src', 'memory-store.mjs'),
+    path.join(backend, 'src', 'mcp-client.mjs'),
+    path.join(backend, 'src', 'mcp-manager.mjs'),
+    path.join(backend, 'src', 'mcp-config.mjs'),
+    path.join(backend, 'src', 'mcp-schema.mjs'),
+    path.join(backend, 'src', 'mcp-schema-worker.mjs'),
+    path.join(backend, 'src', 'qq-tools.mjs'),
+    path.join(backend, 'examples', 'mcp', 'local-notes.mjs'),
+    path.join(backend, 'examples', 'mcp', 'demo-server.mjs'),
+    path.join(backend, 'examples', 'mcp', 'http-notes.mjs'),
+    path.join(backend, 'examples', 'mcp', 'bilibili.mjs'),
+    path.join(backend, 'examples', 'plugins', 'bilibili-assistant', 'index.mjs'),
+    path.join(backend, 'examples', 'plugins', 'bilibili-assistant', 'http.mjs'),
+    path.join(backend, 'examples', 'plugins', 'bilibili-assistant', 'plugin.json'),
+    path.join(backend, 'docs', 'MCP.md'),
+    path.join(backend, 'docs', 'assets', 'mcp-services.png'),
+    path.join(backend, 'production-packages.json'),
     path.join(backend, 'public', 'index.html'),
     path.join(backend, 'public', 'app.js'),
     path.join(backend, 'public', 'memory-ui.js'),
@@ -54,6 +70,27 @@ async function verifyWindowsPackage(appOutDir, expectedVersion) {
   assert.equal(manifest.appName, 'QQ_Service');
   assert.equal(manifest.desktopExecutable, 'QQ_Service.exe');
   assert.equal(manifest.dependencies.ws, ws.version);
+  assert.deepEqual(manifest.dependencies, metadata.dependencies, 'Packaged production dependencies differ from the build manifest');
+  const packages = JSON.parse(await fs.readFile(path.join(backend, 'production-packages.json'), 'utf8'));
+  assert(Array.isArray(packages) && packages.length > 0, 'Production package closure manifest is missing');
+  assert.deepEqual(packages, manifest.productionPackages, 'Backend production package closure differs from runtime manifest');
+  const paths = new Set();
+  for (const entry of packages) {
+    assert(typeof entry.path === 'string' && entry.path.startsWith('node_modules/') && !entry.path.includes('\\'), 'Invalid production package path');
+    const directory = path.resolve(backend, ...entry.path.split('/'));
+    const relative = path.relative(backend, directory);
+    assert(!relative.startsWith('..') && !path.isAbsolute(relative), 'Production package path escapes backend');
+    assert(!paths.has(entry.path), `Duplicate production package: ${entry.path}`);
+    paths.add(entry.path);
+    const installed = JSON.parse(await fs.readFile(path.join(directory, 'package.json'), 'utf8'));
+    assert.equal(installed.version, entry.version, `Packaged dependency version differs: ${entry.path}`);
+    assert.equal(installed.name, entry.name, `Packaged dependency name differs: ${entry.path}`);
+  }
+  for (const name of Object.keys(metadata.dependencies)) assert(paths.has(`node_modules/${name}`), `Missing direct production dependency ${name}`);
+  const sdk = JSON.parse(await fs.readFile(path.join(backend, 'node_modules', '@modelcontextprotocol', 'sdk', 'package.json'), 'utf8'));
+  const ajv = JSON.parse(await fs.readFile(path.join(backend, 'node_modules', 'ajv', 'package.json'), 'utf8'));
+  assert.equal(sdk.version, metadata.dependencies['@modelcontextprotocol/sdk'], 'Packaged MCP SDK version differs');
+  assert.equal(ajv.version, metadata.dependencies.ajv, 'Packaged Ajv version differs');
   assert.equal(windowsMachine(await fs.readFile(path.join(resources, 'runtime', 'node.exe'))), 0x8664, 'Packaged Node executable is not Windows x64');
   assert.equal(windowsMachine(await fs.readFile(path.join(appOutDir, 'QQ_Service.exe'))), 0x8664, 'Packaged desktop executable is not Windows x64');
   const asar = await import('@electron/asar');
@@ -72,6 +109,10 @@ async function verifyWindowsPackage(appOutDir, expectedVersion) {
   async function scan(directory) {
     for (const entry of await fs.readdir(directory, { withFileTypes: true })) {
       const file = path.join(directory, entry.name);
+      // Registry packages may legitimately contain fixtures called data or
+      // config.json. Their locked closure is checked above; account files must
+      // never be copied into the application's own source/resources.
+      if (directory === backend && entry.name === 'node_modules') continue;
       assert(!privateFile.test(path.relative(backend, file).split(path.sep).join('/')), 'Backend contains unexpected account data');
       if (entry.isDirectory()) await scan(file);
     }
@@ -84,7 +125,21 @@ async function verifyWindowsPackage(appOutDir, expectedVersion) {
     env: { ...process.env, NPM_CONFIG_UPDATE_NOTIFIER: 'false' }
   });
   assert(/^\d+\.\d+\.\d+\s*$/.test(npm.stdout), 'Packaged npm version check did not complete successfully');
-  const result = { appVersion: metadata.version, nodeVersion: manifest.nodeVersion, npmVersion: npm.stdout.trim(), wsVersion: ws.version, asarEntries: files.length };
+  const runtimeProbe = [
+    "await import('@modelcontextprotocol/sdk/client/index.js')",
+    "await import('@modelcontextprotocol/sdk/server/stdio.js')",
+    "await import('@modelcontextprotocol/sdk/server/streamableHttp.js')",
+    "await import('ajv');await import('ajv-formats')",
+    "await import('./src/mcp-client.mjs');await import('./src/mcp-manager.mjs');await import('./src/qq-tools.mjs')",
+    "const {bilibiliMcpTools}=await import('./examples/mcp/bilibili.mjs')",
+    "if(JSON.stringify(bilibiliMcpTools().map(t=>t.name))!==JSON.stringify(['popular_videos','search_videos','video_details']))throw new Error('Packaged Bilibili catalog differs from read-only whitelist')",
+    "const {compileMcpToolSchema,validateMcpToolInput}=await import('./src/mcp-schema.mjs')",
+    "const schema={type:'object',properties:{count:{type:'integer'}},required:['count'],additionalProperties:false}",
+    "await compileMcpToolSchema(schema);await validateMcpToolInput(schema,{count:1})",
+  ].join(';');
+  await run(process.execPath, ['--input-type=module', '-e', runtimeProbe], { cwd: backend, timeout: 15_000, windowsHide: true });
+  const result = { appVersion: metadata.version, nodeVersion: manifest.nodeVersion, npmVersion: npm.stdout.trim(), wsVersion: ws.version,
+    mcpSdkVersion: sdk.version, ajvVersion: ajv.version, productionPackages: packages.length, asarEntries: files.length };
   console.log(`Verified packaged Windows resources: ${JSON.stringify(result)}`);
   return result;
 }

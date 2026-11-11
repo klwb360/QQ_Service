@@ -15,6 +15,11 @@
   };
   let accounts = [];
   let pluginCatalog = [];
+  const mcpCatalogues = new Map();
+  const mcpApprovalDrafts = new Map();
+  const mcpTests = new Set();
+  const mcpChangedConnections = new Map();
+  let mcpRenderSignature = '', mcpRenderAccount = '', mcpEditing = null, mcpImportAccount = '', mcpImportPending = false;
   const pluginRunViews = new Map();
   const toolGrantDrafts = new Map();
   let pluginRenderSignature = '';
@@ -357,6 +362,7 @@
     // A late save response must not erase edits made after that save was submitted.
     const mayReplace = expectedEditVersion === undefined || (editor.editVersion ?? 0) === expectedEditVersion;
     editor.state = next;
+    if (Array.isArray(next.mcp?.servers)) rememberMCPCatalogue(accountId, next.mcp.servers);
     if (Array.isArray(next.plugins)) pluginCatalog = next.plugins;
     if (!editor.draft || (!editor.dirty && !Object.keys(editor.secretUpdates ?? {}).length) || (replaceDraft && mayReplace)) {
       editor.draft = clone(next.draft);
@@ -734,8 +740,16 @@
     return Array.isArray(group.triggers) ? group.triggers : [group.trigger || 'mention'];
   }
   const groupSocialDefaults = { enabled: false, proactive: false, interests: '', style: '', activeStart: '10:00', activeEnd: '22:00', decisionCallsPerHour: 12, repliesPerHour: 6, proactiveIntervalMinutes: 10, readTools: [] };
+  function qqContextToolSource() {
+    return { id: 'qq', name: 'QQ 上下文', source: 'qq', enabled: draft?.tools?.builtinQQ === true, tools: draft?.tools?.builtinQQ === true ? [
+      { id: 'qq:current_group_recent', name: '最近群消息', effect: 'read', description: '只读查看当前授权群实际缓存的最近消息，最多 100 条；不接受跨账号或跨群参数。' },
+      { id: 'qq:current_group_search', name: '搜索群消息', effect: 'read', description: '按关键词搜索当前授权群实际缓存的最近 100 条消息；不是 QQ 全部历史。' }
+    ] : [] };
+  }
   function socialReadTools() {
-    return pluginCatalog.flatMap(plugin => (plugin.tools || []).filter(tool => tool.effect === 'read').map(tool => ({ id: `${plugin.id}/${tool.name}`, label: `${plugin.name || plugin.id} · ${tool.name}`, enabled: draft?.plugins?.some(entry => entry.id === plugin.id && entry.enabled) === true })));
+    return pluginCatalog.flatMap(plugin => (plugin.tools || []).filter(tool => tool.effect === 'read').map(tool => ({ id: `${plugin.id}/${tool.name}`, label: `${plugin.name || plugin.id} · ${tool.name}`, enabled: draft?.plugins?.some(entry => entry.id === plugin.id && entry.enabled) === true })))
+      .concat(mcpToolSources().flatMap(source => source.tools.filter(tool => tool.effect === 'read').map(tool => ({ id: tool.id, label: `MCP · ${source.name} · ${tool.name}`, enabled: source.enabled }))))
+      .concat(qqContextToolSource().tools.map(tool => ({ id: tool.id, label: `QQ 上下文 · ${tool.name}`, enabled: true })));
   }
   function renderGroupSocial(group, index) {
     const social = { ...groupSocialDefaults, ...group.social };
@@ -941,6 +955,7 @@
       return `<article class="module-card ${builtin ? 'builtin' : 'external'}" data-module-card="${definition.id}"><div class="module-main"><div class="module-top"><span class="module-icon">${definition.icon}</span>${builtin ? `<span class="pill ${enabled ? 'pill-green' : 'pill-neutral'}">${enabled ? '此账号配置已启用' : '内置 · 尚未启用'}</span>` : pill(status)}</div><h2>${escapeHTML(definition.name)}</h2>${napcat ? `<span class="module-napcat-mode">${native ? '本地安装' : 'Docker'}</span>` : ''}<p>${escapeHTML(definition.description)}</p><div class="module-version ${napcat && native ? 'native-path' : ''}">${escapeHTML(version)}</div>${napcat ? `<div class="napcat-help-links"><a href="${napcatInstallUrl(settings.mode)}" target="_blank" rel="noopener noreferrer">${native ? '本地' : 'Docker'}安装说明 ↗</a><a href="#settings">更改方式</a></div>` : ''}</div><div class="module-actions">${actions}</div></article>`;
     }).join('');
     renderCustomPlugins();
+    renderMCP();
   }
   function pluginRunView(pluginId, accountId = selectedAccountId) {
     const key = `${accountId}:${pluginId}`;
@@ -971,6 +986,300 @@
     }
     return grant;
   }
+  function mcpServers(config = draft) { return config?.mcp?.servers || []; }
+  function rememberMCPCatalogue(accountId, records) {
+    const known = mcpCatalogues.get(accountId) || new Map();
+    for (const record of records || []) {
+      const id = record.serverId || record.id;
+      if (!id) continue;
+      const previous = known.get(id);
+      const updatedAt = record.testedAt || record.checkedAt || '';
+      const previousAt = previous?.testedAt || previous?.checkedAt || '';
+      if (!previous || !previousAt || updatedAt >= previousAt) known.set(id, record);
+    }
+    mcpCatalogues.set(accountId, known);
+  }
+  function mcpConnectionSnapshot(server, editor) {
+    // Local stale-response check only; backend HMAC remains the authority.
+    return JSON.stringify([server.transport, server.command || '', server.args || [], server.url || '', [...(server.envKeys || [])].sort(), [...(server.headerKeys || [])].sort(),
+      Object.entries(editor?.secretUpdates || {}).filter(([key]) => key.startsWith(`mcpSecret:${server.id}:`)).sort(([left], [right]) => left.localeCompare(right))]);
+  }
+  function mcpCatalogue(serverId, accountId = selectedAccountId) {
+    const record = mcpCatalogues.get(accountId)?.get(serverId) || {};
+    const key = `${accountId}:${serverId}`, change = mcpChangedConnections.get(key), editor = editors.get(accountId);
+    if (!change) return record;
+    const server = mcpServers(editor?.draft).find(item => item.id === serverId);
+    if (!server || mcpConnectionSnapshot(server, editor) === change.previousSnapshot) { mcpChangedConnections.delete(key); return record; }
+    return { ...record, connectionHash: '', status: 'disconnected', requiresTest: true, lastError: '连接参数或密钥已修改，请重新测试并确认工具定义。' };
+  }
+  function mcpToolSources() {
+    return mcpServers().map(server => {
+      const catalogue = mcpCatalogue(server.id);
+      const tools = (catalogue.tools || []).flatMap(tool => {
+        const policy = server.tools?.find(item => item.name === tool.name);
+        if (!tool.id || !tool.supported || !policy?.enabled || policy.definitionHash !== tool.definitionHash || !catalogue.connectionHash || policy.connectionHash !== catalogue.connectionHash) return [];
+        return [{ ...tool, effect: policy.effect === 'read' ? 'read' : 'write' }];
+      });
+      return { id: `mcp:${server.id}`, name: server.label || server.id, source: 'mcp', enabled: server.enabled === true, tools };
+    });
+  }
+  function mcpError(message, selector) {
+    const element = $(selector);
+    element.textContent = errorMessage(message); element.classList.remove('hidden');
+  }
+  function mcpSecretKey(serverId, type, key) { return `mcpSecret:${serverId}:${type}:${type === 'header' ? key.toLowerCase() : key}`; }
+  function mcpStatus(server, catalogue, liveStatus) {
+    const labels = { connected: ['已连接', 'green'], connecting: ['连接中', 'orange'], tested: ['已测试', 'green'], disconnected: ['未连接', 'neutral'], disabled: ['已停用', 'neutral'], error: ['连接失败', 'red'] };
+    if (catalogue.requiresTest) return ['待重新测试', 'orange'];
+    const applied = state?.applied?.mcp?.servers?.find(item => item.id === server.id);
+    const live = liveStatus?.status || liveStatus?.state;
+    const matched = liveStatus?.connectionHash && catalogue.connectionHash && liveStatus.connectionHash === catalogue.connectionHash;
+    if (applied?.enabled && liveStatus && (matched || !liveStatus.connectionHash && ['error', 'connecting', 'disconnected'].includes(live))) {
+      const status = labels[live] || ['状态待确认', 'orange'];
+      if (!server.enabled && status[1] !== 'red') return [`${status[0]} · 待停用`, 'orange'];
+      return status;
+    }
+    if ((catalogue.status || catalogue.state) === 'error') return ['测试失败', 'red'];
+    if (catalogue.testedAt || catalogue.checkedAt) return server.enabled ? ['已测试 · 待应用', 'orange'] : ['已测试 · 未启用', 'neutral'];
+    return server.enabled ? ['尚未测试', 'orange'] : ['已停用', 'neutral'];
+  }
+  function mcpLiveStatus(serverId) { return state?.mcp?.status?.find(item => (item.serverId || item.id) === serverId); }
+  function mcpDisplayError(catalogue, liveStatus) {
+    return liveStatus && (!liveStatus.connectionHash || liveStatus.connectionHash === catalogue.connectionHash) ? liveStatus.lastError || catalogue.lastError : catalogue.lastError;
+  }
+  function mcpToolApproval(server, catalogue, tool) {
+    const policy = server.tools?.find(item => item.name === tool.name);
+    const valid = Boolean(tool.supported && catalogue.connectionHash && policy?.definitionHash === tool.definitionHash && policy.connectionHash === catalogue.connectionHash);
+    const key = `${selectedAccountId}:${server.id}:${tool.name}`;
+    let pending = mcpApprovalDrafts.get(key);
+    if (!pending || pending.definitionHash !== tool.definitionHash || pending.connectionHash !== catalogue.connectionHash) {
+      pending = { enabled: valid && policy?.enabled === true, effect: valid && policy?.effect === 'read' ? 'read' : 'write', definitionHash: tool.definitionHash, connectionHash: catalogue.connectionHash };
+      mcpApprovalDrafts.set(key, pending);
+    }
+    return `<article class="mcp-discovered-tool" data-mcp-tool="${escapeHTML(tool.name)}"><div class="mcp-tool-heading"><strong>${escapeHTML(tool.title || tool.name)}</strong><span class="pill ${valid && policy?.enabled ? 'pill-green' : 'pill-neutral'}">${!tool.supported ? '暂不支持' : valid && policy?.enabled ? '已确认' : policy && !valid ? '需重新确认' : '未启用'}</span></div><code class="mcp-remote-name">${escapeHTML(tool.name)}</code><p>${escapeHTML(tool.description || '服务未提供说明')}</p>${tool.readOnlyHint !== undefined ? `<p class="field-note">服务建议：${tool.readOnlyHint ? '只读' : '可能修改数据'}。仅供参考，下面由你决定。</p>` : ''}${!tool.supported ? `<p class="mcp-unsupported">${escapeHTML(tool.unsupportedReason || '这个工具的输入格式暂不受支持。')}</p>` : ''}<div class="mcp-tool-policy"><label class="check-field"><input type="checkbox" data-mcp-approval-field="enabled" ${pending.enabled ? 'checked' : ''} ${!tool.supported ? 'disabled' : ''}>启用此工具</label><label class="field">操作类型<select data-mcp-approval-field="effect" ${!tool.supported ? 'disabled' : ''}><option value="write" ${pending.effect === 'write' ? 'selected' : ''}>可修改数据</option><option value="read" ${pending.effect === 'read' ? 'selected' : ''}>只读查询</option></select></label><button type="button" class="button button-secondary button-small" data-mcp-confirm-tool ${!tool.supported || !catalogue.connectionHash ? 'disabled' : ''}>确认工具定义</button></div><details class="mcp-tool-schema"><summary>查看输入格式与定义版本</summary><p class="field-note">定义 ${escapeHTML(String(tool.definitionHash || '').slice(0, 16))} · 连接 ${escapeHTML(String(catalogue.connectionHash || '').slice(0, 16))}</p><pre>${escapeHTML(JSON.stringify(tool.inputSchema || {}, null, 2).slice(0, 16000))}</pre></details></article>`;
+  }
+  function renderMCP({ force = false } = {}) {
+    const container = $('#mcp-service-cards');
+    if (!container) return;
+    const servers = mcpServers();
+    $('#mcp-account-note').textContent = state ? `当前账号：${accountName()} · 服务、密钥和工具范围独立保存。` : '请先选择一个账号，再接入 MCP 服务。';
+    $('#mcp-server-count').textContent = `${servers.length} 个服务`;
+    $$('#mcp-add, #mcp-import, #mcp-refresh, #mcp-example-notes, #mcp-example-bilibili').forEach(button => { button.disabled = !state; });
+    // Keep live faults visible while preserving focused, unsaved grant inputs.
+    for (const card of $$('[data-mcp-server]', container)) {
+      const server = servers.find(item => item.id === card.dataset.mcpServer);
+      if (!server) continue;
+      const catalogue = mcpCatalogue(server.id), liveStatus = mcpLiveStatus(server.id), status = mcpStatus(server, catalogue, liveStatus);
+      const badge = $('.custom-plugin-heading>.pill', card);
+      if (badge) { badge.textContent = status[0]; badge.className = `pill pill-${status[1]}`; }
+      const issue = $('[data-mcp-issue]', card), message = mcpDisplayError(catalogue, liveStatus);
+      if (issue) { issue.textContent = message || ''; issue.classList.toggle('hidden', !message); }
+    }
+    const signature = JSON.stringify([selectedAccountId, servers, [...(mcpCatalogues.get(selectedAccountId)?.values() || [])], state?.mcp?.status, draft?.tools?.grants, [...mcpTests], Object.keys(secretUpdates)]);
+    const sameAccount = mcpRenderAccount === selectedAccountId;
+    if (!force && sameAccount && container.contains(document.activeElement)) return;
+    if (!force && sameAccount && signature === mcpRenderSignature) return;
+    mcpRenderSignature = signature; mcpRenderAccount = selectedAccountId;
+    const opened = new Set($$('details[open][data-mcp-details]', container).map(item => item.dataset.mcpDetails));
+    if (!servers.length) { container.innerHTML = '<div class="empty-state"><strong>还没有 MCP 服务</strong>导入 mcpServers JSON，或手动填写已经安装的服务。</div>'; return; }
+    const sources = mcpToolSources();
+    container.innerHTML = servers.map(server => {
+      const catalogue = mcpCatalogue(server.id);
+      const source = sources.find(item => item.id === `mcp:${server.id}`);
+      const testing = mcpTests.has(`${selectedAccountId}:${server.id}`);
+      const detailsKey = `mcp:${server.id}`;
+      const liveStatus = mcpLiveStatus(server.id);
+      const status = mcpStatus(server, catalogue, liveStatus);
+      const canDisconnect = liveStatus?.connected === true || ['connected', 'connecting'].includes(liveStatus?.status || liveStatus?.state);
+      const lastError = mcpDisplayError(catalogue, liveStatus);
+      return `<article class="mcp-service-card" data-mcp-server="${escapeHTML(server.id)}" data-plugin-id="mcp:${escapeHTML(server.id)}"><div class="custom-plugin-heading"><div><h3>${escapeHTML(server.label || server.id)}</h3><span class="plugin-meta">${server.transport === 'stdio' ? '本地程序 · stdio' : server.transport === 'sse' ? '远程 SSE' : '远程 HTTP'} · ${escapeHTML(server.id)}</span></div><span class="pill pill-${status[1]}">${status[0]}</span></div><p class="mcp-service-endpoint">${escapeHTML(server.transport === 'stdio' ? server.command : server.url)}</p><label class="check-field"><input type="checkbox" data-mcp-server-enabled ${server.enabled ? 'checked' : ''}>为当前账号启用服务</label><div class="mcp-service-actions"><button type="button" class="button button-secondary button-small" data-mcp-action="test" ${testing ? 'disabled' : ''}>${testing ? '测试中…' : '测试连接 · 发现工具'}</button><button type="button" class="button button-quiet button-small" data-mcp-action="edit">编辑</button><button type="button" class="button button-quiet button-small" data-mcp-action="disconnect" ${!canDisconnect ? 'disabled' : ''}>断开连接</button><button type="button" class="button button-quiet button-small" data-mcp-action="delete">移除</button></div><p class="mcp-unsupported ${lastError ? '' : 'hidden'}" data-mcp-issue>${escapeHTML(lastError || '')}</p><p class="field-note">${catalogue.testedAt || catalogue.checkedAt ? `最近发现：${escapeHTML(formatTime(catalogue.testedAt || catalogue.checkedAt))} · ` : ''}测试不会应用账号参数或授予工具权限。</p><details class="mcp-tool-definitions" data-mcp-details="${escapeHTML(detailsKey)}" ${opened.has(detailsKey) ? 'open' : ''}><summary>发现的工具 · ${(catalogue.tools || []).length} 项</summary>${catalogue.tools?.length ? catalogue.tools.map(tool => mcpToolApproval(server, catalogue, tool)).join('') : '<p class="field-note">先明确测试连接，再检查工具描述与输入格式。</p>'}</details>${source?.tools.length ? renderPluginTools(source) : ''}</article>`;
+    }).join('');
+  }
+  function stageMCPChanges(accountId = selectedAccountId) {
+    const editor = editors.get(accountId);
+    if (!editor) throw new Error('原账号配置已关闭，请重新选择账号。');
+    if (accountId === selectedAccountId) {
+      draft = editor.draft; secretUpdates = editor.secretUpdates || {};
+      markDirty(); renderMCP({ force: true });
+    } else { editor.dirty = true; editor.editVersion = (editor.editVersion || 0) + 1; renderAccountDirectory(); }
+  }
+  function addMCPSecretRow(type, key = '', pendingValue = '', saved = false) {
+    const row = document.createElement('div'); row.className = 'mcp-secret-row'; row.dataset.mcpSecretType = type;
+    row.innerHTML = `<label class="field"><span class="sr-only">${type === 'env' ? '变量名' : '请求头名称'}</span><input data-mcp-secret-key placeholder="${type === 'env' ? 'API_KEY' : 'authorization'}" spellcheck="false" maxlength="128" value="${escapeHTML(key)}"></label><label class="field"><span class="sr-only">值</span><input type="password" data-mcp-secret-value autocomplete="new-password" spellcheck="false" placeholder="${saved ? '已保存，留空保留' : '填写变量或请求头的值'}"></label><button type="button" class="button button-quiet button-small" data-mcp-remove-secret>移除</button>`;
+    $('[data-mcp-secret-value]', row).value = pendingValue;
+    $(`#mcp-${type === 'env' ? 'env' : 'header'}-rows`).append(row);
+  }
+  function renderMCPTransportFields() {
+    const local = $('#mcp-service-transport').value === 'stdio';
+    $('#mcp-stdio-fields').classList.toggle('hidden', !local);
+    $('#mcp-remote-fields').classList.toggle('hidden', local);
+    $('#mcp-env-section').classList.toggle('hidden', !local);
+    $('#mcp-header-section').classList.toggle('hidden', local);
+    $('#mcp-service-command').required = local;
+    $('#mcp-service-url').required = !local;
+  }
+  function editMCPService(serverId = '') {
+    const id = requireAccount();
+    const existing = serverId ? mcpServers().find(entry => entry.id === serverId) : null;
+    if (serverId && !existing) throw new Error('这个服务已不在账号配置中，请刷新后重试。');
+    const server = existing || { id: `mcp-${crypto.randomUUID().slice(0, 8)}`, label: '', enabled: false, transport: 'stdio', command: '', args: [], url: '', envKeys: [], headerKeys: [], timeoutSeconds: 30, tools: [] };
+    mcpEditing = { accountId: id, entry: clone(server), existing: Boolean(existing), editVersion, revision: state.revision, secretSnapshot: clone(secretUpdates) };
+    $('#mcp-service-form').reset();
+    $('#mcp-service-error').classList.add('hidden');
+    $('#mcp-service-title').textContent = existing ? '编辑 MCP 服务' : '添加 MCP 服务';
+    $('#mcp-service-account').textContent = `「${accountName(id)}」 · ${server.id} · 只写入本账号待保存参数`;
+    $('#mcp-service-label').value = server.label || '';
+    $('#mcp-service-transport').value = server.transport || 'stdio';
+    $('#mcp-service-command').value = server.command || '';
+    $('#mcp-service-args').value = JSON.stringify(server.args || [], null, 2);
+    $('#mcp-service-url').value = server.url || '';
+    $('#mcp-service-timeout').value = server.timeoutSeconds || 30;
+    $('#mcp-env-rows').replaceChildren(); $('#mcp-header-rows').replaceChildren();
+    for (const type of ['env', 'header']) for (const key of server[type === 'env' ? 'envKeys' : 'headerKeys'] || []) {
+      const name = mcpSecretKey(server.id, type, key);
+      addMCPSecretRow(type, key, secretUpdates[name] || '', state?.secrets?.[name] === true || Boolean(secretUpdates[name]));
+    }
+    renderMCPTransportFields(); $('#mcp-service-dialog').showModal(); $('#mcp-service-label').focus();
+  }
+  function prefillMCPExample(kind) {
+    editMCPService();
+    const bilibili = kind === 'bilibili';
+    $('#mcp-service-label').value = bilibili ? 'Bilibili 只读工具' : '计算与临时笔记';
+    $('#mcp-service-command').value = 'node';
+    $('#mcp-service-args').value = JSON.stringify([`{appDir}/examples/mcp/${bilibili ? 'bilibili' : 'local-notes'}.mjs`], null, 2);
+  }
+  function readMCPSecretRows(type, entry, editor) {
+    const keys = [], updates = {};
+    for (const row of $$(`#mcp-${type === 'env' ? 'env' : 'header'}-rows .mcp-secret-row`)) {
+      let key = $('[data-mcp-secret-key]', row).value.trim();
+      const value = $('[data-mcp-secret-value]', row).value;
+      if (!key && !value) continue;
+      if (type === 'header') key = key.toLowerCase();
+      const valid = type === 'env' ? /^[A-Za-z_][A-Za-z0-9_]{0,127}$/.test(key) : /^[!#$%&'*+\-.^_`|~0-9A-Za-z]{1,128}$/.test(key);
+      if (!valid) throw new Error(type === 'env' ? '环境变量名须以字母或下划线开头，只含字母、数字和下划线。' : '请填写有效且不重复的 HTTP 请求头名称。');
+      if (keys.includes(key)) throw new Error(`名称重复：${key}`);
+      const name = mcpSecretKey(entry.id, type, key);
+      if (!value && !editor.state?.secrets?.[name] && !editor.secretUpdates?.[name]) throw new Error(`请填写 ${key} 的值；留空仅用于保留已保存的值。`);
+      keys.push(key); if (value) updates[name] = value;
+    }
+    return { keys, updates };
+  }
+  function saveMCPService() {
+    const editing = mcpEditing;
+    if (!editing || !$('#mcp-service-form').reportValidity()) return;
+    const editor = editors.get(editing.accountId);
+    if (!editor || editor.editVersion !== editing.editVersion || editor.state.revision !== editing.revision) throw new Error('编辑期间这个账号的参数已变化，请重新打开服务配置。');
+    const entry = clone(editing.entry), local = $('#mcp-service-transport').value === 'stdio';
+    let args = [];
+    if (local) { try { args = JSON.parse($('#mcp-service-args').value || '[]'); } catch { throw new Error('参数须为 JSON 字符串数组，例如 ["/path/server.mjs"]。'); } }
+    if (!Array.isArray(args) || args.some(arg => typeof arg !== 'string')) throw new Error('每个启动参数都须是字符串。');
+    const variables = readMCPSecretRows(local ? 'env' : 'header', entry, editor);
+    const updates = variables.updates;
+    const next = { ...entry, label: $('#mcp-service-label').value.trim(), transport: $('#mcp-service-transport').value,
+      command: local ? $('#mcp-service-command').value.trim() : '', args, url: local ? '' : $('#mcp-service-url').value.trim(),
+      envKeys: local ? variables.keys : [], headerKeys: local ? [] : variables.keys,
+      timeoutSeconds: Number($('#mcp-service-timeout').value), tools: entry.tools || [] };
+    if (!next.label || local && !next.command) throw new Error('请填写服务名称和有效的程序或命令。');
+    const connectionFields = server => [server.transport, server.command || '', server.args || [], server.url || '', [...(server.envKeys || [])].sort(), [...(server.headerKeys || [])].sort()];
+    const changed = editing.existing && (JSON.stringify(connectionFields(entry)) !== JSON.stringify(connectionFields(next))
+      || Object.entries(updates).some(([key, value]) => value !== editing.secretSnapshot[key]));
+    if (changed) { next.enabled = false; next.tools = next.tools.map(tool => ({ ...tool, enabled: false })); }
+    editor.draft.mcp ??= { servers: [] };
+    const index = editor.draft.mcp.servers.findIndex(server => server.id === entry.id);
+    if (editing.existing && index < 0) throw new Error('这个服务已被移除，请刷新后重试。');
+    if (index < 0) editor.draft.mcp.servers.push(next); else editor.draft.mcp.servers[index] = next;
+    editor.secretUpdates ??= {};
+    for (const type of ['env', 'header']) for (const key of entry[type === 'env' ? 'envKeys' : 'headerKeys'] || []) {
+      if (!(next[type === 'env' ? 'envKeys' : 'headerKeys'] || []).includes(key)) delete editor.secretUpdates[mcpSecretKey(entry.id, type, key)];
+    }
+    Object.assign(editor.secretUpdates, updates);
+    if (changed) {
+      const key = `${editing.accountId}:${entry.id}`;
+      mcpChangedConnections.set(key, { previousSnapshot: mcpChangedConnections.get(key)?.previousSnapshot || mcpConnectionSnapshot(entry, { secretUpdates: editing.secretSnapshot }) });
+    }
+    stageMCPChanges(editing.accountId); $('#mcp-service-dialog').close();
+    toast(changed ? '连接参数已修改，服务已停用；请重新测试、确认工具，再保存应用。' : 'MCP 服务已放入本账号配置，保存应用后生效。', 'info');
+  }
+  async function testMCPService(serverId) {
+    const id = requireAccount(), editor = editors.get(id), server = mcpServers(editor.draft).find(item => item.id === serverId);
+    if (!server) throw new Error('服务配置不存在，请刷新后重试。');
+    const confirmed = { config: clone(editor.draft), secretUpdates: clone(editor.secretUpdates || {}), revision: editor.state.revision, editVersion: editor.editVersion };
+    const confirmedConnection = mcpConnectionSnapshot(server, editor);
+    const local = server.transport === 'stdio';
+    if (!await openDialog(local ? '启动本地 MCP 程序并测试？' : '连接远程 MCP 服务并测试？', `<p>本次将${local ? '启动你配置的本地程序' : '连接你配置的远程地址'}，读取服务提供的工具定义，然后关闭测试连接。</p><pre class="mcp-test-target">${escapeHTML(local ? `${server.command}\n${JSON.stringify(server.args || [])}` : server.url)}</pre>${local ? '<p>应用不会单独安装依赖；所选启动器可能下载并运行第三方代码，请确认来源和版本。</p>' : ''}<p>本次不执行发现的工具，不应用账号参数或授予权限。</p>`, '确认测试连接')) return;
+    const currentEditor = editors.get(id), confirmedServer = mcpServers(currentEditor?.draft).find(item => item.id === serverId);
+    if (!currentEditor || !confirmedServer || currentEditor.state.revision !== confirmed.revision || currentEditor.editVersion !== confirmed.editVersion || mcpConnectionSnapshot(confirmedServer, currentEditor) !== confirmedConnection) throw new Error('确认期间服务或账号参数已变化，未运行程序；请重新检查并测试。');
+    const key = `${id}:${serverId}`; mcpTests.add(key); renderMCP({ force: true });
+    try {
+      const testedSnapshot = confirmedConnection;
+      const result = await accountApi('/mcp/test', { serverId, config: confirmed.config, secretUpdates: confirmed.secretUpdates, revision: confirmed.revision }, 'POST', id);
+      if (result.server) rememberMCPCatalogue(id, [result.server]);
+      const current = mcpServers(editors.get(id)?.draft).find(item => item.id === serverId);
+      const unchanged = current && mcpConnectionSnapshot(current, editors.get(id)) === testedSnapshot;
+      if (unchanged) mcpChangedConnections.delete(key);
+      if (id === selectedAccountId) renderMCP({ force: true });
+      if (id === selectedAccountId) $$('[data-mcp-server]').find(card => card.dataset.mcpServer === serverId)?.querySelector('.mcp-tool-definitions')?.setAttribute('open', '');
+      toast(unchanged ? `「${accountName(id)}」MCP 测试完成；请检查并确认工具定义。` : '测试期间服务参数已变化，请按当前配置重新测试。', 'info');
+    } catch (error) {
+      const previous = mcpCatalogues.get(id)?.get(serverId) || {};
+      rememberMCPCatalogue(id, [{ ...previous, serverId, status: 'error', lastError: errorMessage(error) }]);
+      throw error;
+    } finally { mcpTests.delete(key); if (id === selectedAccountId) renderMCP({ force: true }); }
+  }
+  async function importMCPConfiguration() {
+    const id = requireAccount(mcpImportAccount), editor = editors.get(id);
+    let document;
+    try { document = JSON.parse($('#mcp-import-json').value); } catch { throw new Error('配置不是有效 JSON，请检查引号、逗号和括号。'); }
+    const sentVersion = editor.editVersion;
+    mcpImportPending = true;
+    $$('#mcp-import-close, #mcp-import-cancel, #mcp-import-file').forEach(button => { button.disabled = true; });
+    $('#mcp-import-json').readOnly = true;
+    try {
+      const result = await accountApi('/mcp/import', { document, config: clone(editor.draft), secretUpdates: clone(editor.secretUpdates || {}), revision: editor.state.revision }, 'POST', id);
+      acceptState(result, { accountId: id, replaceDraft: true, expectedEditVersion: sentVersion });
+      $('#mcp-import-dialog').close(); if (id === selectedAccountId) renderMCP({ force: true });
+      toast(`「${accountName(id)}」已导入停用的 MCP 配置，未启动任何服务。`, 'info');
+    } finally {
+      mcpImportPending = false; $('#mcp-import-json').readOnly = false;
+      $$('#mcp-import-close, #mcp-import-cancel, #mcp-import-file').forEach(button => { button.disabled = false; });
+    }
+  }
+  async function removeMCPService(serverId) {
+    const id = requireAccount(), editor = editors.get(id), server = mcpServers(editor.draft).find(item => item.id === serverId);
+    if (!server) return;
+    const version = editor.editVersion, revision = editor.state.revision;
+    if (!await openDialog('移除 MCP 服务？', `<p>从「${escapeHTML(accountName(id))}」的待保存配置中移除 ${escapeHTML(server.label || server.id)}，同时移除它的工具调用和主动素材授权。</p><p>其他服务与账号不受影响。保存并应用后，后台停止使用这个服务。</p>`, '移除服务')) return;
+    if (editors.get(id)?.editVersion !== version || editors.get(id)?.state.revision !== revision) throw new Error('确认期间此账号参数已变化，请重新检查后移除。');
+    editor.draft.mcp.servers = editor.draft.mcp.servers.filter(item => item.id !== serverId);
+    const prefix = `mcp:${serverId}/`;
+    if (editor.draft.tools?.grants) editor.draft.tools.grants = editor.draft.tools.grants.filter(grant => !grant.tool.startsWith(prefix));
+    for (const group of editor.draft.groups || []) if (Array.isArray(group.social?.readTools)) group.social.readTools = group.social.readTools.filter(tool => !tool.startsWith(prefix));
+    for (const key of Object.keys(editor.secretUpdates || {})) if (key.startsWith(`mcpSecret:${serverId}:`)) delete editor.secretUpdates[key];
+    stageMCPChanges(id); toast('服务与相关授权已从本账号待保存配置中移除，保存应用后生效。', 'info');
+  }
+  async function refreshMCPState() {
+    const id = requireAccount();
+    const result = await accountApi('/mcp', undefined, 'GET', id);
+    const editor = editors.get(id);
+    if (editor?.state) editor.state.mcp = result;
+    if (id === selectedAccountId) state = editor.state;
+    rememberMCPCatalogue(id, result.servers || []);
+    if (id === selectedAccountId) renderMCP({ force: true });
+    toast('MCP 状态已刷新，未启动新的服务。', 'info');
+  }
+  function confirmMCPTool(serverId, name) {
+    const server = mcpServers().find(item => item.id === serverId), catalogue = mcpCatalogue(serverId);
+    const tool = catalogue.tools?.find(item => item.name === name);
+    if (!server || !tool?.supported || !catalogue.connectionHash) throw new Error('请先测试当前连接，确认工具输入格式受支持。');
+    const pending = mcpApprovalDrafts.get(`${selectedAccountId}:${serverId}:${name}`);
+    if (!pending || pending.definitionHash !== tool.definitionHash || pending.connectionHash !== catalogue.connectionHash) throw new Error('工具或连接定义已变化，请重新检查。');
+    server.tools ??= [];
+    const approval = { name: tool.name, enabled: pending.enabled === true, effect: pending.effect === 'read' ? 'read' : 'write', definitionHash: tool.definitionHash, connectionHash: catalogue.connectionHash };
+    const index = server.tools.findIndex(item => item.name === name);
+    if (index < 0) server.tools.push(approval); else server.tools[index] = approval;
+    stageMCPChanges();
+    toast('工具定义已确认到本账号参数；继续设置调用范围，再保存、应用。', 'info');
+  }
   function renderPluginSecrets(plugin) {
     if (!plugin.secretsSchema?.length) return '';
     return `<section class="plugin-secrets"><h4>插件登录凭据</h4><p>与普通参数分开加密保存在本机，只按声明传给这个插件；不会传入其他插件的参数。</p>${plugin.secretsSchema.map(field => {
@@ -982,8 +1291,8 @@
   }
   function renderPluginTools(plugin) {
     if (!plugin.tools?.length) return '';
-    return `<section class="plugin-tools-list"><h4>可用工具</h4>${plugin.tools.map(tool => {
-      const toolId = `${plugin.id}/${tool.name}`;
+    return `<section class="plugin-tools-list"><h4>${['mcp', 'qq'].includes(plugin.source) ? '当前账号调用范围' : '可用工具'}</h4>${plugin.tools.map(tool => {
+      const toolId = ['mcp', 'qq'].includes(plugin.source) ? tool.id : `${plugin.id}/${tool.name}`;
       const grant = toolGrant(toolId);
       const buffered = grant || toolGrantDrafts.get(`${selectedAccountId}:${toolId}`);
       const write = tool.effect === 'write';
@@ -996,6 +1305,16 @@
     const prefix = $('#tool-call-prefix');
     const skill = $('#tool-call-skill');
     const aliases = $('#tool-call-aliases');
+    const builtinQQ = $('#qq-context-tools-enabled'), catalogMode = $('#tool-catalog-mode');
+    if (document.activeElement !== builtinQQ) builtinQQ.checked = draft?.tools?.builtinQQ === true;
+    if (document.activeElement !== catalogMode) catalogMode.value = draft?.tools?.catalogMode === 'all' ? 'all' : 'auto';
+    const qqContainer = $('#qq-context-tool-list'), qqSource = qqContextToolSource();
+    qqContainer.classList.toggle('hidden', !qqSource.enabled);
+    const qqSignature = JSON.stringify([selectedAccountId, qqSource.enabled, draft?.tools?.grants?.filter(grant => grant.tool.startsWith('qq:')), Boolean(state)]);
+    if ((qqContainer.dataset.accountId !== selectedAccountId || !qqContainer.contains(document.activeElement)) && qqContainer.dataset.signature !== qqSignature) {
+      qqContainer.innerHTML = qqSource.enabled ? renderPluginTools(qqSource) : '';
+      qqContainer.dataset.signature = qqSignature; qqContainer.dataset.accountId = selectedAccountId;
+    }
     const triggers = draft?.tools?.triggers ?? ['mention', 'poke', 'name'];
     if (document.activeElement !== toggle) toggle.checked = draft?.tools?.enabled === true;
     if (document.activeElement !== prefix) prefix.value = draft?.tools?.prefix ?? '/工具';
@@ -2123,6 +2442,69 @@
     });
   });
   $('#install-custom-plugin').addEventListener('click', event => withButton(event.currentTarget, installCustomPlugin));
+  $('#mcp-add').addEventListener('click', event => withButton(event.currentTarget, () => editMCPService()));
+  $('#mcp-example-notes').addEventListener('click', event => withButton(event.currentTarget, () => prefillMCPExample('notes')));
+  $('#mcp-example-bilibili').addEventListener('click', event => withButton(event.currentTarget, () => prefillMCPExample('bilibili')));
+  $('#mcp-refresh').addEventListener('click', event => withButton(event.currentTarget, refreshMCPState));
+  $('#mcp-import').addEventListener('click', event => withButton(event.currentTarget, () => {
+    mcpImportAccount = requireAccount(); $('#mcp-import-form').reset(); $('#mcp-import-error').classList.add('hidden'); $('#mcp-import-dialog').showModal();
+  }));
+  $('#mcp-service-transport').addEventListener('change', renderMCPTransportFields);
+  $('#mcp-service-form').addEventListener('submit', event => {
+    event.preventDefault(); try { saveMCPService(); } catch (error) { mcpError(error, '#mcp-service-error'); }
+  });
+  $('#mcp-service-dialog').addEventListener('close', () => { mcpEditing = null; $('#mcp-service-form').reset(); $('#mcp-env-rows').replaceChildren(); $('#mcp-header-rows').replaceChildren(); });
+  $$('#mcp-service-close, #mcp-service-cancel').forEach(button => button.addEventListener('click', () => $('#mcp-service-dialog').close()));
+  $$('#mcp-import-close, #mcp-import-cancel').forEach(button => button.addEventListener('click', () => $('#mcp-import-dialog').close()));
+  $('#mcp-import-dialog').addEventListener('close', () => { mcpImportAccount = ''; $('#mcp-import-form').reset(); });
+  $('#mcp-import-dialog').addEventListener('cancel', event => { if (mcpImportPending) event.preventDefault(); });
+  $('#mcp-import-form').addEventListener('submit', event => {
+    event.preventDefault(); if (!$('#mcp-import-form').reportValidity()) return;
+    withButton($('#mcp-import-submit'), async () => { try { await importMCPConfiguration(); } catch (error) { mcpError(error, '#mcp-import-error'); } });
+  });
+  $('#mcp-import-file').addEventListener('click', () => $('#mcp-import-file-input').click());
+  $('#mcp-import-file-input').addEventListener('change', event => {
+    const file = event.target.files?.[0], accountId = mcpImportAccount;
+    if (!file) return;
+    withButton($('#mcp-import-file'), async () => {
+      try {
+        if (!/\.json$/i.test(file.name) || file.size > 128 * 1024) throw new Error('请选择不超过 128 KiB 的 JSON 配置文件。');
+        const text = await file.text(); JSON.parse(text);
+        if ($('#mcp-import-dialog').open && accountId === mcpImportAccount) $('#mcp-import-json').value = text;
+      } catch (error) { mcpError(error, '#mcp-import-error'); }
+      finally { $('#mcp-import-file-input').value = ''; }
+    });
+  });
+  $('#mcp-service-dialog').addEventListener('click', event => {
+    const add = event.target.closest('[data-mcp-add-secret]'), remove = event.target.closest('[data-mcp-remove-secret]');
+    if (add) addMCPSecretRow(add.dataset.mcpAddSecret); else if (remove) remove.closest('.mcp-secret-row').remove();
+  });
+  $('#mcp-service-cards').addEventListener('input', event => {
+    const input = event.target, card = input.closest('[data-mcp-server]');
+    const server = mcpServers().find(item => item.id === card?.dataset.mcpServer);
+    if (!server) return;
+    if (input.hasAttribute('data-mcp-server-enabled')) { server.enabled = input.checked; stageMCPChanges(); }
+    else if (input.dataset.mcpApprovalField) {
+      const name = input.closest('[data-mcp-tool]')?.dataset.mcpTool;
+      const pending = mcpApprovalDrafts.get(`${selectedAccountId}:${server.id}:${name}`);
+      if (pending) pending[input.dataset.mcpApprovalField] = input.type === 'checkbox' ? input.checked : input.value;
+    }
+  });
+  $('#mcp-service-cards').addEventListener('focusout', () => setTimeout(() => renderMCP(), 0));
+  $('#mcp-service-cards').addEventListener('click', event => {
+    const button = event.target.closest('button'); if (!button) return;
+    const card = button.closest('[data-mcp-server]'), serverId = card?.dataset.mcpServer;
+    if (!serverId) return;
+    if (button.hasAttribute('data-mcp-confirm-tool')) return withButton(button, () => confirmMCPTool(serverId, button.closest('[data-mcp-tool]').dataset.mcpTool));
+    if (button.dataset.mcpAction === 'edit') return withButton(button, () => editMCPService(serverId));
+    if (button.dataset.mcpAction === 'test') return withButton(button, () => testMCPService(serverId));
+    if (button.dataset.mcpAction === 'delete') return withButton(button, () => removeMCPService(serverId));
+    if (button.dataset.mcpAction === 'disconnect') return withButton(button, async () => {
+      const id = requireAccount(); await accountApi('/mcp/disconnect', { serverId }, 'POST', id);
+      await refreshAccount(id); if (id === selectedAccountId) renderMCP({ force: true });
+      toast('已断开当前连接；要停用后续调用，请关闭服务并应用参数。', 'info');
+    });
+  });
   $('#choose-plugin-directory').addEventListener('click', event => withButton(event.currentTarget, async () => {
     const select = window.qqBridgeDesktop?.choosePluginDirectory;
     if (typeof select !== 'function') throw new Error('当前环境不支持选择文件夹，请直接填写路径。');

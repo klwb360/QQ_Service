@@ -55,7 +55,7 @@ flowchart LR
 
 ## 配置、场景与权限
 
-schema 2 保留 `botQQ`、`ownerQQ` 内部字段；界面分别解释为实际接入 QQ，以及可选的私聊操作者/整理接收对象，不再要求一开始区分主号、小号。
+开发分支 schema 4 保留 `botQQ`、`ownerQQ` 内部字段；界面分别解释为实际接入 QQ，以及可选的私聊操作者/整理接收对象，不再要求一开始区分主号、小号。
 
 新账号默认：
 
@@ -180,3 +180,15 @@ Electron 渲染层关闭 Node integration，启用 context isolation 与 sandbox
 OneBot适配层区分NapCat WebSocket与SnowLuma WebSocket收事件/HTTP动作，凭据独立；SnowLuma在Windows隔离审查完成前硬禁用。稳定profile与实际QQ仍是数据身份，不使用连接端名称作为记忆键。
 
 Docker复用同一Node服务与网页，不运行Electron；通过显式Host/Origin和OneBot主机许可连接外部QQ端，数据持久化至`/data`，不挂Docker socket。详见[人格与记忆](PERSONA_MEMORY.md)、[Docker](DOCKER.md)和[审查记录](SNOWLUMA_SECURITY_REVIEW.md)。
+
+## 标准 MCP 客户端（开发分支）
+
+`mcp-config.mjs` 校验与导入服务描述，并把 env/header 值拆到账号凭据库。`mcp-client.mjs` 基于官方 SDK 提供 stdio、Streamable HTTP 与旧版 SSE；`mcp-manager.mjs` 每账号管理连接、发现目录、双摘要工具审批和失效通知。`mcp-schema.mjs` 在受限 Worker 内校验 JSON Schema，防止远端正则编译阻塞管理服务。
+
+MCP 工具与原生插件汇入相同的 `runtime.listTools → tools.grants → tool-router → executeTool` 流程。自然语言只让模型选择已授权工具，不能创建服务或扩大调用范围；所有外部写入保留明确请求、调用者白名单、写入许可和持久化防重复账本。主动找素材只可用该群独立批准的只读工具。
+
+服务定义与连接凭据分别绑定审批摘要。应用配置时先取消旧模型工作并失效旧 MCP generation，再等待 QQ 重新连接；改变服务地址、密钥或工具定义后不能沿用旧审批。连接离线只影响对应工具，默认不阻止 QQ 启动。详见 [MCP 指南](MCP.md) 和 [接口契约](CONTRACT.md)。
+
+较大的授权工具目录使用按需发现：模型先搜索当前请求的许可集合，再获得选中工具的完整定义；搜索也计入本次调用预算。界面可切换为全部加载，以便兼容或对比。不存在从模型参数指定任意服务、账号或工具处理器的通用转发入口。
+
+可选的 `qq-tools.mjs` 在宿主侧提供本群最近消息与关键词检索。其账号与群来自已验证运行上下文，查询最多覆盖最近100条本地缓存，保留期30天；通过原记录核验和清空会话过滤后才返回。两项只读工具默认关闭，启用后仍须配置群与调用者范围，不能用无当前群上下文的本地调试接口读取。

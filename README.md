@@ -6,13 +6,15 @@
 [![Release](https://img.shields.io/github/v/release/klwb360/QQ_Service)](https://github.com/klwb360/QQ_Service/releases/latest)
 [![License: MIT](https://img.shields.io/badge/License-MIT-blue.svg)](LICENSE)
 
-[下载 Windows EXE](https://github.com/klwb360/QQ_Service/releases/latest) · [使用指南](docs/USAGE.md) · [自由群聊与记忆](docs/SOCIAL_CHAT.md) · [无需 Docker 接入 QQ](docs/NATIVE_NAPCAT_WINDOWS.md) · [功能实现与架构](docs/ARCHITECTURE.md) · [开发指南](docs/DEVELOPMENT.md) · [验证记录](docs/VALIDATION.md)
+[下载 Windows EXE](https://github.com/klwb360/QQ_Service/releases/latest) · [使用指南](docs/USAGE.md) · [自由群聊与记忆](docs/SOCIAL_CHAT.md) · [MCP 接入](docs/MCP.md) · [无需 Docker 接入 QQ](docs/NATIVE_NAPCAT_WINDOWS.md) · [功能实现与架构](docs/ARCHITECTURE.md) · [开发指南](docs/DEVELOPMENT.md) · [验证记录](docs/VALIDATION.md)
 
 QQ_Service 是支持多个 QQ 账号同时在线的本地助手。「账号控制」集中管理创建与配置：每个账号是一条可展开的菜单，从账号信息开始逐段向下完成模型、QQ 登录、功能与权限配置，已填写的内容保留在上方。总览只显示关键统计、运行状态和最近任务，统计卡片可点击进入对应页面。支持 DeepSeek、OpenAI 和多组兼容 API。**新账号默认只读；填入 QQ 号或 API Key 都不会自动运行场景或获得发送权限。**
 
 v0.7.0 起仅通过 API 接入模型，已移除 ChatGPT 订阅／Codex 安装和登录。需要 OpenAI 专用 Key 时，见 [机器人专用 API 配置](docs/OPENAI_API_SETUP.md)。
 
 v0.8.0 增加角色卡预览与历史回退、自动经历札记、可清空的当前会话状态和 Docker 网页部署。NapCat Shell 可正常使用；SnowLuma 已准备独立适配和[安全审查记录](docs/SNOWLUMA_SECURITY_REVIEW.md)，Windows 隔离验证未完成前保持禁用。人格与记忆使用同一稳定账号身份，不因连接端改变而重建。见 [人格与记忆](docs/PERSONA_MEMORY.md)、[Docker 部署](docs/DOCKER.md)。
+
+开发分支正在加入标准 MCP 客户端：支持本地 stdio、Streamable HTTP 和旧版 SSE，并沿用每账号、群和调用人授权；工具可按需搜索加载，还可单独开启本群最近消息与关键词检索。随应用提供 Bilibili 只读查询和本地计算／临时笔记 MCP 示例。导入不会运行服务，工具需发现与审批后才能使用；已发布的 v0.8.0 EXE 尚不包含此功能。见 [MCP 配置与开发指南](docs/MCP.md)。
 
 ![QQ_Service 展开账号后的连续配置面板](docs/assets/account-control.png)
 
@@ -129,7 +131,8 @@ flowchart LR
 | [Windows 原生 NapCat](docs/NATIVE_NAPCAT_WINDOWS.md) | 无需 Docker 的官方安装器、每账号高级连接与端口配置 |
 | [功能实现与架构](docs/ARCHITECTURE.md) | 多账号隔离、模型路由、权限门和旧版迁移 |
 | [开发指南](docs/DEVELOPMENT.md) | 源码启动、测试、Windows 打包与发布 |
-| [接口契约](docs/CONTRACT.md) | schema 2 配置和带账号 ID 的本地 API |
+| [接口契约](docs/CONTRACT.md) | 开发分支 schema 4 配置和带账号 ID 的本地 API |
+| [MCP 工具接入](docs/MCP.md) | 开发分支的服务导入、发现、工具审批、群授权与内置示例 |
 | [验证记录](docs/VALIDATION.md) | 已完成检查及真实账号验收范围 |
 | [第三方声明](THIRD_PARTY_NOTICES.md) | 附带运行环境与外部模块许可证 |
 
@@ -139,10 +142,13 @@ public/                   多账号仪表盘 HTML / CSS / JavaScript
 src/server.mjs            本地 HTTP、请求隔离与多账号协调
 src/accounts.mjs          稳定账号目录与可用/规划平台清单
 src/account-service.mjs   各账号配置、安装任务与权限释放事务
-src/config.mjs            schema 2 默认参数、校验与旧版迁移
+src/config.mjs            默认参数、schema 4 校验与旧版迁移
 src/installer.mjs         每账号 NapCat 安装与状态检查
 src/runtime.mjs           QQ 连接、群列表、聊天、汇总与发送权限
 src/providers.mjs         DeepSeek / OpenAI 兼容 API 模型调用
+src/mcp-client.mjs        标准 SDK stdio / HTTP / SSE 连接
+src/mcp-manager.mjs       每账号服务生命周期、工具发现与审批
+src/mcp-schema.mjs        有界 JSON Schema Worker 校验
 src/store.mjs             每账号配置、凭据与 SQLite 数据
 scripts/                  运行环境准备与打包校验
 .github/workflows/        Windows 自动测试、构建与发布
