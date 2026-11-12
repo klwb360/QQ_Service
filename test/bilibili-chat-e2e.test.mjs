@@ -154,6 +154,10 @@ async function fixture(t) {
       message: [{ type: 'at', data: { qq: BOT } }, { type: 'text', data: { text: ` ${text}` } }], sender: { nickname: '离线群友' } }));
     await waitFor(() => outbound.length > start, 'group reply');
     await waitFor(() => !service.runtime.status().queue.running && !service.runtime.status().queue.pending, 'chat queue idle');
+    // The runtime starts cooldown after asynchronous message persistence, not
+    // when this fixture writes to the socket. Windows CI can spend >50ms there;
+    // start the next wait after the observed reply/idle barrier instead.
+    lastRequestAt.set(groupId, Date.now());
     return outbound.slice(start);
   };
   return { service, outbound, libraryCalls, sessions, modelCalls, summaryCalls, queues, toolResults, emit,
