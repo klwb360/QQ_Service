@@ -54,7 +54,8 @@ async function until(check,label,timeout=10000){const deadline=Date.now()+timeou
  assert.equal(await page.locator('#qq-context-tools-enabled').isChecked(),false);assert.equal(await page.locator('#tool-catalog-mode').inputValue(),'auto');
  await page.locator('#qq-context-tools-enabled').check();await page.locator('#tool-catalog-mode').selectOption('all');
  const qqGrant=page.locator('[data-plugin-tool="qq:current_group_recent"]');await qqGrant.locator('[data-tool-grant-enable]').check();await qqGrant.locator('[data-tool-grant-field="groupIds"]').fill('98765001');
- assert.equal(await page.locator('[data-plugin-tool^="qq:"]').count(),7,'内置 QQ MCP 展示完整的七项能力');
+ const {listBuiltinQQTools}=await import(root+'/src/qq-tools.mjs');
+ assert.equal(await page.locator('[data-plugin-tool^="qq:"]').count(),listBuiltinQQTools().length,'内置 QQ MCP 展示与后端一致的完整能力目录');
  const qqPoke=page.locator('[data-plugin-tool="qq:poke_member"]');
  await qqPoke.locator('[data-tool-grant-enable]').check();await qqPoke.locator('[data-tool-grant-field="groupIds"]').fill('98765001');await qqPoke.locator('[data-tool-grant-field="userIds"]').fill('333333');await qqPoke.locator('[data-tool-grant-write]').check();
  await page.locator('#mcp-add').click();

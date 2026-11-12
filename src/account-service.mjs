@@ -9,6 +9,11 @@ import { isContainer } from './network-policy.mjs';
 import { createMcpManager } from './mcp-manager.mjs';
 import { importMcpConfig, mcpSecretName, parseMcpSecretName } from './mcp-config.mjs';
 import { createBilibiliDigestIntegration } from './bilibili-digest-service.mjs';
+import { createQqAssetStore } from './qq-assets.mjs';
+import { createAssetVisionService } from './asset-vision.mjs';
+import { createQqActionLog } from './qq-action-log.mjs';
+import { prepareMcpPreset } from './mcp-presets.mjs';
+import { syncQqStickers } from './qq-sticker-sync.mjs';
 
 const fail = (message, statusCode = 409, details) => Object.assign(new Error(message), { statusCode, ...(details ? { details } : {}) });
 
@@ -32,6 +37,19 @@ export function createAccountService({ account, dataDir, memoryDirectory, csrfTo
   };
   const safeDetails = value => typeof value === 'string' ? redact(value) : Array.isArray(value) ? value.map(safeDetails) : value && typeof value === 'object' ? Object.fromEntries(Object.entries(value).map(([key, item]) => [key, safeDetails(item)])) : value;
   const installer = installerFactory({ dataDir, platform: account.platform, profileId: account.id, accountId: account.id, legacy: account.id === 'legacy', getConfig: store.getConfig, getNapcatSettings, getSecret: store.getSecret, setSecret: store.setSecret, log });
+  const assets = createQqAssetStore({ dataDir, getConfig: store.getConfig });
+  const actionLog = createQqActionLog({ dataDir });
+  const vision = createAssetVisionService({ getConfig: store.getConfig, getSecret: store.getSecret, assets,
+    onCall: ({ provider, model }) => log(`开始图像识别：${provider} / ${model}，将使用该模型的 API 额度。`) });
+  let assetBusy = false, assetController = null, assetFinished = Promise.resolve();
+  const cancelAssetWork = () => { vision.invalidate(); assetController?.abort(); };
+  const assetTask = async action => {
+    if (assetBusy) throw fail('图片识别或收藏表情同步正在进行，请等待完成。');
+    assetBusy = true; const controller = new AbortController(); assetController = controller;
+    let finish; assetFinished = new Promise(resolve => { finish = resolve; });
+    try { return await action(controller.signal); }
+    finally { assetBusy = false; if (assetController === controller) assetController = null; finish(); }
+  };
   let runtime, bilibiliDigests;
   const mcpManager = mcpManagerFactory({ getConfig: store.getConfig, getSecret: store.getSecret, store, log,
     fingerprint: (server, getter) => store.mcpConnectionHash(server, getter),
@@ -40,7 +58,7 @@ export function createAccountService({ account, dataDir, memoryDirectory, csrfTo
       Promise.resolve(bilibiliDigests?.toolsChanged(event)).catch(error => log(`Bilibili 后台任务已停止：${error.message}`, 'warn'));
     } });
   bilibiliDigests = bilibiliIntegrationFactory({ account, store, mcpManager, getRuntime: () => runtime, log });
-  runtime = runtimeFactory({ platform: account.platform, profileId: account.id, accountId: account.id, getConfig: store.getConfig, getSecret: store.getSecret, store, installer, pluginManager, mcpManager, bilibiliControl: bilibiliDigests.control, log });
+  runtime = runtimeFactory({ platform: account.platform, profileId: account.id, accountId: account.id, getConfig: store.getConfig, getSecret: store.getSecret, store, installer, pluginManager, mcpManager, assets, actionLog, bilibiliControl: bilibiliDigests.control, log });
   const mcpCredentialNames = config => (config.mcp?.servers || []).flatMap(server => [
     ...(server.envKeys || []).map(key => mcpSecretName(server.id, 'env', key)),
     ...(server.headerKeys || []).map(key => mcpSecretName(server.id, 'header', key)),
@@ -139,6 +157,7 @@ export function createAccountService({ account, dataDir, memoryDirectory, csrfTo
     if (!closed && revision === getNapcatSettings().revision) environment = result;
   };
   const apply = async (mode = 'apply', revision) => {
+    cancelAssetWork();
     ensureIdle();
     if (mode !== 'rollback' && revision !== store.getState().revision) throw fail('配置版本已变化，请刷新后重试。');
     applying = true;
@@ -204,6 +223,7 @@ export function createAccountService({ account, dataDir, memoryDirectory, csrfTo
     } finally { applying = false; releaseReservation(); finishApply(); }
   };
   const revoke = async () => {
+    cancelAssetWork();
     ensureOpen();
     if (applying) throw fail('配置正在应用，请稍后撤销权限。');
     const current = store.getState();
@@ -304,8 +324,63 @@ export function createAccountService({ account, dataDir, memoryDirectory, csrfTo
     ensureOpen(); const actualQQ = memoryIdentity(filters.actualQQ);
     return { state: actualQQ && filters.groupId ? store.conversationState.get({ actualQQ, groupId: filters.groupId }) : null };
   };
+  const assetsRead = (filters = {}) => {
+    ensureOpen();
+    const config = store.getConfig(), actualQQ = config.botQQ || '';
+    if (filters.actualQQ && filters.actualQQ !== actualQQ) throw fail('素材目录不属于当前账号。', 404);
+    const groups = config.groups.filter(group => group.read).map(group => ({ id: group.id, name: group.name || group.id }));
+    const groupId = filters.groupId || groups[0]?.id || '';
+    const listed = actualQQ && groupId ? assets.list({ actualQQ, groupId, ...(filters.kind ? { kind: filters.kind } : {}),
+      query: filters.query || '', limit: Math.max(1, Math.min(50, Number(filters.limit) || 30)) }) : { assets: [], hasMore: false };
+    return { ...listed, actualQQ, groupId, groups,
+      visionProviders: config.models.apis.filter(model => model.enabled).map(model => ({ id: model.id, label: model.label, model: model.model })) };
+  };
+  const assetPreview = async (filters = {}) => {
+    ensureOpen();
+    const actualQQ = store.getConfig().botQQ;
+    if (!actualQQ || filters.actualQQ && filters.actualQQ !== actualQQ) throw fail('素材目录不属于当前账号。', 404);
+    const result = await assets.resolve({ assetId: filters.assetId, actualQQ, groupId: filters.groupId,
+      authorize: () => { ensureOpen(); if (store.getConfig().botQQ !== actualQQ) throw fail('素材账号已变化。'); } });
+    if (!['image', 'sticker'].includes(result.kind)) throw fail('此素材没有图片预览。', 415);
+    return { bytes: result.bytes, mimeType: result.mimeType };
+  };
   const invoke = async (route, body) => {
     ensureOpen();
+    if (route === '/mcp/preset/prepare') {
+      ensureIdle();
+      if (Object.keys(body).some(key => !['id', 'command', 'args', 'url'].includes(key))) throw fail('MCP 预设参数无效。', 400);
+      const { id, ...options } = body;
+      return { value: { server: prepareMcpPreset(id, options) } };
+    }
+    if (route.startsWith('/qq/assets/')) {
+      ensureIdle();
+      const actualQQ = store.getConfig().botQQ;
+      if (!actualQQ || body.actualQQ && body.actualQQ !== actualQQ) throw fail('请先选择当前 QQ 账号。', 409);
+      const input = { ...body, actualQQ };
+      if (route === '/qq/assets/import') return { code: 201, value: { asset: assets.import(input) } };
+      if (route === '/qq/assets/update') { vision.invalidate(); return { value: { asset: assets.update(input) } }; }
+      if (route === '/qq/assets/remove') { vision.invalidate(); return { value: assets.remove(input) }; }
+      if (route === '/qq/assets/analyze') {
+        if (Object.keys(input).some(key => !['assetId', 'actualQQ', 'groupId', 'provider'].includes(key))) throw fail('图片识别参数无效。', 400);
+        return { value: await assetTask(signal => vision.analyze({ ...input, signal })) };
+      }
+      if (route === '/qq/assets/sync-stickers') {
+        if (Object.keys(input).some(key => !['actualQQ', 'groupIds', 'limit'].includes(key))) throw fail('表情同步参数无效。', 400);
+        const appliedRevision = store.getState().appliedRevision;
+        const authorize = () => {
+          ensureOpen();
+          if (store.getConfig().botQQ !== actualQQ || store.getState().appliedRevision !== appliedRevision) throw fail('同步期间账号或已应用配置发生变化，已停止后续导入。');
+          if (!Array.isArray(input.groupIds) || input.groupIds.some(id => !store.getConfig().groups.some(group => group.id === id && group.read))) throw fail('只能把表情导入当前账号已允许读取的群。', 403);
+          const connection = runtime.status();
+          if (!connection.connected) throw Object.assign(fail('请先在账号控制中连接并验证 QQ，再同步收藏表情。'), { code: 'QQ_NOT_CONNECTED' });
+          if (String(connection.accountId || '') !== actualQQ) throw Object.assign(fail('实际登录 QQ 与当前配置不一致，请先核对账号。'), { code: 'QQ_IDENTITY_MISMATCH' });
+        };
+        authorize();
+        return { value: await assetTask(signal => syncQqStickers({ ...input, assets, signal, authorize,
+          listRemote: ({ limit, signal }) => runtime.listFavoriteStickers({ limit, signal }) })) };
+      }
+      throw fail('素材接口不存在。', 404);
+    }
     if (isContainer() && (route === '/napcat/open' || route === '/setup/install' || /^\/modules\/[^/]+\/(?:start|stop|install)$/.test(route))) throw fail('容器版本连接外部运行的 QQ 连接端；请在宿主机启动或管理 NapCat，容器不会控制宿主机进程或 Docker。', 409);
     if (route === '/mcp/import') {
       ensureIdle();
@@ -452,7 +527,7 @@ export function createAccountService({ account, dataDir, memoryDirectory, csrfTo
     throw fail('接口不存在。', 404);
   };
   return {
-    account, store, runtime, installer, mcpManager, mcpRead, bilibiliDigests, summary, state, setupStatus, invoke, redact, ensureIdle, memoryRead, memoryTree, personaHistory, experienceRead, experienceHistory, conversationRead,
+    account, store, runtime, installer, mcpManager, mcpRead, assets, actionLog, assetsRead, assetPreview, bilibiliDigests, summary, state, setupStatus, invoke, redact, ensureIdle, memoryRead, memoryTree, personaHistory, experienceRead, experienceHistory, conversationRead,
     invalidateEnvironment() { environment = null; },
     async start() {
       if (started) return;
@@ -465,8 +540,11 @@ export function createAccountService({ account, dataDir, memoryDirectory, csrfTo
     async close() {
       if (closed) return;
       closed = true;
+      cancelAssetWork();
+      vision.close();
       const results = await Promise.allSettled([runtime.stop(), installer.dispose?.(), mcpManager.close(), bilibiliDigests.close()]);
-      await Promise.all([applyFinished, mcpFinished]);
+      await Promise.all([applyFinished, mcpFinished, assetFinished]);
+      assets.dispose();
       store.close();
       const failure = results.find(result => result.status === 'rejected');
       if (failure) throw failure.reason;

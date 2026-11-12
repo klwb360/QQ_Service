@@ -6,6 +6,7 @@ import { createRequire } from 'node:module';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { copyProductionPackages } from './production-packages.mjs';
+import backendResources from './backend-resources.cjs';
 
 const projectRoot = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
 const buildRoot = path.join(projectRoot, 'build');
@@ -94,6 +95,7 @@ async function stageBackend() {
   const dependencies = metadata.dependencies ?? {};
   const destination = path.join(buildRoot, 'backend');
   const stage = path.join(buildRoot, `.backend-stage-${process.pid}`);
+  let backendChecks;
   await rm(stage, { recursive: true, force: true });
   await mkdir(path.join(stage, 'node_modules'), { recursive: true });
   try {
@@ -110,10 +112,9 @@ async function stageBackend() {
     for (const file of ['LICENSE', 'README.md', 'THIRD_PARTY_NOTICES.md']) {
       if (await exists(path.join(projectRoot, file))) await cp(path.join(projectRoot, file), path.join(stage, file));
     }
-    await mkdir(path.join(stage, 'docs'), { recursive: true });
-    await cp(path.join(projectRoot, 'docs', 'MCP.md'), path.join(stage, 'docs', 'MCP.md'));
-    await mkdir(path.join(stage, 'docs', 'assets'), { recursive: true });
-    await cp(path.join(projectRoot, 'docs', 'assets', 'mcp-services.png'), path.join(stage, 'docs', 'assets', 'mcp-services.png'));
+    await cp(path.join(projectRoot, 'docs'), path.join(stage, 'docs'), { recursive: true });
+    backendChecks = await backendResources.verifyBackendResources(stage);
+    console.log(`Verified backend stage before promotion: ${JSON.stringify(backendChecks)}`);
     await rm(destination, { recursive: true, force: true });
     await rename(stage, destination);
   } finally {
@@ -125,7 +126,7 @@ async function stageBackend() {
     appVersion: metadata.version, platform: 'win32', arch: 'x64',
     nodeVersion: NODE_VERSION, runtimeSource: NODE_URL,
     runtimeArchiveSha256: NODE_SHA256, nodeExecutableBytes: runtimeSize,
-    dependencies,
+    dependencies, backendChecks,
     productionPackages: JSON.parse(await readFile(path.join(destination, 'production-packages.json'), 'utf8'))
   }, null, 2) + '\n');
   console.log('Staged the backend, MCP examples and locked production dependency closure without development packages or account data.');

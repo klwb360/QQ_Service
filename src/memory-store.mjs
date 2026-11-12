@@ -261,7 +261,12 @@ export function createMemoryStore({ db, legacyDb = db, getState }) {
     list({ actualQQ, groupId, limit = 24 }) {
       scope({ actualQQ, groupId });
       const cutoff = Math.floor(Date.now() / 1000) - MEMORY_STORAGE_LIMITS.conversationRetentionDays * 86400;
-      return db.prepare('SELECT actual_qq AS actualQQ,group_id AS groupId,message_id AS messageId,user_id AS userId,role,text,time,reply_to AS replyTo,display_name AS displayName,delivery FROM conversation_messages WHERE actual_qq=? AND group_id=? AND time>=? ORDER BY time DESC,rowid DESC LIMIT ?').all(actualQQ, groupId, cutoff, Math.max(1, Math.min(100, Math.floor(Number(limit) || 24)))).reverse();
+      return db.prepare("SELECT actual_qq AS actualQQ,group_id AS groupId,message_id AS messageId,user_id AS userId,role,text,time,reply_to AS replyTo,display_name AS displayName,delivery FROM conversation_messages WHERE actual_qq=? AND group_id=? AND time>=? AND (role<>'assistant' OR delivery='sent') ORDER BY time DESC,rowid DESC LIMIT ?").all(actualQQ, groupId, cutoff, Math.max(1, Math.min(100, Math.floor(Number(limit) || 24)))).reverse();
+    },
+    markRecalled({ actualQQ, groupId, messageId }) {
+      scope({ actualQQ, groupId });
+      return db.prepare("UPDATE conversation_messages SET delivery='recalled' WHERE actual_qq=? AND group_id=? AND message_id=? AND user_id=? AND role='assistant' AND delivery='sent'")
+        .run(actualQQ, groupId, String(messageId), actualQQ).changes > 0;
     },
   };
   return { memory, conversation };

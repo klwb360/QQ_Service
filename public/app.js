@@ -15,6 +15,7 @@
   };
   let accounts = [];
   let pluginCatalog = [];
+  let qqToolCatalog = [];
   const mcpCatalogues = new Map();
   const mcpApprovalDrafts = new Map();
   const mcpTests = new Set();
@@ -394,6 +395,7 @@
     if (!Array.isArray(directory.accounts) || !directory.csrfToken) throw new Error('后台账号目录不完整。');
     accounts = directory.accounts;
     if (Array.isArray(directory.plugins)) pluginCatalog = directory.plugins;
+    if (Array.isArray(directory.qqToolCatalog)) qqToolCatalog = directory.qqToolCatalog;
     platforms = directory.platforms ?? [];
     directoryToken = directory.csrfToken;
     acceptNapcatSettings(directory.napcatSettings ?? await api('/api/napcat/settings', undefined, 'GET'));
@@ -739,17 +741,21 @@
   function effectiveTriggers(group) {
     return Array.isArray(group.triggers) ? group.triggers : [group.trigger || 'mention'];
   }
-  const groupSocialDefaults = { enabled: false, proactive: false, interests: '', style: '', activeStart: '10:00', activeEnd: '22:00', decisionCallsPerHour: 12, repliesPerHour: 6, proactiveIntervalMinutes: 10, readTools: [] };
+  const groupSocialDefaults = { enabled: false, proactive: false, interests: '', style: '', activeStart: '10:00', activeEnd: '22:00', decisionCallsPerHour: 12, repliesPerHour: 6, proactiveIntervalMinutes: 10, readTools: [], replyTools: [], replyActionCooldownSeconds: 30, replyActionsPerHour: 6 };
+  const qqToolLabels = {
+    current_group_recent: '最近群消息', current_group_search: '搜索群消息', current_group_members: '查找本群成员',
+    current_group_member: '查看群友资料', poke_member: '戳一戳群友', send_message: '发送 @ 或引用回复', react_message: '消息表情回应',
+    current_group_info: '当前群资料', connection_status: 'QQ 连接状态', list_assets: '查找已批准素材', describe_asset: '查看图片与表情描述',
+    send_image: '发送图片', send_sticker: '发送表情包', send_file: '发送文件', forward_messages: '合并转发本群消息',
+    recall_own_message: '撤回自己的消息', group_notices: '读取群公告', group_files: '查看群文件'
+  };
   function qqContextToolSource() {
-    return { id: 'qq', name: 'QQ MCP', source: 'qq', enabled: draft?.tools?.builtinQQ === true, tools: draft?.tools?.builtinQQ === true ? [
-      { id: 'qq:current_group_recent', name: '最近群消息', effect: 'read', description: '只读查看当前授权群实际缓存的最近消息，最多 100 条；不接受跨账号或跨群参数。' },
-      { id: 'qq:current_group_search', name: '搜索群消息', effect: 'read', description: '按关键词搜索当前授权群实际缓存的最近 100 条消息；不是 QQ 全部历史。' },
-      { id: 'qq:current_group_members', name: '查找本群成员', effect: 'read', description: '读取本群成员的 QQ、昵称、群名片和角色，可按名字查找；不会读取其他群。' },
-      { id: 'qq:current_group_member', name: '查看群友资料', effect: 'read', description: '查询当前群指定成员的基本资料。' },
-      { id: 'qq:poke_member', name: '戳一戳群友', effect: 'write', description: '向当前群已核实的成员发起一次戳一戳，不自动重试。' },
-      { id: 'qq:send_message', name: '发送 @ 或引用回复', effect: 'write', description: '向当前群发送文字，可真实 @ 最多 3 位成员，或引用本群已接收的消息。' },
-      { id: 'qq:react_message', name: '消息表情回应', effect: 'write', description: '对本群已接收的消息添加或取消指定表情回应。' }
-    ] : [] };
+    return { id: 'qq', name: 'QQ MCP', source: 'qq', enabled: draft?.tools?.builtinQQ === true,
+      tools: draft?.tools?.builtinQQ === true ? qqToolCatalog.map(tool => ({ ...tool, name: qqToolLabels[tool.remoteName] || tool.remoteName })) : [] };
+  }
+  function renderQQReplyTools(group, social) {
+    const allowed = ['send_sticker', 'send_image', 'send_message', 'react_message', 'poke_member'];
+    return `<section class="qq-reply-options"><p class="field-note">允许 AI 按语境使用的 QQ 回复动作</p><div class="group-social-tool-options">${allowed.map(name => `<label><input type="checkbox" data-group-qq-reply="qq:${name}" ${(social.replyTools || []).includes('qq:' + name) ? 'checked' : ''}><span>${escapeHTML(qqToolLabels[name])}</span></label>`).join('')}</div><div class="form-grid"><label class="field">互动冷却（秒）<input type="number" min="5" max="3600" data-group-social="replyActionCooldownSeconds" value="${social.replyActionCooldownSeconds}"></label><label class="field">每小时互动上限<input type="number" min="0" max="60" data-group-social="replyActionsPerHour" value="${social.replyActionsPerHour}"></label></div><p class="field-note">需开启自由聊天和内置 QQ MCP，允许本群读取、发送并启动账号。只使用你批准给本群的素材；不包含文件发送、撤回和外部应用写入。先上传表情包并补充标签，再按需使用视觉模型识别。</p></section>`;
   }
   function socialReadTools() {
     return pluginCatalog.flatMap(plugin => (plugin.tools || []).filter(tool => tool.effect === 'read').map(tool => ({ id: `${plugin.id}/${tool.name}`, label: `${plugin.name || plugin.id} · ${tool.name}`, enabled: draft?.plugins?.some(entry => entry.id === plugin.id && entry.enabled) === true })))
@@ -761,7 +767,7 @@
     const tools = socialReadTools();
     const readTools = Array.isArray(social.readTools) ? social.readTools : [];
     const missing = readTools.filter(id => !tools.some(tool => tool.id === id));
-    return `<tr class="group-social-row" data-group-index="${index}"><td colspan="6"><details class="group-social-settings" data-record-id="social:${escapeHTML(group.id || index)}"><summary><span>自由聊天与主动话题</span><span class="group-social-state ${social.enabled ? 'enabled' : ''}" data-group-social-status>${social.enabled ? social.proactive ? '自由聊天 · 可主动分享' : '自由聊天已开启' : '未开启'}</span></summary><div class="group-social-content"><div class="group-social-options"><label class="check-field"><input type="checkbox" data-group-social="enabled" ${social.enabled ? 'checked' : ''}><span>自由聊天</span></label><label class="check-field"><input type="checkbox" data-group-social="proactive" ${social.proactive ? 'checked' : ''}><span>允许主动开话题与分享</span></label></div><div class="form-grid"><label class="field">这个群感兴趣的内容<textarea data-group-social="interests" rows="2" maxlength="2000" placeholder="留空沿用账号兴趣；例如：独立游戏、科普、搞笑视频。">${escapeHTML(social.interests)}</textarea></label><label class="field">在这个群的说话风格<textarea data-group-social="style" rows="2" maxlength="2000" placeholder="留空沿用账号人设">${escapeHTML(social.style)}</textarea></label></div><p class="field-note">AI 根据话题和新鲜内容决定接话或保持安静。有值得分享的内容时再开启话题；仍需允许读取、发送并启动账号。</p><details class="group-social-advanced" data-record-id="social-advanced:${escapeHTML(group.id || index)}"><summary>活动时段、调用预算与素材工具</summary><div class="form-grid"><label class="field">主动参与开始时间<input type="time" data-group-social="activeStart" value="${escapeHTML(social.activeStart)}"></label><label class="field">主动参与结束时间<input type="time" data-group-social="activeEnd" value="${escapeHTML(social.activeEnd)}"><small>按本机当地时间；开始和结束相同表示全天。直接提问不受此时段限制。</small></label><label class="field">每小时主动模型调用<input type="number" data-group-social="decisionCallsPerHour" min="0" max="1000" value="${escapeHTML(social.decisionCallsPerHour)}"><small>每轮调用都计入预算；0 暂停自主判断，正常回答和连续追问单独处理。</small></label><label class="field">每小时主动发言上限<input type="number" data-group-social="repliesPerHour" min="0" max="100" value="${escapeHTML(social.repliesPerHour)}"></label><label class="field">素材检查间隔（分钟）<input type="number" data-group-social="proactiveIntervalMinutes" min="1" max="1440" value="${escapeHTML(social.proactiveIntervalMinutes)}"><small>只是检查机会，不会按时间固定发言。</small></label></div><p class="field-note">主动话题可用的只读工具</p><div class="group-social-tool-options">${tools.map(tool => `<label class="${tool.enabled ? '' : 'group-social-unavailable'}"><input type="checkbox" data-group-social-tool="${escapeHTML(tool.id)}" ${readTools.includes(tool.id) ? 'checked' : ''}><span>${escapeHTML(tool.label)}${tool.enabled ? '' : '（需先启用插件）'}</span></label>`).join('') || '<p class="field-note">还没有只读工具。可先在模块中导入并启用插件；不选工具也可以围绕群内话题聊天。</p>'}${missing.map(id => `<label class="group-social-unavailable"><input type="checkbox" data-group-social-tool="${escapeHTML(id)}" checked><span>${escapeHTML(id)}（暂不可用，可取消）</span></label>`).join('')}</div><p class="field-note">这里单独授权背景读取，不继承群友工具权限；不会主动调用评论等写入工具。群友记忆在「设置 → 群友记忆」逐群启用和确认。</p></details></div></details></td></tr>`;
+    return `<tr class="group-social-row" data-group-index="${index}"><td colspan="6"><details class="group-social-settings" data-record-id="social:${escapeHTML(group.id || index)}"><summary><span>自由聊天与主动话题</span><span class="group-social-state ${social.enabled ? 'enabled' : ''}" data-group-social-status>${social.enabled ? social.proactive ? '自由聊天 · 可主动分享' : '自由聊天已开启' : '未开启'}</span></summary><div class="group-social-content"><div class="group-social-options"><label class="check-field"><input type="checkbox" data-group-social="enabled" ${social.enabled ? 'checked' : ''}><span>自由聊天</span></label><label class="check-field"><input type="checkbox" data-group-social="proactive" ${social.proactive ? 'checked' : ''}><span>允许主动开话题与分享</span></label></div><div class="form-grid"><label class="field">这个群感兴趣的内容<textarea data-group-social="interests" rows="2" maxlength="2000" placeholder="留空沿用账号兴趣；例如：独立游戏、科普、搞笑视频。">${escapeHTML(social.interests)}</textarea></label><label class="field">在这个群的说话风格<textarea data-group-social="style" rows="2" maxlength="2000" placeholder="留空沿用账号人设">${escapeHTML(social.style)}</textarea></label></div><p class="field-note">AI 根据话题和新鲜内容决定接话或保持安静。有值得分享的内容时再开启话题；仍需允许读取、发送并启动账号。</p><details class="group-social-advanced" data-record-id="social-advanced:${escapeHTML(group.id || index)}"><summary>活动时段、调用预算与素材工具</summary><div class="form-grid"><label class="field">主动参与开始时间<input type="time" data-group-social="activeStart" value="${escapeHTML(social.activeStart)}"></label><label class="field">主动参与结束时间<input type="time" data-group-social="activeEnd" value="${escapeHTML(social.activeEnd)}"><small>按本机当地时间；开始和结束相同表示全天。直接提问不受此时段限制。</small></label><label class="field">每小时主动模型调用<input type="number" data-group-social="decisionCallsPerHour" min="0" max="1000" value="${escapeHTML(social.decisionCallsPerHour)}"><small>每轮调用都计入预算；0 暂停自主判断，正常回答和连续追问单独处理。</small></label><label class="field">每小时主动发言上限<input type="number" data-group-social="repliesPerHour" min="0" max="100" value="${escapeHTML(social.repliesPerHour)}"></label><label class="field">素材检查间隔（分钟）<input type="number" data-group-social="proactiveIntervalMinutes" min="1" max="1440" value="${escapeHTML(social.proactiveIntervalMinutes)}"><small>只是检查机会，不会按时间固定发言。</small></label></div><p class="field-note">主动话题可用的只读工具</p><div class="group-social-tool-options">${tools.map(tool => `<label class="${tool.enabled ? '' : 'group-social-unavailable'}"><input type="checkbox" data-group-social-tool="${escapeHTML(tool.id)}" ${readTools.includes(tool.id) ? 'checked' : ''}><span>${escapeHTML(tool.label)}${tool.enabled ? '' : '（需先启用插件）'}</span></label>`).join('') || '<p class="field-note">还没有只读工具。可先在模块中导入并启用插件；不选工具也可以围绕群内话题聊天。</p>'}${missing.map(id => `<label class="group-social-unavailable"><input type="checkbox" data-group-social-tool="${escapeHTML(id)}" checked><span>${escapeHTML(id)}（暂不可用，可取消）</span></label>`).join('')}</div><p class="field-note">这里单独授权背景读取，不继承群友工具权限；不会主动调用评论等写入工具。群友记忆在「设置 → 群友记忆」逐群启用和确认。</p>${renderQQReplyTools(group, social)}</details></div></details></td></tr>`;
   }
   function renderGroups() {
     const groups = draft?.groups ?? [];
@@ -1146,6 +1152,23 @@
     }
     renderMCPTransportFields(); $('#mcp-service-dialog').showModal(); $('#mcp-service-label').focus();
   }
+  window.addEventListener('qq-service-mcp-preset', event => {
+    const detail = event.detail || {}, server = detail.server;
+    if (!server || detail.accountId !== selectedAccountId) return;
+    try {
+      editMCPService();
+      mcpEditing.entry = { ...clone(server), id: mcpEditing.entry.id, enabled: false, tools: [] };
+      $('#mcp-service-label').value = server.label || '';
+      $('#mcp-service-transport').value = server.transport;
+      $('#mcp-service-command').value = server.command || '';
+      $('#mcp-service-args').value = JSON.stringify(server.args || [], null, 2);
+      $('#mcp-service-url').value = server.url || '';
+      $('#mcp-service-timeout').value = server.timeoutSeconds || 30;
+      $('#mcp-env-rows').replaceChildren(); $('#mcp-header-rows').replaceChildren();
+      for (const name of detail.requiredEnv || []) addMCPSecretRow('env', name);
+      renderMCPTransportFields();
+    } catch (error) { toast(errorMessage(error), 'error'); }
+  });
   function prefillMCPExample(kind) {
     editMCPService();
     const bilibili = kind === 'bilibili';
@@ -1315,7 +1338,7 @@
     if (document.activeElement !== catalogMode) catalogMode.value = draft?.tools?.catalogMode === 'all' ? 'all' : 'auto';
     const qqContainer = $('#qq-context-tool-list'), qqSource = qqContextToolSource();
     qqContainer.classList.toggle('hidden', !qqSource.enabled);
-    const qqSignature = JSON.stringify([selectedAccountId, qqSource.enabled, draft?.tools?.grants?.filter(grant => grant.tool.startsWith('qq:')), Boolean(state)]);
+    const qqSignature = JSON.stringify([selectedAccountId, qqSource.enabled, qqSource.tools.map(tool => tool.id), draft?.tools?.grants?.filter(grant => grant.tool.startsWith('qq:')), Boolean(state)]);
     if ((qqContainer.dataset.accountId !== selectedAccountId || !qqContainer.contains(document.activeElement)) && qqContainer.dataset.signature !== qqSignature) {
       qqContainer.innerHTML = qqSource.enabled ? renderPluginTools(qqSource) : '';
       qqContainer.dataset.signature = qqSignature; qqContainer.dataset.accountId = selectedAccountId;
@@ -2198,6 +2221,16 @@
       if (Math.abs(anchor.left - active.anchor.left) > .5 || Math.abs(anchor.top - active.anchor.top) > .5) closeModelPicker();
     });
   }, true);
+  document.addEventListener('change', event => {
+    const input = event.target;
+    if (!input.hasAttribute('data-group-qq-reply') || !draft) return;
+    const group = draft.groups[Number(input.closest('[data-group-index]')?.dataset.groupIndex)];
+    if (!group) return;
+    group.social ||= { ...groupSocialDefaults };
+    const choices = new Set(group.social.replyTools || []);
+    if (input.checked) choices.add(input.dataset.groupQqReply); else choices.delete(input.dataset.groupQqReply);
+    group.social.replyTools = [...choices]; markDirty();
+  });
   document.addEventListener('input', (event) => {
     const input = event.target;
     if (input.id === 'account-profile-name') { if (selectedAccountId) { const editor = editors.get(selectedAccountId); if (editor) editor.profileName = input.value; } return; }
@@ -2613,6 +2646,8 @@
     $('.page-footer span').textContent = 'QQ_Service · Windows 桌面应用';
     $('.page-footer span:last-child').textContent = '模型配置 ≠ 发送授权 · 关闭窗口留在托盘';
   }
+  window.QQAssetsUI?.mount({ request: accountApi, getAccountId: () => selectedAccountId, notify: message => toast(message) });
+  window.McpPresetsUI?.mount({ api, request: accountApi, getAccountId: () => selectedAccountId });
   window.QQMemoryStorageUI?.mount({ api });
   window.QQMemoryUI?.create({
     getAccounts: () => accounts,

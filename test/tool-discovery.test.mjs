@@ -48,7 +48,7 @@ test('large catalogs initially disclose one small search schema and later execut
   assert.ok(Buffer.byteLength(JSON.stringify(snapshots[0].definitions)) < allBytes);
   assert.equal(executions.length, 1); assert.equal(executions[0].selected.id, tools[4].id);
   assert.deepEqual(executions[0].input, { query: '北京' });
-  assert.equal(result.catalogSearches, 1); assert.equal(result.toolExecutions, 2);
+  assert.equal(result.catalogSearches, 1); assert.equal(result.toolExecutions, 1);
   assert.deepEqual(result.toolNames, [tools[4].id]);
   assert.deepEqual(snapshots.at(-1).conversation.filter(item => item.role === 'system'), [messages[0]], 'discovery text must not become a system instruction');
 });
@@ -107,23 +107,88 @@ test('search schema cannot change server settings, grant permissions, or request
   });
 });
 
-test('all search calls consume the original three-call/four-inference budget', async () => {
-  const requests = []; let executions = 0;
-  const result = await runToolConversation({ messages, tools: directory(), infer: async (_, definitions, options) => {
+test('two catalog searches leave three business calls and a final inference within six rounds', async () => {
+  const tools = directory(), requests = [], executions = [];
+  const result = await runToolConversation({ messages, tools, infer: async (_, definitions, options) => {
     requests.push({ definitions, options });
-    return requests.length <= 3 ? response(search(`search-${requests.length}`, 'lookup')) : { text: 'Please clarify the request.' };
-  }, execute: async () => { executions++; } });
-  assert.equal(requests.length, 4); assert.equal(executions, 0);
-  assert.deepEqual(requests[3].definitions, []); assert.equal(requests[3].options.toolChoice, 'none');
-  assert.equal(result.catalogSearches, 3); assert.equal(result.toolExecutions, 3); assert.deepEqual(result.toolNames, []);
+    const round = requests.length;
+    if (round === 1) return response(search('find-first', 'Authorized lookup 0', 1));
+    if (round === 2) return response(call('read-first', tools[0].name, { query: 'find the named person' }));
+    if (round === 3) return response(search('find-second', 'Authorized lookup 1', 1));
+    if (round === 4 || round === 5) {
+      assert.deepEqual(definitions.map(item => item.function.name), [tools[1].name], 'exhausted discovery is no longer exposed');
+      return response(call(`read-${round}`, tools[1].name, { query: `step ${round}` }));
+    }
+    assert.deepEqual(definitions, []); assert.equal(options.toolChoice, 'none');
+    return { text: 'All three authorized actions completed.' };
+  }, execute: async selected => { executions.push(selected.id); return { text: 'actual result' }; } });
+  assert.equal(requests.length, 6);
+  assert.deepEqual(executions, [tools[0].id, tools[1].id, tools[1].id]);
+  assert.equal(result.catalogSearches, 2); assert.equal(result.toolExecutions, 3);
+  assert.deepEqual(result.toolNames, executions);
 });
 
 test('discovery plus an over-budget real batch is rejected before any external operation', async () => {
   const tools = directory(); let round = 0, executions = 0;
   await assert.rejects(runToolConversation({ messages, tools, infer: async () => ++round === 1 ? response(search('find', 'lookup'))
-    : response(call('a', tools[0].name, { query: 'a' }), call('b', tools[0].name, { query: 'b' }), call('c', tools[0].name, { query: 'c' })),
+    : response(call('a', tools[0].name, { query: 'a' }), call('b', tools[0].name, { query: 'b' }), call('c', tools[0].name, { query: 'c' }), call('d', tools[0].name, { query: 'd' })),
   execute: async () => { executions++; } }), /上限/);
   assert.equal(round, 2); assert.equal(executions, 0);
+});
+
+test('two unsuccessful searches expose no tools and cannot loop endlessly', async () => {
+  let rounds = 0;
+  const result = await runToolConversation({ messages, tools: directory(), infer: async (_, definitions, options) => {
+    if (++rounds <= 2) return response(search(`empty-${rounds}`, 'unavailable_private_tool'));
+    assert.deepEqual(definitions, []); assert.equal(options.toolChoice, 'none');
+    return { text: 'Please clarify which available function you need.' };
+  }, execute: async () => assert.fail('an empty search cannot execute a tool') });
+  assert.equal(rounds, 3); assert.equal(result.catalogSearches, 2); assert.equal(result.toolExecutions, 0);
+});
+
+test('a batch that exceeds the remaining search budget cannot execute an accompanying authorized write', async () => {
+  const tools = directory(); tools[0].effect = 'write';
+  let rounds = 0, executions = 0;
+  await assert.rejects(runToolConversation({ messages, tools, infer: async () => ++rounds === 1
+    ? response(search('first', 'Authorized lookup 0', 1))
+    : response(call('write', tools[0].name, { query: 'do not apply' }), search('second', 'lookup 1'), search('third', 'lookup 2')),
+  execute: async () => { executions++; } }), /上限/);
+  assert.equal(rounds, 2); assert.equal(executions, 0);
+});
+
+test('unoffered search calls after exhaustion count as denied business attempts without reopening the catalog', async () => {
+  let rounds = 0;
+  const result = await runToolConversation({ messages, tools: directory(), recoverPolicyDenials: true,
+    infer: async (conversation, definitions, options) => {
+      const round = ++rounds;
+      if (round <= 2) return response(search(`allowed-${round}`, 'lookup', 1));
+      assert.ok(definitions.every(item => item.function.name !== 'search_available_tools'));
+      if (round <= 5) return response(search(`hidden-${round}`, 'unapproved_admin_tools'));
+      assert.deepEqual(definitions, []); assert.equal(options.toolChoice, 'none');
+      const rejected = conversation.filter(item => item.role === 'tool').slice(-3).map(item => JSON.parse(item.content));
+      assert.ok(rejected.every(item => item.status === 'denied' && item.executed === false));
+      return { text: 'No additional tool was authorized or executed.' };
+    }, execute: async () => assert.fail('unknown calls cannot execute any tool') });
+  assert.equal(rounds, 6); assert.equal(result.catalogSearches, 2); assert.equal(result.toolExecutions, 3);
+  assert.deepEqual(result.toolNames, []);
+});
+
+test('a refused mixed batch consumes its own budgets but cannot disclose or execute its valid peers', async () => {
+  const tools = directory(); tools[0].effect = 'write';
+  let rounds = 0, executions = 0;
+  const result = await runToolConversation({ messages, tools, recoverPolicyDenials: true,
+    infer: async (conversation, definitions) => {
+      if (++rounds === 1) return response(search('not-run', 'lookup 0'), call('unknown', 'unapproved_admin_tool', {}));
+      if (rounds === 2) {
+        assert.deepEqual(definitions.map(item => item.function.name), ['search_available_tools']);
+        const denied = conversation.filter(item => item.role === 'tool').map(item => JSON.parse(item.content));
+        assert.ok(denied.every(item => item.executed === false && item.status === 'denied'));
+        return response(search('actual-search', 'Authorized lookup 0', 1));
+      }
+      if (rounds === 3) return response(call('actual-write', tools[0].name, { query: 'approved current action' }));
+      return { text: 'Only the later validated write was performed.' };
+    }, execute: async () => { executions++; return { executed: true }; } });
+  assert.equal(executions, 1); assert.equal(result.catalogSearches, 2); assert.equal(result.toolExecutions, 2);
 });
 
 test('discovered definitions obey both six-function and 96 KiB limits without rewriting schemas', async () => {

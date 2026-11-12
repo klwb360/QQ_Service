@@ -23,8 +23,7 @@ COPY src ./src
 COPY public ./public
 COPY examples/plugins ./examples/plugins
 COPY examples/mcp ./examples/mcp
-COPY docs/MCP.md ./docs/MCP.md
-COPY docs/assets/mcp-services.png ./docs/assets/mcp-services.png
+COPY docs ./docs
 COPY scripts/docker-healthcheck.mjs ./scripts/docker-healthcheck.mjs
 RUN chmod -R a+rX /app && mkdir -p /data && chown node:node /data
 USER node

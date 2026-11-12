@@ -78,8 +78,9 @@ function discoverTools(tools, { query, limit = CATALOG_MAX_VISIBLE }) {
  * Validate the whole proposed batch before performing any external operation.
  * Failures never retry an external operation or switch billing channels.
  */
-export async function runToolConversation({ messages, tools, infer, execute, signal, maxCalls = 3, catalogMode = 'auto', recoverPolicyDenials = false }) {
+export async function runToolConversation({ messages, tools, infer, execute, signal, maxCalls = 3, maxSearches = 2, catalogMode = 'auto', recoverPolicyDenials = false }) {
   if (!Number.isInteger(maxCalls) || maxCalls < 1 || maxCalls > 3) throw fail('工具调用上限无效。');
+  if (!Number.isInteger(maxSearches) || maxSearches < 0 || maxSearches > 2) throw fail('工具搜索上限无效。');
   if (!['auto', 'all'].includes(catalogMode)) throw fail('工具目录展示方式无效。');
   // Discovery and validation use the same request-local catalog even if the
   // caller refreshes or edits its own descriptors while inference is pending.
@@ -94,12 +95,18 @@ export async function runToolConversation({ messages, tools, infer, execute, sig
   let selected = [], callsUsed = 0, catalogSearches = 0;
   const conversation = structuredClone(messages);
   const seen = new Set(), writes = new Set(), used = [];
-  for (let round = 0; round <= maxCalls; round++) {
+  // Discovery has a separate, host-bounded budget. Reading a member's name
+  // and finding the eventual action must leave room to actually perform it.
+  // A small catalog still has at most three actions and one final inference.
+  const maxRounds = maxCalls + (progressive ? maxSearches : 0);
+  for (let round = 0; round <= maxRounds; round++) {
     checkSignal(signal);
     const available = callsUsed < maxCalls;
-    const visibleByName = progressive ? new Map([[SEARCH_NAME, discovery], ...selected.map(tool => [tool.name, tool])]) : byName;
-    const visibleDefinitions = progressive ? [SEARCH_DEFINITION, ...definitions.filter(definition => selected.some(tool => tool.name === definition.function.name))] : definitions;
-    const result = await infer(conversation, available ? visibleDefinitions : [], { toolChoice: available ? 'auto' : 'none' });
+    const canSearch = progressive && available && catalogSearches < maxSearches;
+    const visibleByName = progressive ? new Map([...(canSearch ? [[SEARCH_NAME, discovery]] : []), ...selected.map(tool => [tool.name, tool])]) : byName;
+    const visibleDefinitions = progressive ? [...(canSearch ? [SEARCH_DEFINITION] : []), ...definitions.filter(definition => selected.some(tool => tool.name === definition.function.name))] : definitions;
+    const offered = available ? visibleDefinitions : [];
+    const result = await infer(conversation, offered, { toolChoice: offered.length ? 'auto' : 'none' });
     checkSignal(signal);
     const proposed = result?.toolCalls ?? [];
     if (!Array.isArray(proposed)) throw fail('模型工具调用格式无效。');
@@ -108,7 +115,12 @@ export async function runToolConversation({ messages, tools, infer, execute, sig
       const { reasoningContent, ...visible } = result;
       return { ...visible, toolExecutions: callsUsed, toolNames: [...used], ...(progressive ? { catalogSearches } : {}) };
     }
-    if (proposed.length > maxCalls - callsUsed) throw fail('工具调用超过本次上限，请缩小需求。');
+    const searchCalls = proposed.filter(call => visibleByName.get(call?.function?.name) === discovery).length;
+    // Unknown/hidden calls count as business attempts. They never become free
+    // discovery attempts or extend a failed request indefinitely.
+    if (searchCalls > maxSearches - catalogSearches || proposed.length - searchCalls > maxCalls - callsUsed) {
+      throw fail('工具调用或搜索超过本次上限，请缩小需求。');
+    }
     if (result.reasoningContent != null && (typeof result.reasoningContent !== 'string' || Buffer.byteLength(result.reasoningContent) > 128 * 1024)) throw fail('工具续传字段无效或超过长度限制。');
     const batchIds = new Set(), batchWrites = new Set();
     const batch = [];
@@ -147,7 +159,9 @@ export async function runToolConversation({ messages, tools, infer, execute, sig
       // Preflight the entire batch before side effects. A refused call does not
       // authorize its peers, even if another call in the batch was valid.
       for (const { call, tool, denied } of batch) {
-        checkSignal(signal); seen.add(call.id); callsUsed++;
+        checkSignal(signal); seen.add(call.id);
+        if (tool === discovery) catalogSearches++;
+        else callsUsed++;
         if (tool && tool !== discovery) used.push(tool.id);
         conversation.push({ role: 'tool', tool_call_id: call.id, content: JSON.stringify({ executed: false,
           status: 'denied', code: denied ? 'TOOL_PERMISSION_DENIED' : 'TOOL_BATCH_NOT_EXECUTED',
@@ -169,7 +183,7 @@ export async function runToolConversation({ messages, tools, infer, execute, sig
           : '本轮已授权工具中没有符合搜索词且能放入定义预算的结果。请向用户澄清需求；不能猜测或调用未发现的工具。' };
       } else value = await execute(tool, input);
       checkSignal(signal);
-      callsUsed++;
+      if (tool !== discovery) callsUsed++;
       if (tool !== discovery) used.push(tool.id);
       // Tool output is data. Never promote it to a system instruction.
       const content = JSON.stringify(value ?? { text: '' });

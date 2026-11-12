@@ -176,6 +176,22 @@ test('不同调用 ID 或对象字段顺序不能重复提交同一个写入操�
   });
 });
 
+test('重新搜索目录不能重置同一请求的写入去重账本', async () => {
+  const write = { ...descriptor, id: 'probe/write_record', name: 'write_record', effect: 'write', description: 'Unique write record action' };
+  const tools = [write, ...Array.from({ length: 6 }, (_, index) => ({ ...descriptor,
+    id: `probe/other-${index}`, name: `other_${index}`, description: `Unrelated operation ${index}` }))];
+  let rounds = 0, executions = 0;
+  await assert.rejects(runToolConversation({ messages: messages(), tools,
+    infer: async () => {
+      rounds++;
+      return rounds === 1 || rounds === 3
+        ? response([call(`discover-${rounds}`, 'search_available_tools', { query: 'Unique write record action', limit: 1 })])
+        : response([call(`write-${rounds}`, write.name, { query: 'same authorized operation' })]);
+    }, execute: async () => { executions++; return { executed: true }; },
+  }), /重复/);
+  assert.equal(rounds, 4); assert.equal(executions, 1);
+});
+
 test('不同调用 ID 可以再次查询相同只读参数', async () => {
   let inferences = 0, executions = 0;
   const result = await runToolConversation({ messages: messages(), tools: [{ ...descriptor, effect: 'read' }],

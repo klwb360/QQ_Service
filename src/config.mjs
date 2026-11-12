@@ -11,6 +11,7 @@ export const DEFAULT_CHAT_SOCIAL = Object.freeze({
 export const DEFAULT_GROUP_SOCIAL = Object.freeze({
   enabled: false, proactive: false, interests: '', style: '', activeStart: '10:00', activeEnd: '22:00',
   decisionCallsPerHour: 12, repliesPerHour: 6, proactiveIntervalMinutes: 10, readTools: [],
+  replyTools: [], replyActionCooldownSeconds: 30, replyActionsPerHour: 6,
 });
 
 export const DEFAULT_CONFIG = {
@@ -338,12 +339,20 @@ export function validateConfig(input, { applying = false, hasSecret = () => fals
       repliesPerHour: number(social.repliesPerHour, 6, '群主动发言每小时上限', 0, 100, true, `${prefix}.repliesPerHour`),
       proactiveIntervalMinutes: number(social.proactiveIntervalMinutes, 10, '主动素材检查间隔分钟', 1, 1440, true, `${prefix}.proactiveIntervalMinutes`),
       readTools: [],
+      replyTools: [],
+      replyActionCooldownSeconds: number(social.replyActionCooldownSeconds, 30, '自然互动冷却秒数', 5, 3600, true, `${prefix}.replyActionCooldownSeconds`),
+      replyActionsPerHour: number(social.replyActionsPerHour, 6, '每小时自然互动上限', 0, 60, true, `${prefix}.replyActionsPerHour`),
     };
     for (const key of ['activeStart', 'activeEnd']) if (!/^([01]\d|2[0-3]):[0-5]\d$/.test(normalized[key])) issue(`${prefix}.${key}`, '主动活动时间须为 HH:MM');
     if (social.readTools !== undefined) {
-      if (!Array.isArray(social.readTools) || social.readTools.length > 20 || social.readTools.some(tool => !toolId(tool)
-        || tool.startsWith('qq:') && !builtinQqReadTools.has(tool))) issue(`${prefix}.readTools`, '主动素材只读工具须为最多 20 项的有效只读工具标识');
+      if (!Array.isArray(social.readTools) || social.readTools.length > 50 || social.readTools.some(tool => !toolId(tool)
+        || tool.startsWith('qq:') && !builtinQqReadTools.has(tool))) issue(`${prefix}.readTools`, '主动素材只读工具须为最多 50 项的有效只读工具标识');
       else normalized.readTools = [...new Set(social.readTools)];
+    }
+    if (social.replyTools !== undefined) {
+      const allowedReplies = ['qq:send_sticker', 'qq:send_image', 'qq:send_message', 'qq:react_message', 'qq:poke_member'];
+      if (!Array.isArray(social.replyTools) || social.replyTools.length > 5 || social.replyTools.some(tool => !allowedReplies.includes(tool))) issue(`${prefix}.replyTools`, '自然回复动作只能选择受控 QQ 互动，不包含文件、撤回或外部应用写入');
+      else normalized.replyTools = [...new Set(social.replyTools)];
     }
     return normalized;
   };
@@ -395,7 +404,7 @@ export function validateConfig(input, { applying = false, hasSecret = () => fals
     else result.tools.aliases = [...new Set(tools.aliases.map(value => value.trim()))];
   }
   if (tools.grants !== undefined) {
-    if (!Array.isArray(tools.grants) || tools.grants.length > 20) issue('tools.grants', '每个账号最多授权 20 个工具');
+    if (!Array.isArray(tools.grants) || tools.grants.length > 100) issue('tools.grants', '每个账号最多授权 100 个工具');
     else {
       const seen = new Set();
       result.tools.grants = tools.grants.map((grant, index) => {
