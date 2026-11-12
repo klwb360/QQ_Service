@@ -162,6 +162,7 @@ export function createSocialRuntime({ getConfig, getIdentity, getEpoch, store, i
     // Ordinary participation/continuation can never turn into an external write.
     const authors = new Set(entries.filter(entry => !entry.input.isNotice).map(entry => entry.input.userId));
     scope.explicitRequested = Boolean(requester && !requester.isNotice && !requester.wake && requester.text?.trim() && authors.size === 1);
+    scope.requestText = requester?.text || '';
     if (!requester || requester.isNotice || requester.wake || !requester.text?.trim() || authors.size !== 1) tools = tools.filter(tool => tool.effect === 'read');
     let requestBudget = 6000;
     const requests = entries.slice().reverse().flatMap(entry => {

@@ -14,7 +14,7 @@ v0.7.0 起仅通过 API 接入模型，已移除 ChatGPT 订阅／Codex 安装�
 
 v0.8.0 增加角色卡预览与历史回退、自动经历札记、可清空的当前会话状态和 Docker 网页部署。NapCat Shell 可正常使用；SnowLuma 已准备独立适配和[安全审查记录](docs/SNOWLUMA_SECURITY_REVIEW.md)，Windows 隔离验证未完成前保持禁用。人格与记忆使用同一稳定账号身份，不因连接端改变而重建。见 [人格与记忆](docs/PERSONA_MEMORY.md)、[Docker 部署](docs/DOCKER.md)。
 
-开发分支正在加入标准 MCP 客户端：支持本地 stdio、Streamable HTTP 和旧版 SSE，并沿用每账号、群和调用人授权；工具可按需搜索加载，还可单独开启本群最近消息与关键词检索。随应用提供 Bilibili 只读查询和本地计算／临时笔记 MCP 示例。导入不会运行服务，工具需发现与审批后才能使用；已发布的 v0.8.0 EXE 尚不包含此功能。见 [MCP 配置与开发指南](docs/MCP.md)。
+开发分支正在加入标准 MCP 客户端：支持本地 stdio、Streamable HTTP 和旧版 SSE，并沿用每账号、群和调用人授权；工具可按需搜索加载，还可单独开启本群最近消息与关键词检索。随应用提供 Bilibili 收藏夹、稍后再看与专栏的聊天后台总结，以及本地计算／临时笔记 MCP 示例。Bilibili 可通过聊天选择内容日期与每日运行时段，结果返回原授权会话；无字幕时会明确仅概述元数据。导入不会运行服务，工具需发现与审批后才能使用；已发布的 v0.8.0 EXE 尚不包含此功能。见 [MCP 配置与开发指南](docs/MCP.md)。
 
 ![QQ_Service 展开账号后的连续配置面板](docs/assets/account-control.png)
 

@@ -1,4 +1,6 @@
 import { createHash, createHmac, randomBytes } from 'node:crypto';
+import path from 'node:path';
+import { fileURLToPath } from 'node:url';
 import { mcpToolId, mcpDefinitionHash, mcpSecretName, mcpConnectionDescriptor, validateMcpServerConfig } from './mcp-config.mjs';
 import { compileMcpToolSchema, validateMcpToolInput } from './mcp-schema.mjs';
 import { toolFunctionName } from './tool-router.mjs';
@@ -11,6 +13,25 @@ const fail = (message, code = 'MCP_UNAVAILABLE', statusCode = 409) => Object.ass
 const connectionShape = mcpConnectionDescriptor;
 const shapeHash = server => createHash('sha256').update(JSON.stringify(connectionShape(server))).digest('hex');
 const defaultFactory = async (server, options) => (await import('./mcp-client.mjs')).createMcpClient(server, options);
+const bundledBilibiliPath = fileURLToPath(new URL('../examples/mcp/bilibili.mjs', import.meta.url));
+const appDirectory = fileURLToPath(new URL('../', import.meta.url));
+const BILIBILI_NAMES = new Set(['popular_videos', 'search_videos', 'video_details', 'list_favorite_folders',
+  'list_favorite_items', 'list_watch_later', 'list_favorite_articles', 'read_video_content', 'read_article_content',
+  'queue_library_digest', 'library_digest_status', 'cancel_library_digest']);
+const samePath = (left, right) => process.platform === 'win32'
+  ? path.resolve(left).toLowerCase() === path.resolve(right).toLowerCase() : path.resolve(left) === path.resolve(right);
+
+/** Host task handling is available only to the application's exact bundled
+ * stdio entrypoint. A remote service cannot opt in by copying a tool name. */
+export function isBundledBilibiliServer(server) {
+  if (!server || typeof server.command !== 'string' || server.transport !== 'stdio' || server.url
+    || !Array.isArray(server.envKeys ?? []) || !Array.isArray(server.headerKeys ?? []) || server.headerKeys?.length
+    || !Array.isArray(server.args) || server.args.length !== 1
+    || typeof server.args[0] !== 'string' || (server.envKeys || []).some(key => key !== 'BILIBILI_SESSDATA')) return false;
+  if (!['node', 'node.exe'].includes(server.command) && !samePath(String(server.command || ''), process.execPath)) return false;
+  const argument = server.args[0].replaceAll('{appDir}', appDirectory);
+  return path.isAbsolute(argument) && samePath(argument, bundledBilibiliPath);
+}
 
 function redactText(value, secrets) {
   let result = String(value ?? '');
@@ -327,6 +348,14 @@ export function createMcpManager({ getConfig, getSecret = () => '', store = {}, 
           description: tool.description || tool.name, effect: policy.effect, inputSchema: copy(tool.inputSchema),
           definitionHash: tool.definitionHash, connectionHash: state.connectionHash, source: 'mcp' }];
       }));
+    },
+    builtinBilibiliBinding(toolId) {
+      const state = [...states.values()].find(item => item.tools.some(tool => tool.id === toolId));
+      const tool = state?.tools.find(item => item.id === toolId);
+      if (!tool || !BILIBILI_NAMES.has(tool.name) || !isBundledBilibiliServer(currentServer(state.server.id))
+        || !approval(state, tool)) return null;
+      return { serverId: state.server.id, connectionHash: state.connectionHash,
+        definitionHash: tool.definitionHash, toolId, remoteName: tool.name };
     },
     async refresh(serverId) {
       const state = states.get(serverId);

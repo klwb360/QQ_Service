@@ -37,8 +37,15 @@ try{await assert.rejects(denied.connect());}finally{await denied.close();}
 const local=createMcpClient({...descriptor,id:'local',transport:'stdio',url:'',headerKeys:[],command:'node',args:['{appDir}/examples/mcp/local-notes.mjs']},{getSecret:()=>{throw new Error('stdio demo must not request credentials');}});
 try{await local.connect();assert.equal((await local.listTools()).length,3);assert.equal(body(await local.callTool('calculate',{operation:'add',a:20,b:22})).result,42);}finally{await local.close();}
 const bili=createMcpClient({...descriptor,id:'bili',transport:'stdio',url:'',headerKeys:[],command:'node',args:['{appDir}/examples/mcp/bilibili.mjs']},{getSecret:()=>{throw new Error('public Bilibili catalog must not request credentials');}});
-try{await bili.connect();assert.deepEqual((await bili.listTools()).map(tool=>tool.name).sort(),['popular_videos','search_videos','video_details']);}finally{await bili.close();}
-console.log('Docker MCP smoke passed: bundled SDK, stdio Node placeholder, Bilibili read-only catalog, authenticated cross-container HTTP tools, read/write round trip, credential isolation, bad-token refusal.');
+try{
+  await bili.connect();const tools=await bili.listTools();
+  assert.deepEqual(tools.map(tool=>tool.name).sort(),['popular_videos','search_videos','video_details','list_favorite_folders','list_favorite_items','list_watch_later','list_favorite_articles','read_video_content','read_article_content','queue_library_digest','library_digest_status','cancel_library_digest'].sort());
+  assert(tools.every(tool=>tool.annotations?.readOnlyHint===!['queue_library_digest','cancel_library_digest'].includes(tool.name)));
+  const standalone=await bili.callTool('queue_library_digest',{sources:{watchLater:true}});
+  assert.equal(standalone.isError,true);assert.equal(body(standalone).requiresHost,true);
+}finally{await bili.close();}
+await import('./src/bilibili-library.mjs');await import('./src/bilibili-digest-tools.mjs');await import('./src/bilibili-digest-sources.mjs');await import('./src/bilibili-digests.mjs');await import('./src/bilibili-digest-service.mjs');
+console.log('Docker MCP smoke passed: bundled SDK, stdio Node placeholder, Bilibili library/task catalog and standalone-host refusal, authenticated cross-container HTTP tools, read/write round trip, credential isolation, bad-token refusal.');
 `;
 
 try {

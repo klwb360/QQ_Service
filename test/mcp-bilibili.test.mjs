@@ -16,14 +16,17 @@ async function fixture(options) {
   return { client, async close() { await client.close(); await server.close(); } };
 }
 
-test('Bilibili MCP is inert on import and only defines the three fixed read tools', async () => {
+test('Bilibili MCP is inert on import and preserves fixed read tools alongside scoped library tasks', async () => {
   const previous = globalThis.fetch; let requests = 0;
   globalThis.fetch = async () => { requests++; throw new Error('must not access the network'); };
   try {
     await import('../examples/mcp/bilibili.mjs?inert-import-check');
     const definitions = bilibiliMcpTools();
-    assert.deepEqual(definitions.map(tool => tool.name), ['popular_videos', 'search_videos', 'video_details']);
-    assert.ok(definitions.every(tool => tool.annotations.readOnlyHint === true));
+    assert.deepEqual(definitions.slice(0, 3).map(tool => tool.name), ['popular_videos', 'search_videos', 'video_details']);
+    assert.equal(definitions.length, 12);
+    assert.ok(!definitions.some(tool => tool.name === 'comment_and_mention'));
+    assert.ok(definitions.filter(tool => !['queue_library_digest', 'cancel_library_digest'].includes(tool.name)).every(tool => tool.annotations.readOnlyHint === true));
+    assert.ok(definitions.filter(tool => ['queue_library_digest', 'cancel_library_digest'].includes(tool.name)).every(tool => tool.annotations.readOnlyHint === false));
     assert.equal(definitions[0].inputSchema.properties.limit.maximum, 5);
     assert.equal(definitions[1].inputSchema.properties.limit.maximum, 5);
     assert.equal(requests, 0);
@@ -111,7 +114,10 @@ test('real official SDK stdio can list the Bilibili example and reject writes/in
     command: 'node', args: [fileURLToPath(new URL('../examples/mcp/bilibili.mjs', import.meta.url))], envKeys: [], headerKeys: [], url: '', timeoutSeconds: 5, tools: [] });
   try {
     await client.connect();
-    assert.deepEqual((await client.listTools()).map(tool => tool.name), ['popular_videos', 'search_videos', 'video_details']);
+    const tools = await client.listTools();
+    assert.deepEqual(tools.slice(0, 3).map(tool => tool.name), ['popular_videos', 'search_videos', 'video_details']);
+    assert.equal(tools.length, 12);
+    assert.ok(tools.some(tool => tool.name === 'queue_library_digest'));
     assert.equal((await client.callTool('comment_and_mention', {})).isError, true);
     assert.equal((await client.callTool('search_videos', { keyword: '' })).isError, true);
     assert.equal((await client.callTool('video_details', { bvid: 'https://x.y/' })).isError, true);

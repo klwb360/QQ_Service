@@ -8,10 +8,11 @@ import { connectorCatalog, assertBackendAvailable, resolveConnector } from './on
 import { isContainer } from './network-policy.mjs';
 import { createMcpManager } from './mcp-manager.mjs';
 import { importMcpConfig, mcpSecretName, parseMcpSecretName } from './mcp-config.mjs';
+import { createBilibiliDigestIntegration } from './bilibili-digest-service.mjs';
 
 const fail = (message, statusCode = 409, details) => Object.assign(new Error(message), { statusCode, ...(details ? { details } : {}) });
 
-export function createAccountService({ account, dataDir, csrfToken, installerFactory = createInstaller, runtimeFactory = createRuntime, mcpManagerFactory = createMcpManager, pluginManager, ensurePluginReady = () => {}, getNapcatSettings = () => ({ mode: 'docker', executablePath: '', revision: 0 }), redactAll = value => String(value), checkConflicts = () => {}, reserveConfig = () => () => {} }) {
+export function createAccountService({ account, dataDir, csrfToken, installerFactory = createInstaller, runtimeFactory = createRuntime, mcpManagerFactory = createMcpManager, bilibiliIntegrationFactory = createBilibiliDigestIntegration, pluginManager, ensurePluginReady = () => {}, getNapcatSettings = () => ({ mode: 'docker', executablePath: '', revision: 0 }), redactAll = value => String(value), checkConflicts = () => {}, reserveConfig = () => () => {} }) {
   const store = createStore(dataDir);
   const logs = [], jobs = [];
   let environment = null, activeJob = null, applying = false, started = false, closed = false, mcpBusy = false;
@@ -31,11 +32,15 @@ export function createAccountService({ account, dataDir, csrfToken, installerFac
   };
   const safeDetails = value => typeof value === 'string' ? redact(value) : Array.isArray(value) ? value.map(safeDetails) : value && typeof value === 'object' ? Object.fromEntries(Object.entries(value).map(([key, item]) => [key, safeDetails(item)])) : value;
   const installer = installerFactory({ dataDir, platform: account.platform, profileId: account.id, accountId: account.id, legacy: account.id === 'legacy', getConfig: store.getConfig, getNapcatSettings, getSecret: store.getSecret, setSecret: store.setSecret, log });
-  let runtime;
+  let runtime, bilibiliDigests;
   const mcpManager = mcpManagerFactory({ getConfig: store.getConfig, getSecret: store.getSecret, store, log,
     fingerprint: (server, getter) => store.mcpConnectionHash(server, getter),
-    onToolsChanged: () => runtime?.invalidateTools?.() });
-  runtime = runtimeFactory({ platform: account.platform, profileId: account.id, accountId: account.id, getConfig: store.getConfig, getSecret: store.getSecret, store, installer, pluginManager, mcpManager, log });
+    onToolsChanged: event => {
+      runtime?.invalidateTools?.();
+      Promise.resolve(bilibiliDigests?.toolsChanged(event)).catch(error => log(`Bilibili 后台任务已停止：${error.message}`, 'warn'));
+    } });
+  bilibiliDigests = bilibiliIntegrationFactory({ account, store, mcpManager, getRuntime: () => runtime, log });
+  runtime = runtimeFactory({ platform: account.platform, profileId: account.id, accountId: account.id, getConfig: store.getConfig, getSecret: store.getSecret, store, installer, pluginManager, mcpManager, bilibiliControl: bilibiliDigests.control, log });
   const mcpCredentialNames = config => (config.mcp?.servers || []).flatMap(server => [
     ...(server.envKeys || []).map(key => mcpSecretName(server.id, 'env', key)),
     ...(server.headerKeys || []).map(key => mcpSecretName(server.id, 'header', key)),
@@ -152,6 +157,8 @@ export function createAccountService({ account, dataDir, csrfToken, installerFac
       checkConflicts(config, account.id);
       if (mode === 'release' && (!config.qq.enabled || (!config.groups.some(group => group.read) && !config.permissions.privateReplies))) throw Object.assign(fail('请先连接 QQ，并在群权限中选择读取范围或私聊范围。'), { code: 'PERMISSION_TARGET_MISSING', field: 'groups', action: '完成 QQ 连接后读取群列表，勾选允许读取的群，再点击启动此账号。', nextStep: 'permissions' });
       releaseReservation = reserveConfig(config, before.applied, account.id);
+      await bilibiliDigests.reload({ reason: '账号配置正在应用，请在原聊天中重新确认后台任务。' });
+      ensureOpen();
       // Ordinary application and rollback always return to read-only. Only this
       // explicit account-bound release transaction can authorize sending.
       store.restoreState({ ...current, draft: config });
@@ -203,6 +210,7 @@ export function createAccountService({ account, dataDir, csrfToken, installerFac
     for (const field of ['draft', 'applied', 'previous']) if (current[field]) current[field].permissions = { ...current[field].permissions, released: false };
     current.revision += 1; current.appliedRevision = current.revision;
     store.restoreState(current);
+    await bilibiliDigests.reload({ reason: '账号权限已撤销，后台任务已停止。' });
     await runtime.reload(); log('已立即撤销该账号发送权限，旧任务已取消。');
     return state();
   };
@@ -444,7 +452,7 @@ export function createAccountService({ account, dataDir, csrfToken, installerFac
     throw fail('接口不存在。', 404);
   };
   return {
-    account, store, runtime, installer, mcpManager, mcpRead, summary, state, setupStatus, invoke, redact, ensureIdle, memoryRead, memoryTree, personaHistory, experienceRead, experienceHistory, conversationRead,
+    account, store, runtime, installer, mcpManager, mcpRead, bilibiliDigests, summary, state, setupStatus, invoke, redact, ensureIdle, memoryRead, memoryTree, personaHistory, experienceRead, experienceHistory, conversationRead,
     invalidateEnvironment() { environment = null; },
     async start() {
       if (started) return;
@@ -452,11 +460,12 @@ export function createAccountService({ account, dataDir, csrfToken, installerFac
       Promise.resolve().then(checkEnvironment).catch(error => log(`环境检查失败：${error.message}`, 'error'));
       await runtime.reload();
       await mcpManager.start();
+      await bilibiliDigests.start();
     },
     async close() {
       if (closed) return;
       closed = true;
-      const results = await Promise.allSettled([runtime.stop(), installer.dispose?.(), mcpManager.close()]);
+      const results = await Promise.allSettled([runtime.stop(), installer.dispose?.(), mcpManager.close(), bilibiliDigests.close()]);
       await Promise.all([applyFinished, mcpFinished]);
       store.close();
       const failure = results.find(result => result.status === 'rejected');
