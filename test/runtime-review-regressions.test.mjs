@@ -80,21 +80,21 @@ async function fixture({ pluginManager } = {}) {
 const mention = text => [{ type: 'at', data: { qq: '999999' } }, { type: 'text', data: { text } }];
 const history = f => f.store.conversation.list({ actualQQ: '999999', groupId: '222222', limit: 100 });
 
-test('未启用自由聊天和记忆时，12000 字符边界和超长群消息仍保存有界会话并回复', async t => {
+test('会话存档扩至132000字符，普通回复仍遵守独立模型输入预算', async t => {
   const f = await fixture();
   try {
     assert.equal(Boolean(f.config.groups[0].social?.enabled), false);
     assert.equal(f.store.memory.getGroup({ actualQQ: '999999', groupId: '222222' }).enabled, false);
-    for (const length of [12000, 12001, 36001]) await t.test(`${length} characters`, async () => {
+    for (const length of [12000, 12001, 36001, 132000, 132001]) await t.test(`${length} characters`, async () => {
       const text = '长'.repeat(length), previous = f.requests.length;
       const messageId = await f.emit(mention(text));
       assert.equal(f.requests.length, previous + 1, '会话记录不能提前终止原本已授权的模型请求');
       assert.equal(f.outbound.length, previous + 1);
       const recorded = history(f).find(entry => entry.messageId === messageId);
       assert.ok(recorded, '收到的群消息应进入双向会话');
-      assert.ok(recorded.text.length <= 12000, '记录必须符合存储层的 12000 字符限制');
+      assert.equal(recorded.text.length, Math.min(length, 132000), '扩容后的存档保留原文，超过132000字符才截断');
       assert.ok(recorded.text.startsWith(text.slice(0, 11900)));
-      if (length === 12000) assert.equal(recorded.text, text, '边界内消息不能被无故改写');
+      if (length <= 132000) assert.equal(recorded.text, text, '边界内消息不能被无故改写');
       assert.equal(recorded.actualQQ, '999999');
       assert.equal(recorded.groupId, '222222');
       const request = f.requests.at(-1).at(-1).content.split('请回复当前请求：').at(-1);

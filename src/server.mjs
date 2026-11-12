@@ -9,6 +9,7 @@ import { createAccountService } from './account-service.mjs';
 import { createNapcatSettings } from './napcat-settings.mjs';
 import { createPluginManager } from './plugins.mjs';
 import { isContainer, publicOrigins } from './network-policy.mjs';
+import { createMemoryStorageSettings } from './memory-storage.mjs';
 
 const projectDir = fileURLToPath(new URL('../', import.meta.url));
 const fail = (message, statusCode = 409) => Object.assign(new Error(message), { statusCode });
@@ -22,6 +23,10 @@ export function createDashboard({ dataDir = defaultDataDir(), installerFactory, 
   const configuredOrigins = publicOrigins();
   const csrfToken = randomBytes(32).toString('hex');
   const catalog = createAccountCatalog(dataDir);
+  const memoryStorage = createMemoryStorageSettings({ dataDir, profiles: [
+    ...catalog.list().map(account => ({ id: account.id, directory: catalog.directory(account.id) })),
+    ...(!catalog.list().some(account => account.id === 'legacy') ? [{ id: 'legacy', directory: dataDir }] : []),
+  ] });
   const plugins = createPluginManager({ dataDir });
   const napcatSettings = createNapcatSettings({ dataDir, accountDirectories: catalog.list().map(account => catalog.directory(account.id)) });
   const services = new Map();
@@ -64,7 +69,9 @@ export function createDashboard({ dataDir = defaultDataDir(), installerFactory, 
   };
   const buildService = account => {
     if (services.has(account.id)) return services.get(account.id);
-    const service = createAccountService({ account, dataDir: catalog.directory(account.id), csrfToken, installerFactory, runtimeFactory, mcpManagerFactory, pluginManager: plugins, ensurePluginReady, getNapcatSettings: napcatSettings.get, redactAll, checkConflicts, reserveConfig });
+    const service = createAccountService({ account, dataDir: catalog.directory(account.id),
+      memoryDirectory: memoryStorage.profileDirectory(account.id, catalog.directory(account.id)),
+      csrfToken, installerFactory, runtimeFactory, mcpManagerFactory, pluginManager: plugins, ensurePluginReady, getNapcatSettings: napcatSettings.get, redactAll, checkConflicts, reserveConfig });
     services.set(account.id, service);
     return service;
   };
@@ -124,6 +131,8 @@ export function createDashboard({ dataDir = defaultDataDir(), installerFactory, 
       checkLocal(request);
       if (closing && request.method !== 'GET' && request.method !== 'HEAD') throw fail('应用正在退出，请重新启动后操作。', 503);
       const url = new URL(request.url, `http://${request.headers.host}`), route = url.pathname;
+      if (request.method === 'GET' && route === '/api/memory-storage') return json(response, memoryStorage.get());
+      if (request.method === 'POST' && route === '/api/memory-storage') return json(response, memoryStorage.stage(await readBody(request)));
       if (request.method === 'GET' && route === '/api/accounts') return json(response, directory());
       if (request.method === 'GET' && route === '/api/plugins') return json(response, { plugins: plugins.list() });
       const pluginUninstall = route.match(/^\/api\/plugins\/([a-z][a-z0-9-]{0,63})\/uninstall$/);
@@ -215,7 +224,7 @@ export function createDashboard({ dataDir = defaultDataDir(), installerFactory, 
         }
         throw fail('接口不存在。', 404);
       }
-      const files = { '/': ['index.html', 'text/html'], '/index.html': ['index.html', 'text/html'], '/styles.css': ['styles.css', 'text/css'], '/app.js': ['app.js', 'text/javascript'], '/memory-ui.js': ['memory-ui.js', 'text/javascript'], '/persona-ui.js': ['persona-ui.js', 'text/javascript'] };
+      const files = { '/': ['index.html', 'text/html'], '/index.html': ['index.html', 'text/html'], '/styles.css': ['styles.css', 'text/css'], '/app.js': ['app.js', 'text/javascript'], '/memory-ui.js': ['memory-ui.js', 'text/javascript'], '/memory-storage-ui.js': ['memory-storage-ui.js', 'text/javascript'], '/persona-ui.js': ['persona-ui.js', 'text/javascript'] };
       if (request.method === 'GET' && files[route]) {
         const [file, type] = files[route];
         response.writeHead(200, { 'Content-Type': `${type}; charset=utf-8`, 'Cache-Control': 'no-cache' });

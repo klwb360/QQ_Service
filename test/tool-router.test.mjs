@@ -185,3 +185,44 @@ test('不同调用 ID 可以再次查询相同只读参数', async () => {
   assert.equal(inferences, 3); assert.equal(executions, 2);
   assert.equal(result.toolExecutions, 2);
 });
+
+test('可恢复的权限拒绝不执行同批有效写入，模型得到真实未执行结果后自行接话', async t => {
+  for (const bad of [call('denied', 'not_granted'), call('denied', descriptor.name, { query: 'hi', groupId: 'other-group' })]) {
+    await t.test(bad.function.name, async () => {
+      let rounds = 0, executions = 0;
+      const write = { ...descriptor, effect: 'write' };
+      const result = await runToolConversation({ messages: messages(), tools: [write], recoverPolicyDenials: true,
+        infer: async conversation => {
+          if (++rounds === 1) return response([call('valid'), bad]);
+          const outcomes = conversation.filter(item => item.role === 'tool').map(item => JSON.parse(item.content));
+          assert.equal(outcomes.length, 2);
+          assert.ok(outcomes.every(outcome => outcome.executed === false && outcome.status === 'denied'));
+          return { provider: 'fake', text: '这事我没办，咱们换个办法。' };
+        },
+        execute: async () => { executions++; return { executed: true }; },
+      });
+      assert.equal(executions, 0);
+      assert.equal(rounds, 2);
+      assert.equal(result.text, '这事我没办，咱们换个办法。');
+      assert.ok(result.toolNames.every(id => id === descriptor.id));
+    });
+  }
+});
+
+test('权限拒绝也占调用预算，取消信号不能转为普通拒绝继续推理', async () => {
+  let rounds = 0;
+  const result = await runToolConversation({ messages: messages(), tools: [descriptor], recoverPolicyDenials: true,
+    infer: async (conversation, offered, options) => {
+      if (++rounds <= 3) return response([call(`denied-${rounds}`, 'not_granted')]);
+      assert.equal(offered.length, 0); assert.equal(options.toolChoice, 'none');
+      return { text: '这些操作均未执行。' };
+    }, execute: async () => assert.fail('不允许执行任何工具'),
+  });
+  assert.equal(rounds, 4); assert.equal(result.toolExecutions, 3);
+  const controller = new AbortController(); let cancelledRounds = 0;
+  await assert.rejects(runToolConversation({ messages: messages(), tools: [descriptor], recoverPolicyDenials: true, signal: controller.signal,
+    infer: async () => { cancelledRounds++; controller.abort(); return response([call('denied', 'not_granted')]); },
+    execute: async () => assert.fail('取消后不可执行'),
+  }), /取消/);
+  assert.equal(cancelledRounds, 1);
+});

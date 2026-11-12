@@ -29,6 +29,8 @@ const SEARCH_ALIASES = [
   ['下载', 'download'], ['计算', 'calculate', 'calculator', '算一下'], ['提醒', 'reminder', 'remind'],
   ['网页', 'web', 'browser', '网站'], ['创建', 'create', '添加', '新增'],
   ['聊天记录', '聊过', '历史', '回忆', '刚才', '之前', 'recent', 'history', 'current_group', '消息'],
+  ['戳一戳', '戳', 'poke'], ['群友', '群成员', '成员', 'member', 'members'],
+  ['表情', '回应', 'reaction', 'react', 'emoji'], ['引用', '回复', '艾特', '@', 'mention', 'send_message'],
 ];
 const definitionFor = tool => ({ type: 'function', function: { name: tool.name, description: tool.description, parameters: tool.inputSchema } });
 function searchTerms(query) {
@@ -76,7 +78,7 @@ function discoverTools(tools, { query, limit = CATALOG_MAX_VISIBLE }) {
  * Validate the whole proposed batch before performing any external operation.
  * Failures never retry an external operation or switch billing channels.
  */
-export async function runToolConversation({ messages, tools, infer, execute, signal, maxCalls = 3, catalogMode = 'auto' }) {
+export async function runToolConversation({ messages, tools, infer, execute, signal, maxCalls = 3, catalogMode = 'auto', recoverPolicyDenials = false }) {
   if (!Number.isInteger(maxCalls) || maxCalls < 1 || maxCalls > 3) throw fail('工具调用上限无效。');
   if (!['auto', 'all'].includes(catalogMode)) throw fail('工具目录展示方式无效。');
   // Discovery and validation use the same request-local catalog even if the
@@ -115,12 +117,23 @@ export async function runToolConversation({ messages, tools, infer, execute, sig
         || seen.has(call.id) || batchIds.has(call.id)) throw fail('模型工具调用 ID 无效或重复。');
       batchIds.add(call.id);
       const tool = visibleByName.get(call.function?.name);
-      if (!tool) throw fail('模型请求了未授权或不存在的工具。');
+      if (!tool && !recoverPolicyDenials) throw fail('模型请求了未授权或不存在的工具。');
       const encoded = call.function?.arguments;
       if (typeof encoded !== 'string' || Buffer.byteLength(encoded) > 16 * 1024) throw fail('工具参数必须是有界的 JSON 文本。');
       let input;
       try { input = JSON.parse(encoded); } catch { throw fail('工具参数 JSON 格式无效。'); }
-      const validated = tool.source === 'mcp' ? await validateMcpToolInput(tool.inputSchema, input, signal) : validateToolInput(tool.inputSchema, input);
+      if (!tool) {
+        batch.push({ call, tool: null, denied: '此工具不在当前请求的已授权目录中，未执行。' });
+        continue;
+      }
+      let validated;
+      try { validated = tool.source === 'mcp' ? await validateMcpToolInput(tool.inputSchema, input, signal) : validateToolInput(tool.inputSchema, input); }
+      catch (error) {
+        checkSignal(signal);
+        if (!recoverPolicyDenials || ![400, 422].includes(error?.statusCode || error?.status)) throw error;
+        batch.push({ call, tool, denied: '工具参数超出允许范围或格式不符，未执行。' });
+        continue;
+      }
       if (tool === discovery && !validated.query.trim()) throw fail('工具搜索词不能为空。');
       checkSignal(signal);
       const signature = tool.effect === 'write' ? `${tool.id}:${JSON.stringify(canonical(validated))}` : null;
@@ -130,6 +143,18 @@ export async function runToolConversation({ messages, tools, infer, execute, sig
     }
     conversation.push({ role: 'assistant', content: result.text || null, tool_calls: proposed,
       ...(typeof result.reasoningContent === 'string' ? { reasoning_content: result.reasoningContent } : {}) });
+    if (batch.some(item => item.denied)) {
+      // Preflight the entire batch before side effects. A refused call does not
+      // authorize its peers, even if another call in the batch was valid.
+      for (const { call, tool, denied } of batch) {
+        checkSignal(signal); seen.add(call.id); callsUsed++;
+        if (tool && tool !== discovery) used.push(tool.id);
+        conversation.push({ role: 'tool', tool_call_id: call.id, content: JSON.stringify({ executed: false,
+          status: 'denied', code: denied ? 'TOOL_PERMISSION_DENIED' : 'TOOL_BATCH_NOT_EXECUTED',
+          reason: denied || '同批请求未全部通过校验，本批操作均未执行。' }) });
+      }
+      continue;
+    }
     for (const { call, tool, input, signature } of batch) {
       checkSignal(signal);
       seen.add(call.id);

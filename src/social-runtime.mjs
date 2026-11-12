@@ -2,6 +2,7 @@ import { createHash } from 'node:crypto';
 import { getModelConfig } from './config.mjs';
 import { isActiveTime, matchSocialAddress, parseSocialDecision, socialSystemPrompt } from './social-chat.mjs';
 import { runToolConversation } from './tool-router.mjs';
+import { getQqMcpResultMeta } from './qq-mcp-server.mjs';
 
 const error = message => Object.assign(new Error(message), { status: 409 });
 const fingerprint = value => createHash('sha256').update(value).digest('hex');
@@ -265,13 +266,14 @@ export function createSocialRuntime({ getConfig, getIdentity, getEpoch, store, i
     explain(state, autonomous ? '检查素材并判断是否值得分享' : direct ? '处理直接互动或连续追问' : '判断是否适合参与话题', 'thinking');
     let result;
     try {
-      result = tools.length ? await runToolConversation({ messages, tools, signal: controller.signal, catalogMode: config.tools?.catalogMode || 'auto',
+      result = tools.length ? await runToolConversation({ messages, tools, signal: controller.signal, catalogMode: config.tools?.catalogMode || 'auto', recoverPolicyDenials: true,
       infer: model, execute: async (tool, args) => {
         assertSnapshot();
-        if (tool.effect === 'write') state.writeAttempted = true;
+        if (tool.effect === 'write' && tool.source !== 'qq') state.writeAttempted = true;
         attemptedTools.push(tool.id);
-        const value = await executeTool(tool.id, args, controller.signal, taskEpoch, scope);
-        if (tool.effect === 'write') completedWrites++;
+        const value = await executeTool(tool.id, args, controller.signal, taskEpoch,
+          { ...scope, onWriteDispatch: () => { state.writeAttempted = true; } });
+        if (tool.effect === 'write' && (tool.source !== 'qq' || getQqMcpResultMeta(value)?.kind === 'ok')) completedWrites++;
         if (autonomous && tool.effect === 'read') await withLedger(async () => {
           const updated = await readLedger(state);
           updated.materials.push({ tool: tool.id, at: Date.now(), data: JSON.stringify(value ?? {}).slice(0, 3000) });

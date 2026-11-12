@@ -114,11 +114,17 @@ test('MCP writes require account, group, caller and explicit write grants and re
 });
 
 test('all MCP batch schemas are validated before the first proposed external write', async () => {
-  const f = await fixture({ write: true, infer: args => proposed({ ...args.tools[1].function, args: { query: 'hello' } },
-    { ...args.tools[0].function, args: { query: 'NOT_VALID' } }) });
+  const f = await fixture({ write: true, infer: (args, round) => {
+    if (round === 1) return proposed({ ...args.tools[1].function, args: { query: 'hello' } },
+      { ...args.tools[0].function, args: { query: 'NOT_VALID' } });
+    const outcomes = args.messages.filter(message => message.role === 'tool').map(message => JSON.parse(message.content));
+    assert.equal(outcomes.length, 2);
+    assert.ok(outcomes.every(outcome => outcome.executed === false));
+    return { text: '这批操作未执行，可以修改请求后再试。' };
+  } });
   try {
     f.emit(); await f.idle();
-    assert.equal(f.requests.length, 1);
+    assert.equal(f.requests.length, 2, '整批未执行的真实结果交给模型自然接话');
     assert.equal(f.calls.length, 0, 'invalid later arguments must prevent an earlier valid write from executing');
   } finally { await f.close(); }
 });

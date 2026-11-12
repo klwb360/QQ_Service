@@ -1,6 +1,9 @@
 import { createHash } from 'node:crypto';
 import { onebotHosts } from './network-policy.mjs';
 import { importMcpConfig, validateMcpConfig, parseMcpSecretName } from './mcp-config.mjs';
+import { BUILTIN_QQ_TOOL_IDS, listBuiltinQQTools } from './qq-tools.mjs';
+
+const builtinQqReadTools = new Set(listBuiltinQQTools().filter(tool => tool.effect === 'read').map(tool => tool.id));
 
 export const DEFAULT_CHAT_SOCIAL = Object.freeze({
   name: '', aliases: [], interests: '', batchMs: 1500, followUpSeconds: 120, accountCallsPerHour: 30,
@@ -153,7 +156,7 @@ export function validateConfig(input, { applying = false, hasSecret = () => fals
   catch (error) { issue('mcp', error.message, '请检查 MCP 服务、连接和工具审批配置。'); }
   const toolId = value => typeof value === 'string' && (/^[a-z][a-z0-9-]{0,63}\/[a-z][a-z0-9_]{0,47}$/.test(value)
     || /^mcp:[a-z][a-z0-9-]{0,63}\/[a-f0-9]{24}$/.test(value)
-    || ['qq:current_group_recent', 'qq:current_group_search'].includes(value));
+    || BUILTIN_QQ_TOOL_IDS.includes(value));
   const string = (value, fallback, label, max = 2000, path = 'config') => {
     if (value === undefined) return fallback;
     if (typeof value !== 'string' || value.length > max) { issue(path, `${label}必须是最多 ${max} 字符的文本`, '请缩短此字段，并使用文本格式。'); return fallback; }
@@ -338,7 +341,8 @@ export function validateConfig(input, { applying = false, hasSecret = () => fals
     };
     for (const key of ['activeStart', 'activeEnd']) if (!/^([01]\d|2[0-3]):[0-5]\d$/.test(normalized[key])) issue(`${prefix}.${key}`, '主动活动时间须为 HH:MM');
     if (social.readTools !== undefined) {
-      if (!Array.isArray(social.readTools) || social.readTools.length > 20 || social.readTools.some(tool => !toolId(tool))) issue(`${prefix}.readTools`, '主动素材只读工具须为最多 20 项的有效工具标识');
+      if (!Array.isArray(social.readTools) || social.readTools.length > 20 || social.readTools.some(tool => !toolId(tool)
+        || tool.startsWith('qq:') && !builtinQqReadTools.has(tool))) issue(`${prefix}.readTools`, '主动素材只读工具须为最多 20 项的有效只读工具标识');
       else normalized.readTools = [...new Set(social.readTools)];
     }
     return normalized;
@@ -376,7 +380,7 @@ export function validateConfig(input, { applying = false, hasSecret = () => fals
   const tools = section('tools');
   for (const key of Object.keys(tools)) if (!['enabled', 'builtinQQ', 'catalogMode', 'triggers', 'aliases', 'prefix', 'skill', 'grants'].includes(key)) issue(`tools.${key}`, '不支持的工具配置字段');
   result.tools.enabled = bool(tools.enabled, false, '群友工具调用', 'tools.enabled');
-  result.tools.builtinQQ = bool(tools.builtinQQ, false, '内置 QQ 上下文工具', 'tools.builtinQQ');
+  result.tools.builtinQQ = bool(tools.builtinQQ, false, '内置 QQ MCP 工具', 'tools.builtinQQ');
   if (tools.catalogMode !== undefined && !['auto', 'all'].includes(tools.catalogMode)) issue('tools.catalogMode', '工具发现方式仅支持 auto 或 all');
   result.tools.catalogMode = tools.catalogMode === 'all' ? 'all' : 'auto';
   result.tools.prefix = string(tools.prefix, '/工具', '工具指令前缀', 30, 'tools.prefix');

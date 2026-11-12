@@ -41,7 +41,7 @@ test('setup completion is established by successful account start, persists thro
     assert.equal(service.setupStatus().completed, true);
     assert.equal(service.store.getConfig().permissions.released, false);
     await service.close(); service = null;
-    const reopened = createStore(directory);
+    const reopened = createStore(directory, { profileId: 'test' });
     try {
       assert.equal(reopened.isSetupCompleted('12345678'), true);
       assert.equal(reopened.isSetupCompleted('87654321'), false);

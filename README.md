@@ -14,7 +14,9 @@ v0.7.0 起仅通过 API 接入模型，已移除 ChatGPT 订阅／Codex 安装�
 
 v0.8.0 增加角色卡预览与历史回退、自动经历札记、可清空的当前会话状态和 Docker 网页部署。NapCat Shell 可正常使用；SnowLuma 已准备独立适配和[安全审查记录](docs/SNOWLUMA_SECURITY_REVIEW.md)，Windows 隔离验证未完成前保持禁用。人格与记忆使用同一稳定账号身份，不因连接端改变而重建。见 [人格与记忆](docs/PERSONA_MEMORY.md)、[Docker 部署](docs/DOCKER.md)。
 
-开发分支正在加入标准 MCP 客户端：支持本地 stdio、Streamable HTTP 和旧版 SSE，并沿用每账号、群和调用人授权；工具可按需搜索加载，还可单独开启本群最近消息与关键词检索。随应用提供 Bilibili 收藏夹、稍后再看与专栏的聊天后台总结，以及本地计算／临时笔记 MCP 示例。Bilibili 可通过聊天选择内容日期与每日运行时段，结果返回原授权会话；无字幕时会明确仅概述元数据。导入不会运行服务，工具需发现与审批后才能使用；已发布的 v0.8.0 EXE 尚不包含此功能。见 [MCP 配置与开发指南](docs/MCP.md)。
+开发分支正在加入标准 MCP 客户端：支持本地 stdio、Streamable HTTP 和旧版 SSE，并沿用每账号、群和调用人授权；工具可按需搜索加载。内置 QQ MCP 使用进程内连接，提供当前群缓存、成员查询，以及另行授权的戳一戳、真实 @／引用消息和表情回应。随应用提供 Bilibili 收藏夹、稍后再看与专栏的聊天后台总结，以及本地计算／临时笔记 MCP 示例。Bilibili 可通过聊天选择内容日期与每日运行时段，结果返回原授权会话；无字幕时会明确仅概述元数据。外部服务导入不会运行程序，工具需发现与审批后才能使用；已发布的 v0.8.0 EXE 尚不包含这些功能。见 [MCP 配置与开发指南](docs/MCP.md)。
+
+开发分支同时将记忆保存上限提高为原来的11倍：对话原文可保留330天，人工记忆和经历札记允许保存更长内容。设置中可选择独立的记忆目录，完全退出并重启后迁移，账号配置、密钥和消息权限保持在原资料目录。扩大的是保存容量，每轮模型检索与上下文预算不随之增加。
 
 ![QQ_Service 展开账号后的连续配置面板](docs/assets/account-control.png)
 
@@ -85,6 +87,7 @@ Docker 用户在仓库目录运行 `docker compose up -d --build`，访问 `http
 | Windows 应用 | Electron 自绘标题栏和窗口按钮，管理单实例与托盘；附带 Node.js 运行本地后台 |
 | 一键安装 | NapCat 接入方式全局设置；本地安装后选择启动文件，或按账号安装 Docker 容器；模型 API 无需安装 CLI |
 | 插件与 AI 工具调用 | 模块页导入可信插件，为账号、群和调用人授权工具；支持真实 @、戳一戳及名字／别名唤醒，自定义 Skill 与插件独立加密凭据。AI 可选择已授权工具执行；写入需明确请求和额外授权。见 [开发指南](docs/PLUGIN_DEVELOPMENT.md)、[Bilibili 示例](examples/plugins/bilibili-assistant) |
+| QQ 内置 MCP（开发分支） | 默认关闭；查询当前群缓存与成员，按明确请求戳一戳、发送真实 @／引用消息及添加／取消表情回应。逐工具授权，写操作需指定调用人，统一经过 QQ 权限与防重复发送门；不提供群管理功能或外部服务端口 |
 | 自由群聊与主动分享 | 每群单独开启；记录双向对话、合并短消息并接住追问，AI 判断接话或沉默；可使用独立授权的只读工具寻找素材，自行决定是否分享。见 [配置指南](docs/SOCIAL_CHAT.md) |
 | 群友记忆 | 设置中按账号、实际 QQ、群和成员管理明确事实与偏好；AI 提出候选，经主人确认后用于聊天，可编辑、删除或逐群暂停 |
 | 人格与经历 | 每个 QQ 一套人格，按群覆盖风格；Markdown 角色卡、提示预览和历史草稿回退；有真实来源的自身经历自动积累，可暂停、编辑、归档或删除 |
@@ -149,6 +152,9 @@ src/providers.mjs         DeepSeek / OpenAI 兼容 API 模型调用
 src/mcp-client.mjs        标准 SDK stdio / HTTP / SSE 连接
 src/mcp-manager.mjs       每账号服务生命周期、工具发现与审批
 src/mcp-schema.mjs        有界 JSON Schema Worker 校验
+src/qq-mcp-server.mjs     当前 QQ 请求的进程内 MCP 服务与回执
+src/qq-tools.mjs          本群缓存、成员和受限互动工具
+src/memory-storage.mjs    独立记忆数据库、容量和目录迁移
 src/store.mjs             每账号配置、凭据与 SQLite 数据
 scripts/                  运行环境准备与打包校验
 .github/workflows/        Windows 自动测试、构建与发布

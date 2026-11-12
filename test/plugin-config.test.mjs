@@ -67,7 +67,7 @@ test('旧配置缺省关闭QQ上下文工具并使用自动目录，新增开关
   assert.deepEqual(explicit.tools.aliases, ['小Q']);
 });
 
-test('仅两个内置QQ上下文标识可进入群工具授权及主动只读工具配置', () => {
+test('内置QQ工具标识可进入群工具授权，旧上下文工具保持兼容', () => {
   const ids = ['qq:current_group_recent', 'qq:current_group_search'];
   const config = structuredClone(DEFAULT_CONFIG);
   config.tools.builtinQQ = true;
@@ -77,7 +77,7 @@ test('仅两个内置QQ上下文标识可进入群工具授权及主动只读工
   assert.deepEqual(validated.tools.grants.map(grant => grant.tool), ids);
   assert.deepEqual(validated.groups[0].social.readTools, [...ids, 'hello-group/lookup']);
   assert.equal(validated.permissions.released, false);
-  for (const bad of ['qq:send_message', 'qq:other_group_search', 'qq:current_group_recent/extra', 'qq:current_group_\nsearch', 'qq:CURRENT_GROUP_SEARCH']) {
+  for (const bad of ['qq:delete_group', 'qq:other_group_search', 'qq:current_group_recent/extra', 'qq:current_group_\nsearch', 'qq:CURRENT_GROUP_SEARCH']) {
     const invalidGrant = structuredClone(config); invalidGrant.tools.grants[0].tool = bad;
     assert.throws(() => validateConfig(invalidGrant), error => error.issues.some(issue => issue.path === 'tools.grants.0.tool'));
     const invalidRead = structuredClone(config); invalidRead.groups[0].social.readTools = [bad];

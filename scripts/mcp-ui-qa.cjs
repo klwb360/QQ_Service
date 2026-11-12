@@ -54,6 +54,9 @@ async function until(check,label,timeout=10000){const deadline=Date.now()+timeou
  assert.equal(await page.locator('#qq-context-tools-enabled').isChecked(),false);assert.equal(await page.locator('#tool-catalog-mode').inputValue(),'auto');
  await page.locator('#qq-context-tools-enabled').check();await page.locator('#tool-catalog-mode').selectOption('all');
  const qqGrant=page.locator('[data-plugin-tool="qq:current_group_recent"]');await qqGrant.locator('[data-tool-grant-enable]').check();await qqGrant.locator('[data-tool-grant-field="groupIds"]').fill('98765001');
+ assert.equal(await page.locator('[data-plugin-tool^="qq:"]').count(),7,'内置 QQ MCP 展示完整的七项能力');
+ const qqPoke=page.locator('[data-plugin-tool="qq:poke_member"]');
+ await qqPoke.locator('[data-tool-grant-enable]').check();await qqPoke.locator('[data-tool-grant-field="groupIds"]').fill('98765001');await qqPoke.locator('[data-tool-grant-field="userIds"]').fill('333333');await qqPoke.locator('[data-tool-grant-write]').check();
  await page.locator('#mcp-add').click();
  await page.locator('#mcp-service-label').fill('本地 MCP 演示');await page.locator('#mcp-service-command').fill(process.execPath);await page.locator('#mcp-service-args').fill(JSON.stringify([fixture,events,definition]));
  await page.locator('[data-mcp-add-secret="env"]').click();await page.locator('#mcp-env-rows [data-mcp-secret-key]').fill('SAMPLE_SECRET');await page.locator('#mcp-env-rows [data-mcp-secret-value]').fill('UI_MCP_SECRET');await page.locator('#mcp-service-save').click();
@@ -94,6 +97,8 @@ async function until(check,label,timeout=10000){const deadline=Date.now()+timeou
  await page.locator('[data-page="scenarios"]').click();await page.locator('[data-scenario-tab="permissions"]').click();await page.locator('.group-social-settings>summary').click();await page.locator('.group-social-advanced>summary').click();
  assert.equal(await page.locator('[data-group-social-tool="'+writeId+'"]').count(),0,'写工具不能成为主动素材工具');await page.locator('[data-group-social-tool="'+readId+'"]').check();
  assert.equal(await page.locator('[data-group-social-tool="qq:current_group_recent"]').count(),1);assert.equal(await page.locator('[data-group-social-tool="qq:current_group_search"]').count(),1);await page.locator('[data-group-social-tool="qq:current_group_recent"]').check();
+ for(const id of ['poke_member','send_message','react_message'])assert.equal(await page.locator('[data-group-social-tool="qq:'+id+'"]').count(),0,'QQ写动作不能成为后台只读素材工具');
+ for(const id of ['current_group_members','current_group_member'])assert.equal(await page.locator('[data-group-social-tool="qq:'+id+'"]').count(),1);
  await page.locator('[data-page="modules"]').click();
  pass('真实stdio发现、schema不支持提示、只读建议不授权、双hash审批与群/调用人授权、主动只读工具');
  // Metadata drift must reset UI approval even while account grants remain.
@@ -144,4 +149,14 @@ async function until(check,label,timeout=10000){const deadline=Date.now()+timeou
  const calculate=notesCard.locator('[data-mcp-tool="calculate"]');await calculate.locator('[data-mcp-approval-field="enabled"]').check();await calculate.locator('[data-mcp-approval-field="effect"]').selectOption('read');await calculate.locator('[data-mcp-confirm-tool]').click();
  await page.setViewportSize({width:1250,height:900});await page.locator('#toast-region').evaluate(element=>element.replaceChildren());await notesCard.screenshot({path:path.join(artifacts,'QQ_Service-mcp-built-in-example.png'),animations:'disabled'});
  assert.equal(await page.evaluate(()=>document.documentElement.scrollWidth<=innerWidth),true);assert.deepEqual(errors,[]);pass('内置笔记和Bilibili入口仅填表，笔记示例真实SDK发现成功，1250px干净界面截图');
+ await page.locator('[data-page="settings"]').click();
+ const storage=page.locator('#memory-storage-card');await storage.locator('[data-storage-directory]').fill(path.join(temp,'my-memories'));
+ const stagedResponse=page.waitForResponse(response=>response.url().endsWith('/api/memory-storage')&&response.request().method()==='POST');await storage.locator('[data-storage-save]').click();assert.ok((await stagedResponse).ok());
+ await page.waitForFunction(()=>document.querySelector('#memory-storage-card [data-storage-pending]').textContent.includes('my-memories'));
+ assert.equal(app.accounts.get(a.account.id).store.memoryPath.includes('my-memories'),false,'保存目录不能热迁正在使用的记忆库');
+ await storage.locator('[data-storage-default]').click();const resetResponse=page.waitForResponse(response=>response.url().endsWith('/api/memory-storage')&&response.request().method()==='POST');await storage.locator('[data-storage-save]').click();assert.ok((await resetResponse).ok());
+ await page.waitForFunction(()=>!document.querySelector('#memory-storage-card [data-storage-save]').disabled);
+ assert.equal(await storage.locator('[data-storage-directory]').inputValue(),'');assert.deepEqual(errors,[]);
+ await page.screenshot({path:path.join(artifacts,'QQ_Service-memory-directory.png'),fullPage:true});
+ pass('内置QQ MCP动作独立授权、后台只读清单裁剪、真实设置API保存目录和取消待迁移均通过');
 })().catch(error=>{console.error(error);process.exitCode=1;}).finally(async()=>{try{await browser?.close();}finally{try{await app?.close();}finally{fs.rmSync(temp,{recursive:true,force:true});}}});

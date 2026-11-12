@@ -81,7 +81,7 @@ const toolResult = f => JSON.parse(f.requests.find(request => request.messages.s
 
 test('QQ context tools are opt-in, read-only and cannot be called from a scope-free local endpoint', async () => {
   assert.equal(DEFAULT_CONFIG.tools.builtinQQ, false);
-  assert.ok(listBuiltinQQTools().every(tool => tool.source === 'qq' && tool.effect === 'read'));
+  assert.ok(listBuiltinQQTools().filter(tool => [RECENT, SEARCH].includes(tool.id)).every(tool => tool.source === 'qq' && tool.effect === 'read'));
   const f = await fixture();
   try {
     await assert.rejects(f.runtime.callTool(RECENT, {}), /不支持本地|当前已验证/);
@@ -139,7 +139,7 @@ test('model-supplied account/group/websocket selectors are rejected before any c
       f.store.conversation.list = input => { if (input.limit === 100) historyReads++; return original(input); };
       f.emit(); await f.idle();
       assert.equal(historyReads, 0);
-      assert.equal(f.requests.length, 1);
+      assert.equal(f.requests.length, 2, '越权参数未执行，拒绝结果允许模型自然接话');
       assert.ok(f.outbound.every(packet => !JSON.stringify(packet).includes('333333')));
     } finally { await f.close(); }
   }

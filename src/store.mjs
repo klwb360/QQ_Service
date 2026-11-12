@@ -8,6 +8,7 @@ import { createPersonaStore, normalizePersona } from './persona.mjs';
 import { createExperienceStore } from './experience-store.mjs';
 import { createConversationStateStore } from './conversation-state.mjs';
 import { canonicalMcpConnection, mcpSecretName, parseMcpSecretName } from './mcp-config.mjs';
+import { openMemoryDatabase } from './memory-storage.mjs';
 
 export function atomicJson(file, value) {
   const temp = `${file}.${process.pid}.tmp`;
@@ -15,7 +16,7 @@ export function atomicJson(file, value) {
   fs.renameSync(temp, file);
 }
 
-export function createStore(dataDir) {
+export function createStore(dataDir, { memoryDirectory = dataDir, profileId = 'legacy' } = {}) {
   fs.mkdirSync(dataDir, { recursive: true, mode: 0o700 });
   const configFile = path.join(dataDir, 'config.json');
   const vaultFile = path.join(dataDir, 'vault.json');
@@ -70,10 +71,14 @@ export function createStore(dataDir) {
   const saveState = (next) => { atomicJson(configFile, next); state = next; };
   const stagedSecretNames = () => Object.keys(secrets).filter(name => name.startsWith('draft:') && isCredentialName(name.slice(6)));
   const secretsPending = () => stagedSecretNames().some(name => secrets[name] !== secrets[name.slice(6)]);
-  const { memory, conversation } = createMemoryStore({ db, getState: () => state });
-  const personas = createPersonaStore({ db });
-  const experiences = createExperienceStore({ db, getState: () => state });
-  const conversationState = createConversationStateStore({ db, getState: () => state });
+  let memoryStorage;
+  try { memoryStorage = openMemoryDatabase({ dataDir, memoryDirectory, profileId, legacyDb: db }); }
+  catch (cause) { db.close(); throw cause; }
+  const memoryDb = memoryStorage.db;
+  const { memory, conversation } = createMemoryStore({ db: memoryDb, legacyDb: db, getState: () => state });
+  const personas = createPersonaStore({ db: memoryDb });
+  const experiences = createExperienceStore({ db: memoryDb, getState: () => state });
+  const conversationState = createConversationStateStore({ db: memoryDb, legacyDb: db, getState: () => state });
   const recordPersona = (config = state.applied) => {
     if (!/^[1-9]\d{3,19}$/.test(config.botQQ || '')) return;
     const current = personas.get({ actualQQ: config.botQQ });
@@ -89,7 +94,7 @@ export function createStore(dataDir) {
   // apply returns them to read-only, or when the QQ transport goes offline.
   for (const config of [state.applied, state.previous]) if (config?.permissions?.released === true) recordSetupCompleted(config.botQQ);
   return {
-    dataDir,
+    dataDir, memoryPath: memoryStorage.file,
     memory, conversation, personas, experiences, conversationState, recordPersona, recordSetupCompleted,
     isSetupCompleted: actualQQ => Boolean(db.prepare('SELECT 1 FROM tasks WHERE key=?').get(setupKey(actualQQ))),
     getState: () => structuredClone(state),
@@ -159,6 +164,6 @@ export function createStore(dataDir) {
     getTask: (key) => { const row = db.prepare('SELECT value FROM tasks WHERE key=?').get(key); return row ? JSON.parse(row.value) : null; },
     setTask(key, value) { db.prepare('INSERT OR REPLACE INTO tasks VALUES (?,?)').run(key, JSON.stringify(value)); },
     metrics: () => ({ storedMessages: db.prepare('SELECT count(*) AS n FROM messages').get().n, storedSummaries: db.prepare('SELECT count(*) AS n FROM summaries').get().n }),
-    close: () => db.close()
+    close: () => { try { memoryStorage.close(); } finally { db.close(); } }
   };
 }

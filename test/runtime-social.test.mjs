@@ -395,7 +395,8 @@ test('主动检查首次不立即发言，随后可用单独授权的只读工�
 
 test('普通群友已有写工具授权也不能被后台借用，模型请求未提供写工具时不执行', async () => {
   const probe = toolProbe();
-  const f = await fixture({ pluginManager: probe.manager, infer: async () => call(toolFunctionName('social-probe/update')) });
+  const f = await fixture({ pluginManager: probe.manager, infer: async args => args.messages.some(message => message.role === 'tool')
+    ? result('', { action: 'silent', reason: '这项操作未执行，保持沉默。' }) : call(toolFunctionName('social-probe/update')) });
   try {
     enableProbe(f);
     f.config.groups[0].social.proactive = true;
@@ -403,7 +404,7 @@ test('普通群友已有写工具授权也不能被后台借用，模型请求�
     const now = Date.now();
     await f.runtime.tickSocial(now);
     await f.runtime.tickSocial(now + 11 * 60_000); await f.idle();
-    assert.equal(f.requests.length, 1);
+    assert.equal(f.requests.length, 2, '拒绝不执行写入，模型可以选择沉默');
     assert.equal(probe.calls.length, 0);
     assert.equal(f.outbound.length, 0);
     assert.equal(f.requests[0].tools.some(tool => tool.function.name === toolFunctionName('social-probe/update')), false);
@@ -660,14 +661,15 @@ test('清空当前会话会取消尚未开始的旧批次和计时器，新消�
 
 test('合并不同成员消息时不借最后一位成员的写权限执行其他人的任务', async () => {
   const probe = toolProbe();
-  const f = await fixture({ pluginManager: probe.manager, infer: async () => call(toolFunctionName('social-probe/update'), '借用其他成员授权发表评论') });
+  const f = await fixture({ pluginManager: probe.manager, infer: async args => args.messages.some(message => message.role === 'tool')
+    ? result('这条请求我没有执行。') : call(toolFunctionName('social-probe/update'), '借用其他成员授权发表评论') });
   try {
     enableProbe(f);
     f.config.chat.social.batchMs = 30;
     f.emit({ user_id: 666666, message: [{ type: 'at', data: { qq: '999999' } }, { type: 'text', data: { text: ' 帮我在这个视频下发表评论。' } }] });
     f.emit({ user_id: 555555, message: [{ type: 'at', data: { qq: '999999' } }, { type: 'text', data: { text: ' 只介绍一下视频内容。' } }] });
     await f.idle();
-    assert.equal(f.requests.length, 1, '两位成员的碎片消息合并到同一轮');
+    assert.equal(f.requests.length, 2, '两位成员的碎片消息合并到同一轮，拒绝后由模型接话');
     const input = JSON.parse(f.requests[0].messages.find(message => message.role === 'user').content);
     assert.deepEqual(input.request.map(item => item.userId), ['666666', '555555']);
     assert.ok((f.requests[0].tools || []).every(tool => tool.function.name !== toolFunctionName('social-probe/update')),

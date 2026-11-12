@@ -741,15 +741,20 @@
   }
   const groupSocialDefaults = { enabled: false, proactive: false, interests: '', style: '', activeStart: '10:00', activeEnd: '22:00', decisionCallsPerHour: 12, repliesPerHour: 6, proactiveIntervalMinutes: 10, readTools: [] };
   function qqContextToolSource() {
-    return { id: 'qq', name: 'QQ 上下文', source: 'qq', enabled: draft?.tools?.builtinQQ === true, tools: draft?.tools?.builtinQQ === true ? [
+    return { id: 'qq', name: 'QQ MCP', source: 'qq', enabled: draft?.tools?.builtinQQ === true, tools: draft?.tools?.builtinQQ === true ? [
       { id: 'qq:current_group_recent', name: '最近群消息', effect: 'read', description: '只读查看当前授权群实际缓存的最近消息，最多 100 条；不接受跨账号或跨群参数。' },
-      { id: 'qq:current_group_search', name: '搜索群消息', effect: 'read', description: '按关键词搜索当前授权群实际缓存的最近 100 条消息；不是 QQ 全部历史。' }
+      { id: 'qq:current_group_search', name: '搜索群消息', effect: 'read', description: '按关键词搜索当前授权群实际缓存的最近 100 条消息；不是 QQ 全部历史。' },
+      { id: 'qq:current_group_members', name: '查找本群成员', effect: 'read', description: '读取本群成员的 QQ、昵称、群名片和角色，可按名字查找；不会读取其他群。' },
+      { id: 'qq:current_group_member', name: '查看群友资料', effect: 'read', description: '查询当前群指定成员的基本资料。' },
+      { id: 'qq:poke_member', name: '戳一戳群友', effect: 'write', description: '向当前群已核实的成员发起一次戳一戳，不自动重试。' },
+      { id: 'qq:send_message', name: '发送 @ 或引用回复', effect: 'write', description: '向当前群发送文字，可真实 @ 最多 3 位成员，或引用本群已接收的消息。' },
+      { id: 'qq:react_message', name: '消息表情回应', effect: 'write', description: '对本群已接收的消息添加或取消指定表情回应。' }
     ] : [] };
   }
   function socialReadTools() {
     return pluginCatalog.flatMap(plugin => (plugin.tools || []).filter(tool => tool.effect === 'read').map(tool => ({ id: `${plugin.id}/${tool.name}`, label: `${plugin.name || plugin.id} · ${tool.name}`, enabled: draft?.plugins?.some(entry => entry.id === plugin.id && entry.enabled) === true })))
       .concat(mcpToolSources().flatMap(source => source.tools.filter(tool => tool.effect === 'read').map(tool => ({ id: tool.id, label: `MCP · ${source.name} · ${tool.name}`, enabled: source.enabled }))))
-      .concat(qqContextToolSource().tools.map(tool => ({ id: tool.id, label: `QQ 上下文 · ${tool.name}`, enabled: true })));
+      .concat(qqContextToolSource().tools.filter(tool => tool.effect === 'read').map(tool => ({ id: tool.id, label: `QQ MCP · ${tool.name}`, enabled: true })));
   }
   function renderGroupSocial(group, index) {
     const social = { ...groupSocialDefaults, ...group.social };
@@ -1296,7 +1301,7 @@
       const grant = toolGrant(toolId);
       const buffered = grant || toolGrantDrafts.get(`${selectedAccountId}:${toolId}`);
       const write = tool.effect === 'write';
-      return `<div class="plugin-tool" data-plugin-tool="${escapeHTML(toolId)}"><div class="plugin-tool-title"><label class="check-field"><input type="checkbox" data-tool-grant-enable ${grant ? 'checked' : ''} ${!state ? 'disabled' : ''}><span>${escapeHTML(tool.name)}</span></label><span class="pill ${write ? 'pill-orange' : 'pill-neutral'}">${write ? '修改数据' : '只读查询'}</span></div><p>${escapeHTML(tool.description || '')}</p><fieldset class="plugin-tool-grant-fields" ${!state || !grant ? 'disabled' : ''}><legend class="sr-only">${escapeHTML(tool.name)} 调用范围</legend><label class="field">允许的群号<input data-tool-grant-field="groupIds" inputmode="numeric" placeholder="多个群号用逗号分隔" value="${escapeHTML(buffered?.groupIds?.join(', ') || '')}" maxlength="2200"><small>还需在群与消息权限中允许读取和发送。</small></label><label class="field">允许调用的 QQ<input data-tool-grant-field="userIds" inputmode="numeric" placeholder="${write ? '写入工具必须指定调用人' : '留空表示这些群内的成员'}" value="${escapeHTML(buffered?.userIds?.join(', ') || '')}" maxlength="2200"><small>${write ? '必须指定 QQ，多个号码用逗号分隔。' : '多个 QQ 用逗号分隔；留空表示所选群内的成员。'}</small></label>${write ? `<label class="check-field tool-write-grant"><input type="checkbox" data-tool-grant-write ${buffered?.allowWrite ? 'checked' : ''}><span>允许修改外部应用数据</span></label>` : ''}</fieldset></div>`;
+      return `<div class="plugin-tool" data-plugin-tool="${escapeHTML(toolId)}"><div class="plugin-tool-title"><label class="check-field"><input type="checkbox" data-tool-grant-enable ${grant ? 'checked' : ''} ${!state ? 'disabled' : ''}><span>${escapeHTML(tool.name)}</span></label><span class="pill ${write ? 'pill-orange' : 'pill-neutral'}">${write ? (plugin.source === 'qq' ? 'QQ 互动' : '修改数据') : '只读查询'}</span></div><p>${escapeHTML(tool.description || '')}</p><fieldset class="plugin-tool-grant-fields" ${!state || !grant ? 'disabled' : ''}><legend class="sr-only">${escapeHTML(tool.name)} 调用范围</legend><label class="field">允许的群号<input data-tool-grant-field="groupIds" inputmode="numeric" placeholder="多个群号用逗号分隔" value="${escapeHTML(buffered?.groupIds?.join(', ') || '')}" maxlength="2200"><small>还需在群与消息权限中允许读取和发送。</small></label><label class="field">允许调用的 QQ<input data-tool-grant-field="userIds" inputmode="numeric" placeholder="${write ? '写入工具必须指定调用人' : '留空表示这些群内的成员'}" value="${escapeHTML(buffered?.userIds?.join(', ') || '')}" maxlength="2200"><small>${write ? '必须指定 QQ，多个号码用逗号分隔。' : '多个 QQ 用逗号分隔；留空表示所选群内的成员。'}</small></label>${write ? `<label class="check-field tool-write-grant"><input type="checkbox" data-tool-grant-write ${buffered?.allowWrite ? 'checked' : ''}><span>${plugin.source === 'qq' ? '允许执行此 QQ 互动' : '允许修改外部应用数据'}</span></label>` : ''}</fieldset></div>`;
     }).join('')}</section>`;
   }
   function renderAccountTools() {
@@ -2608,6 +2613,7 @@
     $('.page-footer span').textContent = 'QQ_Service · Windows 桌面应用';
     $('.page-footer span:last-child').textContent = '模型配置 ≠ 发送授权 · 关闭窗口留在托盘';
   }
+  window.QQMemoryStorageUI?.mount({ api });
   window.QQMemoryUI?.create({
     getAccounts: () => accounts,
     getSelectedAccountId: () => selectedAccountId,

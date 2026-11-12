@@ -295,7 +295,7 @@ test('写入工具需要明确允许写入且限定请求人，空请求人范�
   } finally { await f.close(); }
 });
 
-test('模型请求未知工具或无效参数时只返回通用失败信息，不执行、重试或泄露细节', async t => {
+test('未知工具和越权参数未执行，模型可自然接话；损坏协议仍终止且不泄露细节', async t => {
   const invalid = [
     ['unknown', () => called('unavailable_tool')],
     ['invalid JSON', args => called(args.tools[0].function.name, '{"query":')],
@@ -303,12 +303,15 @@ test('模型请求未知工具或无效参数时只返回通用失败信息，�
     ['unknown argument', args => called(args.tools[0].function.name, { query: 'hi', unexpected: true })],
   ];
   for (const [label, bad] of invalid) await t.test(label, async () => {
-    const f = await fixture({ infer: bad });
+    const f = await fixture({ infer: (args, index) => index === 1 ? bad(args)
+      : { provider: 'deepseek', text: '这个操作我没执行，咱们换个办法。' } });
     try {
       f.emit(); await f.idle();
-      assert.equal(f.requests.length, 1); assert.equal(f.calls().length, 0);
+      const recoverable = label !== 'invalid JSON';
+      assert.equal(f.requests.length, recoverable ? 2 : 1); assert.equal(f.calls().length, 0);
       assert.ok(f.outbound.length <= 1);
-      if (f.outbound.length) assert.deepEqual(f.outbound[0].params.message, [{ type: 'text', data: { text: '工具调用未完成，请管理员查看运行日志。' } }]);
+      if (f.outbound.length) assert.deepEqual(f.outbound[0].params.message, [{ type: 'text', data: { text: recoverable
+        ? '这个操作我没执行，咱们换个办法。' : '工具调用未完成，请管理员查看运行日志。' } }]);
       assert.equal(JSON.stringify(f.outbound).includes('fake-private-key-not-for-plugins'), false);
     } finally { await f.close(); }
   });

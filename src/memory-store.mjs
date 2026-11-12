@@ -1,4 +1,5 @@
 import { createHash, randomUUID } from 'node:crypto';
+import { MEMORY_STORAGE_LIMITS } from './memory-storage.mjs';
 
 const fail = (message, statusCode = 400) => Object.assign(new Error(message), { statusCode });
 const identifier = (value, label) => {
@@ -46,7 +47,7 @@ const fromRow = row => row ? ({
 // Separate tables keep conversation and confirmed memory independent from the
 // notification history's retention policy. The enclosing profile directory is
 // the first isolation boundary; every query also pins actual QQ and group.
-export function createMemoryStore({ db, getState }) {
+export function createMemoryStore({ db, legacyDb = db, getState }) {
   db.exec(`
     CREATE TABLE IF NOT EXISTS conversation_messages (
       actual_qq TEXT NOT NULL,group_id TEXT NOT NULL,message_id TEXT NOT NULL,user_id TEXT NOT NULL,
@@ -76,7 +77,9 @@ export function createMemoryStore({ db, getState }) {
     db.prepare("SELECT 1 FROM sqlite_master WHERE type='table' AND name=?").get(name));
   const identities = () => [...new Set([
     ...configurations().map(config => config.botQQ),
-    ...db.prepare('SELECT DISTINCT actual_qq FROM member_memories UNION SELECT DISTINCT actual_qq FROM memory_groups UNION SELECT DISTINCT actual_qq FROM conversation_messages UNION SELECT DISTINCT account_id FROM messages').all().map(row => row.actual_qq),
+    ...db.prepare('SELECT DISTINCT actual_qq FROM member_memories UNION SELECT DISTINCT actual_qq FROM memory_groups UNION SELECT DISTINCT actual_qq FROM conversation_messages').all().map(row => row.actual_qq),
+    ...(legacyDb.prepare("SELECT 1 FROM sqlite_master WHERE type='table' AND name='messages'").get()
+      ? legacyDb.prepare('SELECT DISTINCT account_id AS actual_qq FROM messages').all().map(row => row.actual_qq) : []),
     ...optionalTables().flatMap(name => db.prepare(`SELECT DISTINCT actual_qq FROM ${name}`).all().map(row => row.actual_qq)),
   ].filter(value => typeof value === 'string' && /^[1-9]\d{3,19}$/.test(value)))];
   const getGroup = input => {
@@ -107,7 +110,7 @@ export function createMemoryStore({ db, getState }) {
       conditions.push("(text LIKE ? ESCAPE '\\' OR user_id LIKE ? ESCAPE '\\' OR EXISTS (SELECT 1 FROM conversation_messages c WHERE c.actual_qq=member_memories.actual_qq AND c.group_id=member_memories.group_id AND c.user_id=member_memories.user_id AND c.display_name LIKE ? ESCAPE '\\'))");
       params.push(pattern, pattern, pattern);
     }
-    params.push(Math.max(1, Math.min(1000, Number.isFinite(Number(limit)) ? Math.floor(Number(limit)) : 500)));
+    params.push(Math.max(1, Math.min(MEMORY_STORAGE_LIMITS.managementListRecords, Number.isFinite(Number(limit)) ? Math.floor(Number(limit)) : 500)));
     return db.prepare(`SELECT * FROM member_memories WHERE ${conditions.join(' AND ')} ORDER BY updated_at DESC,id DESC LIMIT ?`).all(...params).map(fromRow);
   };
   const transaction = action => {
@@ -183,7 +186,7 @@ export function createMemoryStore({ db, getState }) {
         if (!selected(actualQQ, groupId)) throw fail('请先在本账号选择并允许读取这个群。', 409);
         const userId = identifier(input.userId, '群友 QQ');
         if (userId === actualQQ) throw fail('群友记忆不能以 AI 账号自身为对象。');
-        const text = cleanText(input.text, '记忆内容', 600), kind = input.kind || 'fact';
+        const text = cleanText(input.text, '记忆内容', MEMORY_STORAGE_LIMITS.memberMemoryTextChars), kind = input.kind || 'fact';
         if (!['fact', 'preference'].includes(kind)) throw fail('记忆类别无效。');
         return insert({ actualQQ, groupId, userId, text, kind, status: 'confirmed', origin: 'manual', sources: [] });
       }
@@ -196,7 +199,7 @@ export function createMemoryStore({ db, getState }) {
         db.prepare('DELETE FROM member_memories WHERE id=? AND version=?').run(current.id, current.version);
         return null;
       }
-      const text = input.action === 'update' ? cleanText(input.text, '记忆内容', 600) : current.text;
+      const text = input.action === 'update' ? cleanText(input.text, '记忆内容', MEMORY_STORAGE_LIMITS.memberMemoryTextChars) : current.text;
       const kind = input.action === 'update' ? input.kind || current.kind : current.kind;
       if (!['fact', 'preference'].includes(kind)) throw fail('记忆类别无效。');
       const status = input.action === 'confirm' ? 'confirmed' : input.action === 'reject' ? 'rejected' : current.status;
@@ -250,14 +253,14 @@ export function createMemoryStore({ db, getState }) {
       if (!['user', 'assistant'].includes(input.role)) throw fail('会话角色无效。');
       if ((input.role === 'assistant' && userId !== actualQQ) || (input.role === 'user' && userId === actualQQ)) throw fail('会话发送身份与角色不符。');
       if (input.role === 'assistant' && input.delivery && input.delivery !== 'sent') return false;
-      const messageId = cleanText(String(input.messageId || ''), '消息标识', 300), text = cleanText(input.text, '会话文字', 12000);
+      const messageId = cleanText(String(input.messageId || ''), '消息标识', 300), text = cleanText(input.text, '会话文字', MEMORY_STORAGE_LIMITS.conversationTextChars);
       const result = db.prepare('INSERT OR IGNORE INTO conversation_messages VALUES (?,?,?,?,?,?,?,?,?,?)').run(actualQQ, groupId, messageId, userId, input.role, text, seconds(input.time), typeof input.replyTo === 'string' ? input.replyTo.slice(0, 300) : '', String(input.displayName || '').slice(0, 80), input.role === 'assistant' ? 'sent' : 'received');
-      db.prepare('DELETE FROM conversation_messages WHERE time < ?').run(Math.floor(Date.now() / 1000) - 30 * 86400);
+      db.prepare('DELETE FROM conversation_messages WHERE time < ?').run(Math.floor(Date.now() / 1000) - MEMORY_STORAGE_LIMITS.conversationRetentionDays * 86400);
       return result.changes > 0;
     },
     list({ actualQQ, groupId, limit = 24 }) {
       scope({ actualQQ, groupId });
-      const cutoff = Math.floor(Date.now() / 1000) - 30 * 86400;
+      const cutoff = Math.floor(Date.now() / 1000) - MEMORY_STORAGE_LIMITS.conversationRetentionDays * 86400;
       return db.prepare('SELECT actual_qq AS actualQQ,group_id AS groupId,message_id AS messageId,user_id AS userId,role,text,time,reply_to AS replyTo,display_name AS displayName,delivery FROM conversation_messages WHERE actual_qq=? AND group_id=? AND time>=? ORDER BY time DESC,rowid DESC LIMIT ?').all(actualQQ, groupId, cutoff, Math.max(1, Math.min(100, Math.floor(Number(limit) || 24)))).reverse();
     },
   };

@@ -12,8 +12,8 @@ import { createBilibiliDigestIntegration } from './bilibili-digest-service.mjs';
 
 const fail = (message, statusCode = 409, details) => Object.assign(new Error(message), { statusCode, ...(details ? { details } : {}) });
 
-export function createAccountService({ account, dataDir, csrfToken, installerFactory = createInstaller, runtimeFactory = createRuntime, mcpManagerFactory = createMcpManager, bilibiliIntegrationFactory = createBilibiliDigestIntegration, pluginManager, ensurePluginReady = () => {}, getNapcatSettings = () => ({ mode: 'docker', executablePath: '', revision: 0 }), redactAll = value => String(value), checkConflicts = () => {}, reserveConfig = () => () => {} }) {
-  const store = createStore(dataDir);
+export function createAccountService({ account, dataDir, memoryDirectory, csrfToken, installerFactory = createInstaller, runtimeFactory = createRuntime, mcpManagerFactory = createMcpManager, bilibiliIntegrationFactory = createBilibiliDigestIntegration, pluginManager, ensurePluginReady = () => {}, getNapcatSettings = () => ({ mode: 'docker', executablePath: '', revision: 0 }), redactAll = value => String(value), checkConflicts = () => {}, reserveConfig = () => () => {} }) {
+  const store = createStore(dataDir, { memoryDirectory, profileId: account.id });
   const logs = [], jobs = [];
   let environment = null, activeJob = null, applying = false, started = false, closed = false, mcpBusy = false;
   let applyFinished = Promise.resolve();
