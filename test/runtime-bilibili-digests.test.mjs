@@ -43,7 +43,7 @@ async function fixture() {
   config.tools = { ...config.tools, enabled: true, catalogMode: 'all', triggers: ['command'], prefix: '/工具',
     grants: tools.map(tool => ({ tool: tool.id, groupIds: [GROUP], userIds: [CALLER], allowWrite: tool.effect === 'write' })) };
   store.saveDraft(config); store.commitDraft();
-  const controls = [], remoteCalls = [], inferences = [], outbound = [], secrets = { model: 'fixture-model-key' };
+  const controls = [], remoteCalls = [], inferences = [], outbound = [], logs = [], secrets = { model: 'fixture-model-key' };
   let available = true, trusted = true, selected = tools[0], args = request, peer, sequence = 0, emitted = 0, held = null;
   let inference = async input => input.tools
     ? input.messages.some(message => message.role === 'tool') ? { provider: 'deepseek', text: '后台任务已创建，稍后回到本会话。' } : proposal(selected, args)
@@ -58,7 +58,7 @@ async function fixture() {
   };
   const respond = (socket, packet) => socket.send(JSON.stringify({ echo: packet.echo, status: 'ok', retcode: 0,
     data: packet.action === 'get_login_info' ? { user_id: Number(BOT) } : { message_id: String(900000 + outbound.length) } }));
-  const fx = { config, store, tools, manager, controls, remoteCalls, inferences, outbound, secrets, holdNext: false, clock: Date.now(),
+  const fx = { config, store, tools, manager, controls, remoteCalls, inferences, outbound, logs, secrets, holdNext: false, clock: Date.now(),
     setAvailable(value) { available = value; }, setTrusted(value) { trusted = value; },
     setInference(value) { inference = value; }, select(name, input = {}) { selected = tools.find(tool => tool.remoteName === name); args = input; },
     emit(overrides = {}) { emitted++; const packet = { post_type: 'message', message_type: 'group', self_id: BOT,
@@ -81,6 +81,7 @@ async function fixture() {
   }); });
   const runtime = createRuntime({ profileId: PROFILE, getConfig: () => config, getSecret: () => secrets.model,
     store, installer: {}, mcpManager: manager, bilibiliNow: () => fx.clock,
+    log: (message, level) => logs.push({ message, level }),
     bilibiliControl: async control => { controls.push(control); return { jobId: '28d258a4-dd46-4abc-908c-6be759c89872', state: 'queued', notice: '已排队，尚未完成浏览。' }; },
     providers: { deepseek: async input => { inferences.push(input); return inference(input); } } });
   fx.runtime = runtime;
@@ -255,6 +256,39 @@ test('digest delivery is fixed to the original chat and rechecks permissions bef
     assert.equal(result.error.deliveryState, 'partially_sent'); assert.equal(f.outbound.length, 1);
     const forged = { ...job, origin: { ...job.origin, groupId: '333333' } };
     await assert.rejects(f.runtime.deliverBilibiliDigest(forged, '不得发送'), /原始群/);
+  } finally { await f.close(); }
+});
+
+test('a queued digest may deliver after reconnect while its ACK belongs only to the new connection origin', async () => {
+  const f = await fixture();
+  try {
+    const previousOrigin = f.runtime.status().messageOrigin;
+    f.emit(); await f.idle();
+    const job = f.job(), requestSourceId = job.origin.messageId;
+    assert.ok(f.store.conversation.list({ actualQQ: BOT, groupId: GROUP, limit: 100 })
+      .some(row => row.messageId === requestSourceId && row.origin.connectionId === previousOrigin.connectionId));
+    await f.runtime.connect();
+    const currentOrigin = f.runtime.status().messageOrigin;
+    assert.notEqual(currentOrigin.connectionId, previousOrigin.connectionId);
+    assert.equal(f.config.permissions.released, true, 'a transport reconnect does not change the existing group authorization');
+    assert.equal(f.runtime.authorizeBilibiliJob(job), true, 'the original approved chat still owns this queued task');
+
+    const text = '后台整理已完成：先核对星空摄影的拍摄时间。';
+    const before = f.outbound.length;
+    assert.deepEqual(await f.runtime.deliverBilibiliDigest(job, text), { sent: true });
+    assert.equal(f.outbound.length, before + 1);
+    const sent = f.outbound.at(-1);
+    assert.equal(sent.action, 'send_group_msg'); assert.equal(sent.params.group_id, GROUP);
+    assert.deepEqual(sent.params.message, [{ type: 'text', data: { text } }], 'an old request reference must not become a new wire-level reply');
+    const nativeMessageId = String(900000 + f.outbound.length);
+    const cacheMessageId = qqMessageReference({ origin: currentOrigin, nativeMessageId });
+    const saved = f.store.conversation.list({ actualQQ: BOT, groupId: GROUP, limit: 100 }).find(row => row.messageId === cacheMessageId);
+    assert.ok(saved, 'the real delivered ACK must be stored in conversation history');
+    assert.deepEqual(saved.origin, currentOrigin); assert.equal(saved.nativeMessageId, nativeMessageId);
+    assert.equal(saved.role, 'assistant'); assert.equal(saved.delivery, 'sent'); assert.equal(saved.text, text);
+    assert.equal(saved.replyTo, '', 'a previous connection evidence ID is not a current transport reply relationship');
+    assert.equal(job.origin.messageId, requestSourceId, 'delivery does not rewrite the persistent original request identity');
+    assert.ok(f.logs.every(row => !/对话记录保存失败|上下文保存失败/.test(row.message)));
   } finally { await f.close(); }
 });
 

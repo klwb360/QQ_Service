@@ -6,10 +6,11 @@
 
 ## 开发分支 · 外部 SnowLuma 适配与消息来源隔离（2026-11-13，未发布）
 
-- `npm run check`覆盖172个JavaScript文件，差异检查通过；Linux完整869项，866通过、3项平台／可选GUI条件跳过、0失败，约105秒。
+- `npm run check`覆盖172个JavaScript文件，差异检查通过；Linux完整870项，867通过、3项平台／可选GUI条件跳过、0失败，约104秒。
 - 固定协议基线为 `TomyJan/SnowLuma@f2ea3354…`，精确核对 `SnowLuma / 2.4.2-node / v11`；真实本机HTTP、WS、SQLite、素材库及SDK贯通验证独立Token、双通道身份和在线健康、错误账号漂移关闭、公告、回应、8MiB图片／表情、大文件及切换只读。真实QQ、第三方原生组件均未运行。
 - 协议测试验证普通1MiB请求与单张typed Base64图片的独立12MiB请求预算、Snow上传流尾部空白及严格 `streamId__filename` 完成路径，保留SHA／分块／fileId验证。挂起fetch／正文／cleanup有总deadline，清空会话可立即取消上传，已提交结果未知时不重试。
 - 消息记录追加来源列，保留旧rowid和记忆迁移／清空水位；新canonical引用绑定后端及随机连接代。跨后端同nativeID、伪前缀旧行、旧连接代不能用于引用／回应／转发／撤回，历史仍可阅读。持久业务账本使用稳定请求与目标身份；完整账号服务重启并超过120秒后，图片及目标引用改变的回应请求仍不能重放写入。
+- 后台Bilibili任务排队后重连同一QQ，授权仍有效时可正常投递；新ACK保存到当前连接来源，不将旧任务请求引用当作新消息的运输引用，也不丢失已送达的上下文记录。
 - Snow配置／引导及既有账号设置回归通过；真实Chromium新增7组、原MCP7组与素材6组通过。验证外部运行说明、两个Token定位、连接快照、只读状态、真实握手版本显示、禁止误启动NapCat及窄屏；Snow诊断不误展示NapCat／Docker缺失提示或下载链接。没有下载或运行Snow原生程序。
 - Windows资源准备、`verify:stage`、`smoke:stage`通过：76项必需资源、42个后台模块、5个UI脚本，18个QQ／12个Bilibili／2个网页工具和8个预设；暂存后台7条资源及IPC退出正常。最终Windows测试和EXE以[当前草稿PR检查](https://github.com/klwb360/QQ_Service/pull/7/checks)为准。
 - 既有生产依赖容器以只读当前源码、禁外网及临时目录通过135项协议／来源／媒体／素材／网页测试，原5个数据卷保留；本轮未重建最终Docker镜像。

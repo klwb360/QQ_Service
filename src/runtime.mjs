@@ -36,6 +36,10 @@ const stableRequestReference = value => {
   const reference = parseQqMessageReference(value);
   return reference ? `${reference.origin.backend}:${reference.opaque ? 'h' : 'n'}:${reference.opaque ? value.split(':').at(-1) : reference.nativeMessageId}` : value;
 };
+const sameOriginReference = (value, origin) => {
+  const reference = parseQqMessageReference(value);
+  return reference && origin && reference.origin.backend === origin.backend && reference.origin.connectionId === origin.connectionId ? value : '';
+};
 const receiptArguments = (input, legacy = false) => {
   const result = { ...input };
   const ref = value => {
@@ -509,7 +513,7 @@ export function createRuntime({ getConfig, getSecret, store, installer, pluginMa
             await recordTransportMessage({ actualQQ: sendingQQ, groupId: destination.id,
               nativeMessageId: id(delivered?.message_id) || `out:${randomUUID()}`, userId: sendingQQ, role: 'assistant',
               text: clipped.slice(offset, offset + 1800), time: Math.floor(Date.now() / 1000),
-              replyToSourceId: replyToSourceId || (parseQqMessageReference(purpose?.messageId) ? purpose.messageId : ''), delivery: 'sent' }, sendingOrigin);
+              replyToSourceId: replyToSourceId || sameOriginReference(purpose?.messageId, sendingOrigin), delivery: 'sent' }, sendingOrigin);
           } catch (cause) { report('warn', `消息已发送，但对话记录保存失败：${cause.message}`); }
         }
       } catch (error) {
@@ -787,7 +791,7 @@ export function createRuntime({ getConfig, getSecret, store, installer, pluginMa
     counters.sent++;
     try { await recordTransportMessage({ actualQQ: sendingQQ, groupId: scope.groupId, nativeMessageId: messageId, userId: sendingQQ,
       role: 'assistant', text: text.slice(0, 2000), time: Math.floor(Date.now() / 1000),
-      replyToSourceId: parseQqMessageReference(scope.messageId) ? scope.messageId : '', delivery: 'sent' }, sendingOrigin); }
+      replyToSourceId: sameOriginReference(scope.messageId, sendingOrigin), delivery: 'sent' }, sendingOrigin); }
     catch (error) { report('warn', `QQ 内容已发送，但上下文保存失败：${error.message}`); }
     return { executed: true, messageId, messageIds: [messageId] };
   }
