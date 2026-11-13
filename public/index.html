@@ -72,6 +72,7 @@
             <div class="napcat-connect-toolbar" id="napcat-connect-toolbar">
               <div class="napcat-launch-actions">
                 <button class="button button-primary" data-open-napcat-program><svg viewBox="0 0 20 20" aria-hidden="true"><path d="m7 4 9 6-9 6z"/></svg>打开 NapCat</button>
+                <a class="button button-secondary hidden" id="snowluma-release-link" href="https://github.com/TomyJan/SnowLuma/releases/tag/v2.4.2" target="_blank" rel="noopener noreferrer">固定版本与说明 ↗</a>
                 <button class="button button-secondary" id="open-napcat">打开登录页 ↗</button>
               </div>
               <div class="napcat-mode-meta"><span id="connection-napcat-mode">本地安装</span><a href="#settings" data-napcat-settings-link>更改方式</a></div>
@@ -81,8 +82,8 @@
             <div id="snowluma-http-fields" class="form-grid hidden"><label class="field">HTTP 地址<input data-config="qq.httpUrl" placeholder="http://127.0.0.1:3000" spellcheck="false"></label><label class="field"><span>HTTP Token <small class="secret-state" id="snowluma-http-secret-state"></small></span><input type="password" data-secret="snowlumaHttpToken" autocomplete="new-password" placeholder="此 QQ 的 HTTP Token，与 WS Token 分别填写"></label></div>
             <div id="setup-connection-result" class="connection-result" aria-live="polite"></div>
             <details class="account-advanced"><summary>连接帮助</summary>
-              <p id="connector-help-text">NapCat 登录的 QQ 应与当前账号一致。启用正向 WebSocket，再将连接地址和 OneBot Token 填到上方。</p><details class="snowluma-audit-summary"><summary>SnowLuma 实验接入说明</summary><p>连接自行安装并运行的已验证版本。WS 与 HTTP 地址、Token 按账号独立配置；不会扫描或跟随其他 QQ。未完成隔离运行验证时保持禁用。</p><a href="https://github.com/klwb360/QQ_Service/blob/main/docs/SNOWLUMA_SECURITY_REVIEW.md" target="_blank" rel="noopener noreferrer">查看安全审查记录 ↗</a></details>
-              <div class="napcat-help-links"><a data-napcat-install-link href="https://napneko.github.io/guide/boot/Shell" target="_blank" rel="noopener noreferrer">本地安装说明 ↗</a><a href="#modules">管理模块 →</a><button id="napcat-login-token" class="inline-link hidden">查看登录 Token</button></div>
+              <p id="connector-help-text">NapCat 登录的 QQ 应与当前账号一致。启用正向 WebSocket，再将连接地址和 OneBot Token 填到上方。</p><details class="snowluma-audit-summary"><summary>SnowLuma 外部实验接入说明</summary><p>使用自行安装并运行的固定外部实例。WS 与 HTTP 地址、Token 按账号分别配置；本应用不安装或运行其原生组件，也不将协议测试显示为完整安全认证。</p><a href="https://github.com/klwb360/QQ_Service/blob/fix/model-presets/docs/SNOWLUMA_SECURITY_REVIEW.md" target="_blank" rel="noopener noreferrer">查看源码与运行验证范围 ↗</a></details>
+              <div class="napcat-help-links" data-connector-napcat-links><a data-napcat-install-link href="https://napneko.github.io/guide/boot/Shell" target="_blank" rel="noopener noreferrer">本地安装说明 ↗</a><a href="#modules">管理模块 →</a><button id="napcat-login-token" class="inline-link hidden">查看登录 Token</button></div>
               <label class="field"><span id="connector-webui-label">NapCat 管理页面</span><input data-config="qq.webUiUrl" placeholder="http://127.0.0.1:6099" spellcheck="false"></label>
               <div id="setup-connection-jobs"></div>
             </details>
@@ -120,7 +121,7 @@
         </div>
       </section>
 
-      <section class="page-panel hidden" id="page-modules"><div class="notice notice-info">NapCat 负责连接 QQ；AI 使用账号控制中配置的 API，无需另外安装模型登录组件。</div><div id="module-cards" class="module-grid"></div>
+      <section class="page-panel hidden" id="page-modules"><div class="notice notice-info" id="module-connector-note">QQ 连接组件负责收发消息；AI 使用账号控制中配置的 API，无需另外安装模型登录组件。</div><div id="module-cards" class="module-grid"></div>
         <details class="card mcp-section" id="mcp-section"><summary class="mcp-section-heading"><span><strong>MCP 服务</strong><small>接入本地程序或远程服务，让 AI 调用你明确批准的工具。</small></span><span class="pill pill-neutral" id="mcp-server-count">0 个服务</span></summary><div class="mcp-section-content"><div class="mcp-manager-actions"><p class="field-note" id="mcp-account-note">请先选择账号。</p><div class="card-actions"><button type="button" class="button button-quiet button-small" id="mcp-refresh">刷新状态</button><button type="button" class="button button-secondary button-small" id="mcp-import">导入配置</button><button type="button" class="button button-primary button-small" id="mcp-add">＋ 添加服务</button></div></div><p class="field-note">每个账号独立保存服务和密钥。导入不会安装、启动或授权工具；编辑后仍需保存、应用账号参数。</p><div class="mcp-example-links"><button type="button" class="inline-link" id="mcp-example-notes">使用内置计算与笔记示例 →</button><button type="button" class="inline-link" id="mcp-example-bilibili">Bilibili 只读工具 →</button></div><div id="mcp-service-cards" class="mcp-service-cards"></div></div></details>
         <section class="card custom-plugins-section" aria-labelledby="custom-plugins-title">
           <div class="section-heading"><div><h2 id="custom-plugins-title">自定义插件</h2><p>插件安装到本机，各账号分别选择启用和设置参数。</p></div><a class="plugin-guide-link" href="https://github.com/klwb360/QQ_Service/blob/feat/group-permission-toolbar/docs/PLUGIN_DEVELOPMENT.md" target="_blank" rel="noopener noreferrer">开发指南 ↗</a></div>
@@ -162,7 +163,7 @@
           <p class="napcat-settings-error hidden" id="napcat-settings-error" role="alert"></p>
         </section>
         <section class="card memory-settings-card" aria-labelledby="memory-settings-title"><div class="memory-settings-intro"><span class="memory-settings-icon" aria-hidden="true">▤</span><div><h2 id="memory-settings-title">记忆与经历</h2><p>管理群友事实、经历札记和当前会话，让聊天自然接续。</p></div></div><button type="button" class="button button-primary" id="open-memory-manager">查看记忆</button></section>
-        <section class="card" id="window-settings-card"><div class="section-heading"><div><h2>关闭窗口时</h2><p>选择右上角关闭按钮和 Alt + F4 的行为；此设置保存在本机。</p></div></div><div class="settings-options"><label><input type="radio" name="closeBehavior" value="tray" checked=""><span>最小化到系统托盘<small>窗口收起，已启动的 QQ 任务继续运行；可以从托盘重新打开。</small></span></label><label><input type="radio" name="closeBehavior" value="quit"><span>完全退出应用<small>停止这个应用管理的所有账号任务和后台服务。</small></span></label></div><div class="card-actions"><button class="button button-secondary" id="quit-application">立即完全退出应用</button></div><p class="field-note">外部启动的 NapCat 由你自行管理。应用设置不改变任何 QQ 账号的消息权限。</p></section></section>
+        <section class="card" id="window-settings-card"><div class="section-heading"><div><h2>关闭窗口时</h2><p>选择右上角关闭按钮和 Alt + F4 的行为；此设置保存在本机。</p></div></div><div class="settings-options"><label><input type="radio" name="closeBehavior" value="tray" checked=""><span>最小化到系统托盘<small>窗口收起，已启动的 QQ 任务继续运行；可以从托盘重新打开。</small></span></label><label><input type="radio" name="closeBehavior" value="quit"><span>完全退出应用<small>停止这个应用管理的所有账号任务和后台服务。</small></span></label></div><div class="card-actions"><button class="button button-secondary" id="quit-application">立即完全退出应用</button></div><p class="field-note">外部启动的 QQ 连接端由你自行管理。应用设置不改变任何 QQ 账号的消息权限。</p></section></section>
       <footer class="page-footer"><span>QQ_Service · Windows 本地账号管理</span><span>创建 ≠ 登录 · 模型配置 ≠ 发送授权</span></footer>
     </main>
   </div>

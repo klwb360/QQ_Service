@@ -12,7 +12,9 @@ QQ_Service 是支持多个 QQ 账号同时在线的本地助手。「账号控�
 
 v0.7.0 起仅通过 API 接入模型，已移除 ChatGPT 订阅／Codex 安装和登录。需要 OpenAI 专用 Key 时，见 [机器人专用 API 配置](docs/OPENAI_API_SETUP.md)。
 
-v0.8.0 增加角色卡预览与历史回退、自动经历札记、可清空的当前会话状态和 Docker 网页部署。NapCat Shell 可正常使用；SnowLuma 已准备独立适配和[安全审查记录](docs/SNOWLUMA_SECURITY_REVIEW.md)，Windows 隔离验证未完成前保持禁用。人格与记忆使用同一稳定账号身份，不因连接端改变而重建。见 [人格与记忆](docs/PERSONA_MEMORY.md)、[Docker 部署](docs/DOCKER.md)。
+v0.8.0 增加角色卡预览与历史回退、自动经历札记、可清空的当前会话状态和 Docker 网页部署。人格与记忆使用同一稳定账号身份，不因连接端改变而重建。见 [人格与记忆](docs/PERSONA_MEMORY.md)、[Docker 部署](docs/DOCKER.md)。
+
+开发分支增加固定 SnowLuma 2.4.2／OneBot v11 的外部实验适配：用户自行准备并运行连接端，分别填写事件 WS、动作 HTTP 地址和两个 Token；QQ_Service 核对版本、同一 QQ 身份及两条链路在线状态。可以切换回 NapCat，切换后恢复只读；人格与记忆保留，消息动作引用限定在当前连接代。已完成公开 TS／WebUI 构建及协议夹具验证，Windows 动态安全检查和真实 QQ 仍待验。应用不自动安装、启动或分发 SnowLuma 原生组件，外部适配可用不等于原生组件已审核安全。见 [接入与审查](docs/SNOWLUMA_SECURITY_REVIEW.md)、[构建与证据](docs/SNOWLUMA_BUILD.md)。
 
 开发分支正在加入标准 MCP 客户端：支持本地 stdio、Streamable HTTP 和旧版 SSE，沿用每账号、群和调用人授权，按需加载工具。进程内 QQ MCP 提供18项受限工具；另随附 Bilibili 聊天后台总结、计算／临时笔记、公开网页搜索／读取三套可选服务。八个精选入口帮助准备配置，**不会自动安装、登录或启动第三方应用**；Slack OAuth当前尚不支持。Bilibili可在聊天中选择来源、内容日期和每日运行时段，结果返回原会话，无字幕时注明元数据范围。已发布的 v0.8.0 EXE 尚不包含这些开发分支功能，见 [MCP指南](docs/MCP.md) 与 [精选入口](docs/MCP_PRESETS.md)。
 

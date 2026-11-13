@@ -88,11 +88,12 @@ export function createAccountService({ account, dataDir, memoryDirectory, csrfTo
   const setupStatus = () => {
     const { draft, applied } = store.getState();
     const actual = runtime.status();
+    const connector = resolveConnector(draft);
+    const connectionName = connector.backend === 'snowluma' ? 'SnowLuma' : 'NapCat';
     const secretSnapshot = store.getSecretSnapshot();
-    const napcatTokenPending = Object.hasOwn(secretSnapshot, 'draft:napcatToken') && secretSnapshot['draft:napcatToken'] !== secretSnapshot.napcatToken;
     const activeTokenNames = draft.qq.backend === 'snowluma' ? ['snowlumaWsToken', 'snowlumaHttpToken'] : ['napcatToken'];
     const connectionSecretPending = activeTokenNames.some(name => Object.hasOwn(secretSnapshot, `draft:${name}`) && secretSnapshot[`draft:${name}`] !== secretSnapshot[name]);
-    const verified = Boolean(actual.connected && actual.accountId && String(actual.accountId) === draft.botQQ && draft.qq.enabled && applied.qq.enabled && applied.botQQ === draft.botQQ && draft.qq.backend === applied.qq.backend && draft.qq.wsUrl === applied.qq.wsUrl && draft.qq.httpUrl === applied.qq.httpUrl && !connectionSecretPending);
+    const verified = Boolean(actual.connected && actual.accountId && String(actual.accountId) === draft.botQQ && (actual.backend === undefined || actual.backend === draft.qq.backend) && activeTokenNames.every(name => store.hasDraftSecret(name)) && draft.qq.enabled && applied.qq.enabled && applied.botQQ === draft.botQQ && draft.qq.backend === applied.qq.backend && draft.qq.wsUrl === applied.qq.wsUrl && draft.qq.httpUrl === applied.qq.httpUrl && !connectionSecretPending);
     const providers = ['deepseek', ...(draft.models.apis || []).map(model => model.id)].map(id => {
       const model = getModelConfig(draft, id);
       const credentialName = id === 'deepseek' ? 'deepseekApiKey' : apiSecretName(id);
@@ -110,26 +111,35 @@ export function createAccountService({ account, dataDir, memoryDirectory, csrfTo
     const groupTestNeeded = actual.permissions?.writableGroups?.length > 0;
     const blockers = [];
     const add = (code, message, field, action, nextStep) => blockers.push({ code, message, field, action, nextStep });
-    if (!draft.botQQ) add('QQ_NUMBER_MISSING', '请填写要接入的 QQ 号。', 'botQQ', '这个 QQ 号应与 NapCat 稍后扫码登录的账号一致。', 'identity');
+    if (!draft.botQQ) add('QQ_NUMBER_MISSING', '请填写要接入的 QQ 号。', 'botQQ', `这个 QQ 号应与 ${connectionName} 登录的账号一致。`, 'identity');
     if (!selected.length) add('MODEL_NOT_SELECTED', '尚未选择 AI 模型。', 'models', '从模型来源下拉栏选择一个 API 厂商。', 'models');
     for (const provider of selected.filter(provider => !provider.credentialReady)) add('MODEL_KEY_MISSING', `${provider.label} 尚未配置 API Key。`, isApiProviderId(provider.id) ? `models.apis.${provider.id}` : 'models.deepseek', '填写对应服务商的项目专用 API Key，然后保存。', 'models');
     for (const provider of selected.filter(provider => isApiProviderId(provider.id) && !getModelConfig(draft, provider.id).model)) add('MODEL_NAME_MISSING', `${provider.label} 尚未填写模型名称。`, `models.apis.${provider.id}.model`, '填写服务商提供的模型 ID；API Key 并不能代替模型名称。', 'models');
-    if (!draft.qq.enabled) add('QQ_DISABLED', '尚未启用本账号的 QQ 连接。', 'qq.enabled', '先准备 NapCat 并扫码登录，再保存并应用为只读。', 'connection');
-    else if (!store.hasDraftSecret('napcatToken')) add('NAPCAT_TOKEN_MISSING', '尚未配置 OneBot Token。', 'secrets.napcatToken', '复制 NapCat 正向 WebSocket 的 Token，不能使用 WebUI 登录密码。', 'connection');
-    else if (!verified) blockers.push(actual.issue || { code: 'QQ_NOT_CONNECTED', message: '尚未验证实际 QQ 登录账号。', field: 'qq.wsUrl', action: '启动 NapCat 并登录此 QQ，然后保存应用并测试连接。', nextStep: 'connection' });
+    if (!draft.qq.enabled) add('QQ_DISABLED', '尚未启用本账号的 QQ 连接。', 'qq.enabled', `先准备 ${connectionName} 并登录，再保存并应用为只读。`, 'connection');
+    else {
+      const missing = activeTokenNames.filter(name => !store.hasDraftSecret(name));
+      for (const name of missing) {
+        if (name === 'napcatToken') add('NAPCAT_TOKEN_MISSING', '尚未配置 OneBot Token。', 'secrets.napcatToken', '复制 NapCat 正向 WebSocket 的 Token，不能使用 WebUI 登录密码。', 'connection');
+        else {
+          const ws = name === 'snowlumaWsToken';
+          add(ws ? 'SNOWLUMA_WS_TOKEN_MISSING' : 'SNOWLUMA_HTTP_TOKEN_MISSING', `尚未配置 SnowLuma ${ws ? 'WebSocket' : 'HTTP'} Token。`, `secrets.${name}`, `复制此账号 SnowLuma ${ws ? 'WebSocket 事件服务' : 'HTTP 动作服务'}的 Token；两个服务分别填写，不能使用管理页面登录密码。`, 'connection');
+        }
+      }
+      if (!missing.length && !verified) blockers.push(actual.issue || { code: 'QQ_NOT_CONNECTED', message: '尚未验证实际 QQ 登录账号。', field: 'qq.wsUrl', action: `先在外部启动 ${connectionName} 并登录此 QQ，然后保存应用并测试连接。`, nextStep: 'connection' });
+    }
     if (!scenariosReady) add('SCENARIO_NOT_SELECTED', '请选择这个账号需要执行的任务。', 'chat', '开启聊天、通知汇总或收藏整理，并选择使用的模型。', 'scenarios');
     if (!hasTargets) add('PERMISSION_TARGET_MISSING', '尚未选择群或私聊范围。', 'groups', '读取已加入群，勾选读取与发送范围；仅本地汇总时无需私聊接收 QQ。', 'permissions');
     if (draft.ownerQQ && draft.ownerQQ === draft.botQQ && (draft.permissions.privateReplies || (draft.summary.enabled && draft.summary.sendToOwner))) add('PRIVATE_RECIPIENT_SAME', '私聊接收 QQ 不能与接入 QQ 相同。', 'ownerQQ', '仅群聊或本地整理时关闭私聊回复和私聊投递；需要私聊时填写另一个 QQ。', 'permissions');
     const steps = [
-      { id: 'identity', title: '创建账号', complete: Boolean(draft.botQQ), description: '填写要接入的 QQ 号，与 NapCat 登录账号保持一致。' },
+      { id: 'identity', title: '创建账号', complete: Boolean(draft.botQQ), description: `填写要接入的 QQ 号，与 ${connectionName} 登录账号保持一致。` },
       { id: 'models', title: '配置 AI', complete: modelsReady, description: modelsReady ? '凭据已配置；可主动测试真实调用，测试会消耗所选 API 的额度。' : '选择一个 API 厂商，填写模型名称和 API Key。' },
-      { id: 'connection', title: '连接 QQ', complete: verified, description: verified ? `NapCat 实际登录 QQ ${actual.accountId}，已核对身份。` : '先在 NapCat 登录 QQ，再验证本机 OneBot 连接；AI 登录不能代替 QQ 登录。' },
+      { id: 'connection', title: '连接 QQ', complete: verified, description: verified ? `${connectionName} 实际登录 QQ ${actual.accountId}，已核对身份。` : connector.backend === 'snowluma' ? '先在外部运行固定版本 SnowLuma 并登录 QQ，再分别填写 WS／HTTP 地址和 Token，验证同一账号身份及在线状态。' : '先在 NapCat 登录 QQ，再验证本机 OneBot 连接；AI 登录不能代替 QQ 登录。' },
       { id: 'scenarios', title: '选择任务', complete: scenariosReady, description: '选择当前账号需要执行的聊天、通知汇总或收藏整理任务。' },
       { id: 'permissions', title: '授权并启动', complete: Boolean(released && hasTargets && !store.pendingChanges()), description: released ? '已释放当前已应用参数的权限；修改后应用会恢复只读。' : '选择群和消息范围后，明确点击启动；保存或测试连接不会授权发送。' },
       { id: 'verification', title: '验证效果', complete: Boolean(released && (!groupTestNeeded || actual.qqTest?.tested)), optional: !groupTestNeeded, description: groupTestNeeded ? '可主动向已授权群发送一条固定测试消息，不调用 AI。' : '当前方案无需向群发送测试消息；本地结果可在仪表盘查看。' },
     ];
     const nextStep = steps.find(step => !step.complete)?.id || 'complete';
-    return safeDetails({ accountId: account.id, completed: store.isSetupCompleted(draft.botQQ), readOnly: actual.permissions?.readOnly ?? !released, released, pendingChanges: store.pendingChanges(), nextStep, steps: steps.map(({ complete, ...step }) => ({ ...step, state: complete ? 'complete' : step.id === nextStep ? 'current' : 'pending' })), blockers, models: { configured: modelsReady, tested: selected.some(provider => provider.tested), providers }, connection: { state: actual.state || (actual.connected ? 'connected' : 'disconnected'), connected: Boolean(actual.connected), verified, expectedQQ: draft.botQQ, actualQQ: String(actual.accountId || ''), lastError: actual.lastError || '', issue: actual.issue || null }, verification: actual.qqTest || { tested: false } });
+    return safeDetails({ accountId: account.id, completed: store.isSetupCompleted(draft.botQQ), readOnly: actual.permissions?.readOnly ?? !released, released, pendingChanges: store.pendingChanges(), nextStep, steps: steps.map(({ complete, ...step }) => ({ ...step, state: complete ? 'complete' : step.id === nextStep ? 'current' : 'pending' })), blockers, models: { configured: modelsReady, tested: selected.some(provider => provider.tested), providers }, connection: { backend: connector.backend, name: connectionName, externalRuntime: connector.backend === 'snowluma', state: actual.state || (actual.connected ? 'connected' : 'disconnected'), connected: Boolean(actual.connected), verified, expectedQQ: draft.botQQ, actualQQ: String(actual.accountId || ''), lastError: actual.lastError || '', issue: actual.issue || null }, verification: actual.qqTest || { tested: false } });
   };
   const job = (label, action) => {
     ensureOpen();
@@ -200,7 +210,7 @@ export function createAccountService({ account, dataDir, memoryDirectory, csrfTo
         if (typeof runtime.connect === 'function') await runtime.connect();
         ensureOpen();
         const actual = runtime.status();
-        if (!actual.connected || String(actual.accountId || '') !== config.botQQ) throw Object.assign(fail('QQ 实际登录身份尚未确认或与接入 QQ 号不一致，权限未释放。'), { code: actual.connected ? 'QQ_IDENTITY_MISMATCH' : 'QQ_NOT_CONNECTED', field: 'botQQ', action: '在 NapCat 中登录本账号填写的 QQ，测试连接通过后再启动。', nextStep: 'connection' });
+        if (!actual.connected || String(actual.accountId || '') !== config.botQQ) throw Object.assign(fail('QQ 实际登录身份尚未确认或与接入 QQ 号不一致，权限未释放。'), { code: actual.connected ? 'QQ_IDENTITY_MISMATCH' : 'QQ_NOT_CONNECTED', field: 'botQQ', action: `在 ${config.qq.backend === 'snowluma' ? 'SnowLuma' : 'NapCat'} 中登录本账号填写的 QQ，测试连接通过后再启动。`, nextStep: 'connection' });
       }
       ensureOpen();
       store.recordPersona();
@@ -381,7 +391,10 @@ export function createAccountService({ account, dataDir, memoryDirectory, csrfTo
       }
       throw fail('素材接口不存在。', 404);
     }
-    if (isContainer() && (route === '/napcat/open' || route === '/setup/install' || /^\/modules\/[^/]+\/(?:start|stop|install)$/.test(route))) throw fail('容器版本连接外部运行的 QQ 连接端；请在宿主机启动或管理 NapCat，容器不会控制宿主机进程或 Docker。', 409);
+    if ((route === '/napcat/open' || route === '/setup/install' || /^\/modules\/napcat\/(?:start|install)$/.test(route)) && store.getState().draft.qq.backend === 'snowluma') {
+      throw Object.assign(fail('当前账号选择了外部 SnowLuma。请自行启动对应实例，QQ_Service 不会为此账号安装或启动 NapCat。'), { code: 'QQ_BACKEND_MANAGEMENT_MISMATCH', field: 'qq.backend', nextStep: 'connection' });
+    }
+    if (isContainer() && (route === '/napcat/open' || route === '/setup/install' || /^\/modules\/[^/]+\/(?:start|stop|install)$/.test(route))) throw fail('容器版本连接外部运行的 QQ 连接端；请在宿主机启动或管理连接端，容器不会控制宿主机进程或 Docker。', 409);
     if (route === '/mcp/import') {
       ensureIdle();
       if (Object.keys(body).some(key => !['document', 'config', 'secretUpdates', 'revision'].includes(key))) throw fail('MCP 导入字段无效。', 400);

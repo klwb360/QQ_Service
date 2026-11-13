@@ -8,6 +8,7 @@ import { DEFAULT_CONFIG } from '../src/config.mjs';
 import { createStore } from '../src/store.mjs';
 import { createRuntime } from '../src/runtime.mjs';
 import { toolFunctionName } from '../src/tool-router.mjs';
+import { qqMessageReference } from '../src/qq-message-origin.mjs';
 
 async function waitFor(predicate, timeout = 5000) {
   const end = Date.now() + timeout;
@@ -61,7 +62,7 @@ async function fixture({ infer, failSend = false, pluginManager } = {}) {
       const sendFailed = sending && (typeof failSend === 'function' ? failSend(packet, outbound.length) : failSend);
       socket.send(JSON.stringify({ echo: packet.echo, status: sendFailed ? 'failed' : 'ok',
         retcode: sendFailed ? 1 : 0,
-        data: packet.action === 'get_login_info' ? { user_id: 999999 } : sending ? { message_id: `reply-${outbound.length}` } : {} }));
+        data: packet.action === 'get_login_info' ? { user_id: 999999 } : sending ? { message_id: String(900000 + outbound.length) } : {} }));
     });
   });
   let behavior = infer || (async () => result());
@@ -75,12 +76,13 @@ async function fixture({ infer, failSend = false, pluginManager } = {}) {
     setInfer(fn) { behavior = fn; },
     emit(overrides = {}) {
       delivered++;
-      const messageId = `social-${++sequence}`;
-      peer.send(JSON.stringify({ post_type: 'message', message_type: 'group', self_id: 999999,
+      const messageId = String(100000 + ++sequence);
+      const packet = { post_type: 'message', message_type: 'group', self_id: 999999,
         group_id: 222222, user_id: 555555, message_id: messageId, time: Math.floor(Date.now() / 1000),
         sender: { user_id: 555555, nickname: '群友甲' },
-        message: [{ type: 'at', data: { qq: '999999' } }, { type: 'text', data: { text: ' 你好，聊点什么？' } }], ...overrides }));
-      return messageId;
+        message: [{ type: 'at', data: { qq: '999999' } }, { type: 'text', data: { text: ' 你好，聊点什么？' } }], ...overrides };
+      peer.send(JSON.stringify(packet));
+      return qqMessageReference({ origin: runtime.status().messageOrigin, nativeMessageId: String(packet.message_id) });
     },
     async idle() {
       await waitFor(() => runtime.status().metrics.received >= delivered);
@@ -281,7 +283,7 @@ test('AI 实际回复进入双向上下文，真实追问不被普通群冷却�
   try {
     f.emit(); await f.idle();
     assert.equal(f.outbound.length, 1);
-    f.emit({ post_type: 'message_sent', user_id: 999999, message_id: 'reply-1', message: '先了解群里的兴趣，再一起找话题。' });
+    f.emit({ post_type: 'message_sent', user_id: 999999, message_id: '900001', message: '先了解群里的兴趣，再一起找话题。' });
     await f.idle();
     assert.equal(f.requests.length, 1);
     f.emit({ message: '那下一步呢？' }); await f.idle();
@@ -295,8 +297,8 @@ test('AI 实际回复进入双向上下文，真实追问不被普通群冷却�
 });
 
 test('仅在真实回复发送成功后创建有来源的候选记忆，未确认不会当作事实注入', async () => {
-  const f = await fixture({ infer: async (_, index) => result('记住啦，科幻动画确实很有意思。', { memoryCandidates: index === 1 ? [
-    { userId: '555555', text: '喜欢科幻动画', kind: 'preference', sourceIds: ['social-1'] },
+  const f = await fixture({ infer: async (args, index) => result('记住啦，科幻动画确实很有意思。', { memoryCandidates: index === 1 ? [
+    { userId: '555555', text: '喜欢科幻动画', kind: 'preference', sourceIds: [modelRequestId(args)] },
   ] : [] }) });
   try {
     await f.store.memory.setGroup({ actualQQ: '999999', groupId: '222222', enabled: true });
@@ -307,15 +309,15 @@ test('仅在真实回复发送成功后创建有来源的候选记忆，未确�
     assert.equal(records.length, 1);
     assert.equal(records[0].status, 'pending');
     assert.equal(records[0].userId, '555555');
-    assert.equal(records[0].sources[0].messageId, 'social-1');
+    assert.equal(records[0].sources[0].messageId, modelRequestId(f.requests[0]));
     assert.match(records[0].sources[0].text, /我喜欢科幻动画/);
     assert.deepEqual(await f.store.memory.relevant({ actualQQ: '999999', groupId: '222222', userIds: ['555555'], query: '动画', limit: 8 }), []);
   } finally { await f.close(); }
 });
 
 test('发送失败不保存 AI 已发记录，不创建基于未发送回答的记忆候选', async () => {
-  const f = await fixture({ failSend: true, infer: async () => result('好呀。', { memoryCandidates: [
-    { userId: '555555', text: '喜欢科幻动画', kind: 'preference', sourceIds: ['social-1'] },
+  const f = await fixture({ failSend: true, infer: async args => result('好呀。', { memoryCandidates: [
+    { userId: '555555', text: '喜欢科幻动画', kind: 'preference', sourceIds: [modelRequestId(args)] },
   ] }) });
   try {
     await f.store.memory.setGroup({ actualQQ: '999999', groupId: '222222', enabled: true });
@@ -330,8 +332,8 @@ test('发送失败不保存 AI 已发记录，不创建基于未发送回答的�
 
 test('多段回复仅记录 OneBot 确认成功的部分，不把未发送尾段加入上下文或产生记忆', async () => {
   const text = '这是已经准备好的长回复。'.repeat(200);
-  const f = await fixture({ failSend: (_, part) => part >= 2, infer: async () => result(text, { memoryCandidates: [
-    { userId: '555555', text: '喜欢科幻动画', kind: 'preference', sourceIds: ['social-1'] },
+  const f = await fixture({ failSend: (_, part) => part >= 2, infer: async args => result(text, { memoryCandidates: [
+    { userId: '555555', text: '喜欢科幻动画', kind: 'preference', sourceIds: [modelRequestId(args)] },
   ] }) });
   try {
     await f.store.memory.setGroup({ actualQQ: '999999', groupId: '222222', enabled: true });
@@ -542,10 +544,10 @@ test('未启用自由聊天的旧模式也支持账号名字和仅指向真实 A
     assert.equal(f.outbound.length, 1);
     assert.equal(f.outbound[0].params.message[0].data.text, '旧模式的名字回复。');
     f.config.groups[0].triggers = ['reply'];
-    f.emit({ message: [{ type: 'reply', data: { id: 'social-1' } }, { type: 'text', data: { text: '引用群友的话' } }] });
+    f.emit({ message: [{ type: 'reply', data: { id: '100001' } }, { type: 'text', data: { text: '引用群友的话' } }] });
     await f.idle();
     assert.equal(f.requests.length, 1, '引用普通群友消息不会伪装成引用AI');
-    f.emit({ message: [{ type: 'reply', data: { id: 'reply-1' } }, { type: 'text', data: { text: '接着说说' } }] });
+    f.emit({ message: [{ type: 'reply', data: { id: '900001' } }, { type: 'text', data: { text: '接着说说' } }] });
     await f.idle();
     assert.equal(f.requests.length, 2);
     assert.equal(f.outbound.length, 2);
@@ -697,8 +699,8 @@ test('单成员合并消息只把最后一次明确原话绑定为授权请求�
 });
 
 test('群友记忆可独立于自由聊天使用，保留旧触发和冷却且不启动后台话题', async () => {
-  const f = await fixture({ infer: async () => result('你之前就偏好手绘科幻动画，周末可以接着聊。', { memoryCandidates: [
-    { userId: '555555', kind: 'preference', text: '周末喜欢看手绘动画', sourceIds: ['social-2'] },
+  const f = await fixture({ infer: async args => result('你之前就偏好手绘科幻动画，周末可以接着聊。', { memoryCandidates: [
+    { userId: '555555', kind: 'preference', text: '周末喜欢看手绘动画', sourceIds: [modelRequestId(args)] },
   ] }) });
   try {
     f.config.groups[0].social.enabled = false;
@@ -717,7 +719,7 @@ test('群友记忆可独立于自由聊天使用，保留旧触发和冷却且�
     const records = await f.store.memory.list({ actualQQ: '999999', groupId: '222222' });
     assert.equal(records.filter(record => record.status === 'confirmed').length, 1);
     assert.equal(records.filter(record => record.status === 'pending').length, 1);
-    assert.equal(records.find(record => record.status === 'pending').sources[0].messageId, 'social-2');
+    assert.equal(records.find(record => record.status === 'pending').sources[0].messageId, modelRequestId(f.requests[0]));
     f.emit({ message: '那下一步呢？' }); await f.idle();
     f.emit(); await f.idle();
     assert.equal(f.requests.length, 1, '记忆模式不开放免@追问，合法@仍遵守原群冷却');

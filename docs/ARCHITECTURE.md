@@ -183,7 +183,9 @@ Electron 渲染层关闭 Node integration，启用 context isolation 与 sandbox
 
 人格装配统一由 `persona.mjs` 处理；角色版本、经历札记和临时会话按账号存储（开发分支已拆入 `memory.sqlite`）。经历复用正常聊天响应，经来源核验后自动采纳，不改变确认式成员事实。临时会话默认两小时失效，清空会话会过滤旧短上下文而不删除原文。
 
-OneBot适配层区分NapCat WebSocket与SnowLuma WebSocket收事件/HTTP动作，凭据独立；SnowLuma在Windows隔离审查完成前硬禁用。稳定profile与实际QQ仍是数据身份，不使用连接端名称作为记忆键。
+OneBot适配层区分NapCat WebSocket与SnowLuma WebSocket收事件／HTTP动作，HTTP和WS凭据独立。开发分支允许连接用户自行运行的固定SnowLuma 2.4.2-node／OneBot v11，状态是外部实验适配可用、原生运行未验证；不安装、启动或分发第三方组件。握手核对HTTP版本、登录身份及online／good，WS也必须上报同一self_id和在线状态；Api-only WS不足以接收事件。Windows动态安全及真实QQ验收仍待完成。稳定profile与实际QQ仍是记忆身份，不使用连接端名称作为记忆键。
+
+`qq-message-origin.mjs`为每次连接生成宿主控制的连接代，`memory-store.mjs`将`connector_backend`、`connector_origin`、`native_message_id`与消息证据保存。给模型的规范引用为不透明`qqref:v1:...`；读历史可保留旧数据，写动作必须找到当前账号、群、连接端与连接代均匹配的存储行，之后才转换回传输编号。缺来源的旧原始ID不升级为动作证据，重连或切换不会把一个连接端的同号消息作用到另一端。
 
 Docker复用同一Node服务与网页，不运行Electron；通过显式Host/Origin和OneBot主机许可连接外部QQ端，数据持久化至`/data`，不挂Docker socket。详见[人格与记忆](PERSONA_MEMORY.md)、[Docker](DOCKER.md)和[审查记录](SNOWLUMA_SECURITY_REVIEW.md)。
 

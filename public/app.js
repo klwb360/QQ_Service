@@ -195,6 +195,8 @@
     parent[keys.at(-1)] = value;
   }
   function connectionBackend(config = draft) { return config?.qq?.backend === 'snowluma' ? 'snowluma' : 'napcat'; }
+  const snowlumaReferenceUrl = 'https://github.com/TomyJan/SnowLuma/releases/tag/v2.4.2';
+  function connectionName(config = draft) { return connectionBackend(config) === 'snowluma' ? 'SnowLuma' : 'NapCat'; }
   function connectionChanged(editor) {
     if (!editor) return false;
     const before = editor.state?.applied?.qq ?? {};
@@ -212,22 +214,26 @@
     const backend = connectionBackend();
     const snow = backend === 'snowluma';
     const available = state?.connectors?.snowluma?.available === true;
-    const reason = state?.connectors?.snowluma?.reason || '正在补全 Windows 隔离运行验证，暂未开放接入。';
+    const reason = state?.connectors?.snowluma?.reason || (available ? '连接你自行运行的固定 SnowLuma 实例；Windows 及真实 QQ 验收范围请查看审查记录。' : '正在补全 Windows 隔离运行验证，暂未开放接入。');
     const option = $('#qq-backend option[value="snowluma"]');
     option.disabled = !available;
-    option.textContent = available ? 'SnowLuma · 实验接入' : 'SnowLuma · 实验功能待验证';
+    option.textContent = available ? 'SnowLuma · 外部实验接入' : 'SnowLuma · 实验功能待验证';
     $('#qq-backend').value = backend;
     $('#connector-availability').textContent = available ? '每个账号独立选择；切换后保持只读，需要重新确认登录 QQ 和发送范围。' : `SnowLuma：${reason}`;
-    $('#snowluma-security-note').textContent = reason;
-    $('#snowluma-security-note').classList.toggle('hidden', !snow || available);
+    $('#snowluma-security-note').textContent = available ? `参考版本 v${state?.connectors?.snowluma?.review?.version || '2.4.2'}。${reason}` : reason;
+    $('#snowluma-security-note').classList.toggle('hidden', !snow);
     $('#napcat-token-field').classList.toggle('hidden', snow);
     $('#snowluma-ws-token-field').classList.toggle('hidden', !snow);
     $('#snowluma-http-fields').classList.toggle('hidden', !snow);
     $$('[data-open-napcat-program]', $('#napcat-connect-toolbar')).forEach(button => button.classList.toggle('hidden', snow));
     $('.napcat-mode-meta', $('#napcat-connect-toolbar')).classList.toggle('hidden', snow);
+    $('#snowluma-release-link').classList.toggle('hidden', !snow);
+    $('#open-napcat').textContent = snow ? '打开 SnowLuma 管理页 ↗' : '打开登录页 ↗';
+    $('[data-connector-napcat-links]').classList.toggle('hidden', snow);
+    if (snow) $('#napcat-login-token').classList.add('hidden');
     $('#connector-webui-label').textContent = snow ? 'SnowLuma 管理页面' : 'NapCat 管理页面';
-    $('#connector-help-text').textContent = snow ? '自行启动已验证的 SnowLuma 并登录此 QQ。分别填写这个 QQ 的 WS、HTTP 地址和 Token，再测试连接。' : 'NapCat 登录的 QQ 应与当前账号一致。启用正向 WebSocket，再将连接地址和 OneBot Token 填到上方。';
-    if (snow) $('#connection-napcat-hint').textContent = available ? '先自行打开 SnowLuma 并登录此 QQ，再打开登录页、测试连接。' : reason;
+    $('#connector-help-text').textContent = snow ? '在独立目录自行启动固定版本 SnowLuma，满足其 Node 版本要求并登录此 QQ。分别填写此实例的 WS、HTTP 地址及两个 Token；管理页密码不能代替它们。QQ_Service 只连接外部实例，不自动安装或运行 SnowLuma 原生组件。' : 'NapCat 登录的 QQ 应与当前账号一致。启用正向 WebSocket，再将连接地址和 OneBot Token 填到上方。';
+    if (snow) $('#connection-napcat-hint').textContent = available ? '先在外部运行 SnowLuma 并登录此 QQ，再打开管理页、连接并验证；切换后需要重新授权。' : reason;
     if (state?.container === true && !snow) {
       $$('[data-open-napcat-program]', $('#napcat-connect-toolbar')).forEach(button => button.classList.add('hidden'));
       $('.napcat-mode-meta', $('#napcat-connect-toolbar')).classList.add('hidden');
@@ -685,6 +691,10 @@
     return runtime.connectionState ?? runtime.state ?? runtime.status ?? (runtime.connected === false ? 'disconnected' : 'unknown');
   }
   function renderEnvironment() {
+    if (connectionBackend() === 'snowluma') {
+      $('#environment-checks').innerHTML = '<p class="field-note"><strong>SnowLuma 外部运行要求</strong><br>固定协议：SnowLuma 2.4.2-node／OneBot v11。外部 Node.js 使用24.x且至少24.22.1，或26.12.1及以上；请按该发行版要求自行核对。</p><p class="field-note">WS事件与HTTP动作的QQ身份、在线状态及连接版本在本账号的连接检查中验证。本应用内置的Node.js版本不代表外部实例已满足运行要求。</p>';
+      return;
+    }
     const environment = state?.environment;
     let checks = [];
     if (Array.isArray(environment)) checks = environment;
@@ -880,10 +890,10 @@
     const active = napcatSettings();
     const activeNative = active.mode !== 'docker';
     $('#connection-napcat-mode').textContent = activeNative ? '本地安装' : 'Docker';
-    $('#connection-napcat-hint').textContent = activeNative && !active.executablePath
+    if (connectionBackend() === 'napcat') $('#connection-napcat-hint').textContent = activeNative && !active.executablePath
       ? '先在设置中选择启动文件，再打开 NapCat、扫码登录并连接。'
       : '先打开 NapCat，再到登录页扫码登录 QQ，最后连接。';
-    $('#napcat-login-token').classList.toggle('hidden', activeNative);
+    $('#napcat-login-token').classList.toggle('hidden', activeNative || connectionBackend() === 'snowluma');
     $$('[data-napcat-install-link]').forEach(link => {
       const mode = link.closest('#page-settings') ? settings.mode : active.mode;
       link.textContent = mode === 'docker' ? 'Docker 安装说明 ↗' : '本地安装说明 ↗';
@@ -920,7 +930,7 @@
   }
   async function openNapcatProgram() {
     const id = requireAccount();
-    if (connectionBackend() !== 'napcat') throw new Error('请自行启动已验证的 SnowLuma，再打开登录页和测试连接。');
+    if (connectionBackend() !== 'napcat') throw new Error('请在外部启动固定版本 SnowLuma，再打开管理页和测试连接。');
     if (!savedNapcatSettings || pendingNapcatSettings) throw new Error('请等待 NapCat 全局设置加载或保存完成。');
     const settings = napcatSettings();
     if (settings.mode === 'native' && !settings.executablePath) {
@@ -942,10 +952,13 @@
   function renderModules() {
     const modules = getModules();
     const container = state?.container === true;
+    const snow = connectionBackend() === 'snowluma';
+    $('#module-connector-note').textContent = `${snow ? 'SnowLuma 外部实例' : 'NapCat'} 负责连接 QQ；AI 使用账号控制中配置的 API，无需另外安装模型登录组件。`;
     const settings = napcatSettings();
     const native = settings.mode !== 'docker';
     const known = [
-      { id: 'napcat', name: 'NapCat · QQ 连接组件', kind: 'external', description: container ? '当前服务在容器中运行。请从宿主机或独立容器启动 NapCat，再填写 OneBot 连接地址。' : native ? '按官方说明安装，选择启动文件后即可直接打开。' : '通过 Docker 安装和管理此账号的 NapCat 容器。', icon: '⇄' },
+      snow ? { id: 'snowluma', name: 'SnowLuma · 外部 QQ 连接组件', kind: 'external', description: '在外部自行运行固定版本，分别配置 WS 事件和 HTTP 动作地址／Token。本应用不安装、启动或更新该组件；连接后仍需确认 QQ 与群权限。', icon: '⇄' }
+        : { id: 'napcat', name: 'NapCat · QQ 连接组件', kind: 'external', description: container ? '当前服务在容器中运行。请从宿主机或独立容器启动 NapCat，再填写 OneBot 连接地址。' : native ? '按官方说明安装，选择启动文件后即可直接打开。' : '通过 Docker 安装和管理此账号的 NapCat 容器。', icon: '⇄' },
       { id: 'deepseek', name: 'DeepSeek 接入', kind: 'builtin', description: '此账号独立 API Key。配置模型不等于启用社交回复或释放消息权限。', path: 'models.deepseek.enabled', icon: '◈' },
       { id: 'summary', name: '通知汇总', kind: 'builtin', description: '此账号独立通知参数和任务模型；默认保存在本地，可另外授权指定私聊目标。', path: 'summary.enabled', icon: '▤' },
       { id: 'favorites', name: 'QQ 收藏读取', kind: 'builtin', description: '读取此账号的收藏列表与摘要，使用独立收藏模型进行本地整理。', path: 'favorites.enabled', icon: '☆' }
@@ -957,13 +970,17 @@
       const actualStatus = module ? module.state ?? module.status ?? (module.installed ? 'installed' : 'missing') : 'unknown';
       let actions;
       if (builtin) actions = `<button class="button button-secondary button-small" data-go="${definition.id === 'deepseek' ? 'connections' : 'scenarios'}">${enabled ? '查看当前账号参数' : '为当前账号配置'} →</button>`;
+      else if (definition.id === 'snowluma') actions = `<a class="button button-secondary button-small" href="${snowlumaReferenceUrl}" target="_blank" rel="noopener noreferrer">固定版本与说明 ↗</a><button class="button button-quiet button-small" data-open-connector-login>打开管理页 ↗</button><button class="button button-quiet button-small" data-go="connections">配置连接 →</button>`;
       else if (definition.id === 'napcat') actions = container ? '<button class="button button-secondary button-small" data-go="connections">配置外部连接 →</button>' : native
         ? '<button class="button button-secondary button-small" data-open-napcat-program>打开 NapCat</button><a class="module-help-link" href="#settings">选择启动文件 →</a>'
         : '<button class="button button-secondary button-small" data-module-action="install" data-module="napcat">安装 / 检查</button><button class="button button-quiet button-small" data-open-napcat-program>打开 NapCat</button><button class="button button-quiet button-small" data-module-action="stop" data-module="napcat">停止</button>';
       const napcat = definition.id === 'napcat';
+      const snowluma = definition.id === 'snowluma';
+      const snowConnected = snowluma && state?.runtime?.backend === 'snowluma' && state.runtime.connected === true;
+      const snowVersion = snowConnected && state.runtime.connectorVersion?.appVersion;
       const status = napcat && native ? module?.kind === 'native' ? actualStatus : settings.executablePath ? 'configured' : 'not_configured' : actualStatus;
-      const version = napcat && native ? settings.executablePath || '在设置中选择 NapCat 启动文件' : builtin ? '启用功能仍受账号与消息权限约束' : module ? `版本 ${module.version || '未提供'} · ${module.installed ? '已安装' : '未确认安装'}` : '等待此账号的模块检查结果';
-      return `<article class="module-card ${builtin ? 'builtin' : 'external'}" data-module-card="${definition.id}"><div class="module-main"><div class="module-top"><span class="module-icon">${definition.icon}</span>${builtin ? `<span class="pill ${enabled ? 'pill-green' : 'pill-neutral'}">${enabled ? '此账号配置已启用' : '内置 · 尚未启用'}</span>` : pill(status)}</div><h2>${escapeHTML(definition.name)}</h2>${napcat ? `<span class="module-napcat-mode">${native ? '本地安装' : 'Docker'}</span>` : ''}<p>${escapeHTML(definition.description)}</p><div class="module-version ${napcat && native ? 'native-path' : ''}">${escapeHTML(version)}</div>${napcat ? `<div class="napcat-help-links"><a href="${napcatInstallUrl(settings.mode)}" target="_blank" rel="noopener noreferrer">${native ? '本地' : 'Docker'}安装说明 ↗</a><a href="#settings">更改方式</a></div>` : ''}</div><div class="module-actions">${actions}</div></article>`;
+      const version = snowluma ? `${snowVersion ? `已连接协议版本 ${snowVersion} · ` : ''}参考版本 v${state?.connectors?.snowluma?.review?.version || '2.4.2'} · 实际安装及登录状态由外部实例提供` : napcat && native ? settings.executablePath || '在设置中选择 NapCat 启动文件' : builtin ? '启用功能仍受账号与消息权限约束' : module ? `版本 ${module.version || '未提供'} · ${module.installed ? '已安装' : '未确认安装'}` : '等待此账号的模块检查结果';
+      return `<article class="module-card ${builtin ? 'builtin' : 'external'}" data-module-card="${definition.id}"><div class="module-main"><div class="module-top"><span class="module-icon">${definition.icon}</span>${builtin ? `<span class="pill ${enabled ? 'pill-green' : 'pill-neutral'}">${enabled ? '此账号配置已启用' : '内置 · 尚未启用'}</span>` : snowluma ? `<span class="pill ${snowConnected ? 'pill-green' : 'pill-neutral'}">${snowConnected ? '已连接' : '外部运行 · 未连接'}</span>` : pill(status)}</div><h2>${escapeHTML(definition.name)}</h2>${napcat ? `<span class="module-napcat-mode">${native ? '本地安装' : 'Docker'}</span>` : ''}<p>${escapeHTML(definition.description)}</p><div class="module-version ${napcat && native ? 'native-path' : ''}">${escapeHTML(version)}</div>${napcat ? `<div class="napcat-help-links"><a href="${napcatInstallUrl(settings.mode)}" target="_blank" rel="noopener noreferrer">${native ? '本地' : 'Docker'}安装说明 ↗</a><a href="#settings">更改方式</a></div>` : ''}</div><div class="module-actions">${actions}</div></article>`;
     }).join('');
     renderCustomPlugins();
     renderMCP();
@@ -1796,7 +1813,7 @@
     }
     $('#deepseek-model-card').classList.toggle('hidden', selectedProvider?.id !== 'deepseek');
     const issue = connection?.issue ?? runtime.issue;
-    $('#setup-connection-result').innerHTML = verified ? `<p class="account-connection-ok">✓ QQ ${escapeHTML(actualQQ)} 已连接</p>` : `<p class="account-connection-pending">${escapeHTML(issue?.message ?? runtime.lastError ?? '在 NapCat 登录后，点击「连接并继续」。')}</p>`;
+    $('#setup-connection-result').innerHTML = verified ? `<p class="account-connection-ok">✓ QQ ${escapeHTML(actualQQ)} 已连接</p>` : `<p class="account-connection-pending">${escapeHTML(issue?.message ?? runtime.lastError ?? `在 ${connectionName()} 登录后，点击「连接并继续」。`)}</p>`;
     if (issue?.action && !verified) $('#setup-connection-result').insertAdjacentHTML('beforeend', `<p class="connection-fix">下一步：${escapeHTML(issue.action)}</p>`);
     const selectedTasks = [['chat','聊天回复'],['summary','通知汇总'],['favorites','收藏整理']].filter(([id]) => draft[id]?.enabled).map(([,label]) => label);
     $('#setup-task-summary').textContent = selectedTasks.join('、') || '聊天回复、通知汇总、收藏整理';
@@ -1816,7 +1833,7 @@
     const modelRow = $$('#setup-verification-checks .check-row')[1];
     modelRow.insertBefore(modelAction, $('.pill', modelRow));
     const writable = (applied.groups ?? []).find((group) => group.read && group.send);
-    const testText = !verified ? '当前应先完成 QQ 连接：确认 NapCat 已扫码并启用正向 WebSocket 服务，再验证实际 QQ 身份。' : !hasTask ? 'QQ 已连接。请先启用一个功能：聊天、通知汇总或收藏整理，并保存应用。' : !released ? '任务已配置。下一步在“选定群与消息权限”选择群、设定读取 / 发送，再确认“启动此账号”。' : applied.chat?.enabled && writable ? `现在可在群 ${writable.name || writable.id} 中，用其他群成员账号${effectiveTriggers(writable).includes('prefix') ? `发送“${writable.prefix || '/ai'} 你好”` : effectiveTriggers(writable).includes('casual') && !effectiveTriggers(writable).includes('mention') ? '发一条普通消息（概率参与可能不会立即回复，首次验证推荐改为 @ 触发）' : `@ QQ ${actualQQ} 并发送“你好”`}。查看下方接收、模型和发送计数，再核对群中回复。` : applied.summary?.enabled ? '现在可在“账号功能参数”中，选择已应用的可读工作群并运行一次通知汇总。需先在群中产生可读消息。未授权私聊发送时，结果在任务与记录中查看。' : applied.favorites?.enabled ? '现在可在“账号功能参数”中点击“读取此账号收藏”，然后整理已读取收藏。结果可在任务与记录中核对。' : '此账号已启动。请按已授权的触发条件发送测试消息，并查看任务与记录。';
+    const testText = !verified ? connectionBackend() === 'snowluma' ? '当前应先完成 QQ 连接：在外部运行 SnowLuma、登录此 QQ，并配置独立 WS／HTTP 地址和 Token，再验证同一身份与在线状态。' : '当前应先完成 QQ 连接：确认 NapCat 已扫码并启用正向 WebSocket 服务，再验证实际 QQ 身份。' : !hasTask ? 'QQ 已连接。请先启用一个功能：聊天、通知汇总或收藏整理，并保存应用。' : !released ? '任务已配置。下一步在“选定群与消息权限”选择群、设定读取 / 发送，再确认“启动此账号”。' : applied.chat?.enabled && writable ? `现在可在群 ${writable.name || writable.id} 中，用其他群成员账号${effectiveTriggers(writable).includes('prefix') ? `发送“${writable.prefix || '/ai'} 你好”` : effectiveTriggers(writable).includes('casual') && !effectiveTriggers(writable).includes('mention') ? '发一条普通消息（概率参与可能不会立即回复，首次验证推荐改为 @ 触发）' : `@ QQ ${actualQQ} 并发送“你好”`}。查看下方接收、模型和发送计数，再核对群中回复。` : applied.summary?.enabled ? '现在可在“账号功能参数”中，选择已应用的可读工作群并运行一次通知汇总。需先在群中产生可读消息。未授权私聊发送时，结果在任务与记录中查看。' : applied.favorites?.enabled ? '现在可在“账号功能参数”中点击“读取此账号收藏”，然后整理已读取收藏。结果可在任务与记录中核对。' : '此账号已启动。请按已授权的触发条件发送测试消息，并查看任务与记录。';
     $('#setup-test-guide').textContent = testText;
     const metrics = runtime.metrics ?? {};
     $('#setup-live-metrics').innerHTML = [['received','已接收消息'],['selected','命中处理规则'],['modelCalls','模型调用'],['sent','已发送消息']].map(([key,label]) => `<div><strong>${Number(metrics[key] || 0)}</strong><span>${label}</span></div>`).join('');
@@ -1859,12 +1876,12 @@
     const details = Array.isArray(error?.details) && error.details.length ? error.details : [errorMessage(error)];
     const messages = [...new Set(details)];
     const sameRecipient = error.code === 'PRIVATE_RECIPIENT_SAME' || issues.some((issue) => issue.path === 'ownerQQ') && String(draft?.ownerQQ ?? '') === String(draft?.botQQ ?? '');
-    const nextStep = normalizeSetupStep(error.nextStep || (issues.find((issue) => issue.path?.startsWith('qq') || issue.path === 'botQQ' || issue.path === 'napcatToken' || issue.path === 'secrets.napcatToken') ? 'connection' : issues.find((issue) => issue.path?.startsWith('models') || issue.path?.startsWith('apiKey')) ? 'models' : sameRecipient ? 'permissions' : null));
+    const nextStep = normalizeSetupStep(error.nextStep || (issues.find((issue) => issue.path?.startsWith('qq') || issue.path === 'botQQ' || /^(?:secrets\.)?(?:napcatToken|snowlumaWsToken|snowlumaHttpToken)$/.test(issue.path || '')) ? 'connection' : issues.find((issue) => issue.path?.startsWith('models') || issue.path?.startsWith('apiKey')) ? 'models' : sameRecipient ? 'permissions' : null));
     const html = `<strong>${escapeHTML(errorMessage(error))}</strong><ul>${messages.map((message) => `<li>${escapeHTML(message)}</li>`).join('')}</ul>${[...new Set([error.action,...issues.map((issue) => issue.action)].filter(Boolean))].map((action) => `<p>下一步：${escapeHTML(action)}</p>`).join('')}${sameRecipient ? '<p>只想处理群消息或在仪表盘看结果，无需填写另一个 QQ。</p><button class="button button-secondary button-small" data-repair-private>关闭可选私聊投递，仅使用群与本地结果</button>' : ''}${nextStep ? `<button class="button button-quiet button-small" data-error-step="${nextStep}">前往对应配置 →</button>` : ''}`;
     for (const selector of currentPage === 'connections' && !$('#new-account-form').classList.contains('hidden') ? ['#create-account-error'] : ['#setup-error','#scenario-validation-errors']) { $(selector).innerHTML = html; $(selector).classList.remove('hidden'); }
     if (currentPage === 'connections' && $('#new-account-form').classList.contains('hidden') && setupSteps.some(([id]) => id === nextStep)) setSetupStep(nextStep);
     for (const issue of issues) {
-      let secretPath = issue.path === 'secrets.napcatToken' ? 'napcatToken' : issue.path === 'models.deepseek.apiKey' ? 'deepseekApiKey' : issue.path;
+      let secretPath = /^secrets\.(?:napcatToken|snowlumaWsToken|snowlumaHttpToken)$/.test(issue.path || '') ? issue.path.slice(8) : issue.path === 'models.deepseek.apiKey' ? 'deepseekApiKey' : issue.path;
       const customSecret = /^models\.apis\.(\d+)\.apiKey$/.exec(issue.path || '');
       if (customSecret) secretPath = `apiKey:${draft?.models?.apis?.[Number(customSecret[1])]?.id}`;
       const input = $(`[data-config="${CSS.escape(issue.path || '')}"], [data-secret="${CSS.escape(secretPath || '')}"]`);
@@ -2079,6 +2096,7 @@
   }
   async function openNapcatGuide() {
     const id = requireAccount();
+    if (connectionBackend() === 'snowluma') return openNapcatLogin();
     const guide = await accountApi('/napcat/guide', undefined, 'GET', id);
     let url;
     try { url = new URL(guide.url || editors.get(id).draft?.qq?.webUiUrl); } catch { throw new Error('此账号的 NapCat 登录地址无效。'); }
@@ -2432,6 +2450,7 @@
     if (button.hasAttribute('data-setup-refresh')) return withButton(button, () => refreshState({ notify: true }));
     if (button.dataset.setupModelTest) return withButton(button, () => testSetupModel(button.dataset.setupModelTest));
     if (button.hasAttribute('data-open-napcat-program')) return withButton(button, openNapcatProgram);
+    if (button.hasAttribute('data-open-connector-login')) return withButton(button, openNapcatLogin);
     if (button.hasAttribute('data-return-to-setup')) { expandedAccountId = selectedAccountId; navigate('connections'); renderLiveState(); setSetupStep(currentScenarioTab === 'permissions' ? 'permissions' : 'scenarios'); return; }
     if (button.hasAttribute('data-repair-private')) return repairPrivateDelivery();
     if (button.dataset.errorStep) { if (button.dataset.errorStep === 'permissions') { selectScenarioTab('permissions'); navigate('scenarios'); } else { expandedAccountId = selectedAccountId; navigate('connections'); renderLiveState(); setSetupStep(button.dataset.errorStep); } return; }

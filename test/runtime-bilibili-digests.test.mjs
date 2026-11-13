@@ -11,6 +11,7 @@ import { createMcpManager, isBundledBilibiliServer } from '../src/mcp-manager.mj
 import { mcpToolId, mcpDefinitionHash } from '../src/mcp-config.mjs';
 import { toolFunctionName } from '../src/tool-router.mjs';
 import { bilibiliDigestHostTools, normalizeBilibiliDigestRequest } from '../src/bilibili-digest-tools.mjs';
+import { qqMessageReference } from '../src/qq-message-origin.mjs';
 
 const HASH = 'a'.repeat(64), CONNECTION = 'b'.repeat(64);
 const PROFILE = 'bilibili-runtime-profile', BOT = '999999', GROUP = '222222', CALLER = '555555', OWNER = '111111';
@@ -56,13 +57,13 @@ async function fixture() {
     call: async (id, input) => { remoteCalls.push({ id, input }); return { text: 'remote service data' }; },
   };
   const respond = (socket, packet) => socket.send(JSON.stringify({ echo: packet.echo, status: 'ok', retcode: 0,
-    data: packet.action === 'get_login_info' ? { user_id: Number(BOT) } : { message_id: `bili-out-${outbound.length}` } }));
+    data: packet.action === 'get_login_info' ? { user_id: Number(BOT) } : { message_id: String(900000 + outbound.length) } }));
   const fx = { config, store, tools, manager, controls, remoteCalls, inferences, outbound, secrets, holdNext: false, clock: Date.now(),
     setAvailable(value) { available = value; }, setTrusted(value) { trusted = value; },
     setInference(value) { inference = value; }, select(name, input = {}) { selected = tools.find(tool => tool.remoteName === name); args = input; },
-    emit(overrides = {}) { emitted++; peer.send(JSON.stringify({ post_type: 'message', message_type: 'group', self_id: BOT,
-      group_id: GROUP, user_id: CALLER, message_id: `bili-request-${++sequence}`, time: Math.floor(Date.now() / 1000),
-      message: '/工具 请后台总结我的稍后再看', ...overrides })); },
+    emit(overrides = {}) { emitted++; const packet = { post_type: 'message', message_type: 'group', self_id: BOT,
+      group_id: GROUP, user_id: CALLER, message_id: String(100000 + ++sequence), time: Math.floor(Date.now() / 1000),
+      message: '/工具 请后台总结我的稍后再看', ...overrides }; peer.send(JSON.stringify(packet)); return packet.message_id; },
     async idle() { await waitFor(() => runtime.status().metrics.received >= emitted); await new Promise(resolve => setTimeout(resolve, 10));
       await waitFor(() => !runtime.status().queue.running && !runtime.status().queue.pending); },
     releaseAck() { if (held) { const { socket, packet } = held; held = null; respond(socket, packet); } },
@@ -108,7 +109,7 @@ test('only the exact bundled Bilibili program can obtain a host binding', async 
 test('an authorized group request queues immediately with trusted origin and exact model/service bindings', async () => {
   const f = await fixture();
   try {
-    f.emit(); await f.idle();
+    const nativeRequestId = f.emit(); await f.idle();
     assert.equal(f.controls.length, 1); assert.equal(f.remoteCalls.length, 0);
     const call = f.controls[0]; assert.equal(call.action, 'queue_library_digest');
     assert.equal(call.origin.profileId, PROFILE); assert.equal(call.origin.actualQQ, BOT);
@@ -118,7 +119,8 @@ test('an authorized group request queues immediately with trusted origin and exa
     assert.equal(call.binding.connectionHash, CONNECTION); assert.equal(call.binding.modelFingerprint.length, 64);
     assert.equal(f.runtime.authorizeBilibiliJob(f.job()), true);
     assert.equal(f.outbound.length, 1); assert.match(f.outbound[0].params.message[0].data.text, /后台任务已创建/);
-    f.emit({ message_id: call.origin.messageId }); await f.idle(); assert.equal(f.controls.length, 1, 'the same request cannot queue twice');
+    assert.equal(call.origin.messageId, qqMessageReference({ origin: f.runtime.status().messageOrigin, nativeMessageId: nativeRequestId }));
+    f.emit({ message_id: nativeRequestId }); await f.idle(); assert.equal(f.controls.length, 1, 'the same request cannot queue twice');
   } finally { await f.close(); }
 });
 

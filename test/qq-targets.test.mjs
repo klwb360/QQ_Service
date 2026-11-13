@@ -34,6 +34,13 @@ test('verified reply metadata preserves its actual author and message while stri
     'replying to the assistant is conversation context, not a user-target mention');
 });
 
+test('host reply metadata preserves a canonical connection reference without inferring it from plain text', () => {
+  const messageId = 'qqref:v1:snowluma:12345678-1234-4123-8123-123456789abc:n:-12345';
+  assert.equal(normalize({ replyTarget: { messageId, userId: '666666', nativeMessageId: '-12345', origin: 'claimed' } }).replyTarget.messageId, messageId);
+  assert.deepEqual(normalize({ text: messageId }), { mentionedUserIds: [], replyTarget: null });
+  assert.match(QQ_TARGET_GUIDANCE, /nativeMessageId.*不是可直接操作/);
+});
+
 test('missing or malformed reply identities and inherited/dynamic claims are not trusted', () => {
   for (const replyTarget of [null, { messageId: '123' }, { messageId: '', userId: '555555' },
     { messageId: '123\n', userId: '555555' }, { messageId: 'x'.repeat(257), userId: '555555' },

@@ -11,7 +11,7 @@ const modules = Object.freeze([
   'experience-store', 'group-events', 'installer', 'mcp-client', 'mcp-config', 'mcp-manager',
   'mcp-presets', 'mcp-schema', 'mcp-schema-worker', 'memory-storage', 'memory-store', 'napcat-native',
   'napcat-settings', 'network-policy', 'onebot-connector', 'persona', 'plugin-worker', 'plugins',
-  'providers', 'qq-action-log', 'qq-assets', 'qq-mcp-server', 'qq-media-delivery', 'qq-sticker-sync',
+  'providers', 'qq-action-log', 'qq-assets', 'qq-mcp-server', 'qq-media-delivery', 'qq-message-origin', 'qq-sticker-sync',
   'qq-tools', 'runtime', 'server', 'social-chat', 'social-runtime', 'store', 'tool-router', 'tool-schema', 'web-content',
 ]);
 const uiScripts = Object.freeze(['app.js', 'memory-ui.js', 'memory-storage-ui.js', 'qq-assets-ui.js', 'mcp-presets-ui.js']);
@@ -22,7 +22,7 @@ const requiredBackendResources = Object.freeze([
   ...['bilibili', 'demo-server', 'http-notes', 'local-notes', 'web-search-safe'].map(name => `examples/mcp/${name}.mjs`),
   'examples/plugins/bilibili-assistant/index.mjs', 'examples/plugins/bilibili-assistant/http.mjs',
   'examples/plugins/bilibili-assistant/plugin.json',
-  ...['MCP', 'MCP_PRESETS', 'USAGE', 'NATIVE_NAPCAT_WINDOWS', 'PERSONA_MEMORY', 'SOCIAL_CHAT', 'PLUGIN_DEVELOPMENT'].map(name => `docs/${name}.md`),
+  ...['MCP', 'MCP_PRESETS', 'QQ_ASSETS', 'TOOL_ROADMAP', 'USAGE', 'NATIVE_NAPCAT_WINDOWS', 'PERSONA_MEMORY', 'SOCIAL_CHAT', 'PLUGIN_DEVELOPMENT', 'SNOWLUMA_SECURITY_REVIEW', 'SNOWLUMA_BUILD'].map(name => `docs/${name}.md`),
   'docs/assets/mcp-services.png',
 ]);
 
@@ -67,6 +67,8 @@ async function verifyBackendResources(directory) {
     "await import('ajv');await import('ajv-formats')",
     "const {listBuiltinQQTools}=await import('./src/qq-tools.mjs')",
     "const qq=listBuiltinQQTools();const qqIds=qq.map(tool=>tool.id)",
+    "const {createQqMessageOrigin,qqMessageReference,parseQqMessageReference}=await import('./src/qq-message-origin.mjs');const messageOrigin=createQqMessageOrigin('snowluma');const reference=qqMessageReference({origin:messageOrigin,nativeMessageId:'123'});assert.equal(parseQqMessageReference(reference).nativeMessageId,'123')",
+    "const {connectorCatalog}=await import('./src/onebot-connector.mjs');const snow=connectorCatalog().find(item=>item.id==='snowluma');assert(snow.available&&snow.externalRuntime&&!snow.runtimeManaged);assert.equal(snow.review.verified,false)",
     "for(const id of ['qq:list_assets','qq:send_image','qq:send_file','qq:forward_messages','qq:recall_own_message','qq:group_notices','qq:group_files','qq:send_sticker','qq:describe_asset'])assert(qqIds.includes(id),'Missing packaged QQ tool '+id)",
     "const {bilibiliMcpTools}=await import('./examples/mcp/bilibili.mjs')",
     "const bili=bilibiliMcpTools();const biliNames=['popular_videos','search_videos','video_details','list_favorite_folders','list_favorite_items','list_watch_later','list_favorite_articles','read_video_content','read_article_content','queue_library_digest','library_digest_status','cancel_library_digest']",

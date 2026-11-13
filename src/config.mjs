@@ -425,7 +425,10 @@ export function validateConfig(input, { applying = false, hasSecret = () => fals
   if (applying) {
     if (result.qq.enabled && !result.botQQ) issue('botQQ', '启用 QQ 连接前请填写控制的 QQ 号', '先在账号配置中填写准备登录 NapCat 的 QQ 号码。');
     if (result.qq.enabled && result.qq.backend === 'napcat' && !hasSecret('napcatToken')) issue('secrets.napcatToken', '请先安装 NapCat 或填写其 OneBot Token', '先在 NapCat 登录此 QQ、启用正向 WebSocket，再填写同一个 OneBot Token 并测试连接。');
-    if (result.qq.enabled && result.qq.backend === 'snowluma') issue('qq.backend', 'SnowLuma 的 Windows 隔离运行安全检查尚未完成，实验接入暂未开放。', '请继续使用 NapCat Shell；审核报告可在项目文档中查看。');
+    if (result.qq.enabled && result.qq.backend === 'snowluma') {
+      if (!hasSecret('snowlumaWsToken')) issue('secrets.snowlumaWsToken', '请填写外部 SnowLuma 的 WebSocket Token', '自行运行固定版本，核对当前 QQ 的 WS 监听地址与独立 Token 后保存。');
+      if (!hasSecret('snowlumaHttpToken')) issue('secrets.snowlumaHttpToken', '请填写外部 SnowLuma 的 HTTP Token', 'HTTP 与 WebSocket Token 分别填写；不能使用 WebUI 密码或模型 API Key。');
+    }
     if (result.models.deepseek.enabled && !hasSecret('deepseekApiKey')) issue('models.deepseek.apiKey', '启用 DeepSeek 前请填写 API Key', '在模型配置中填写 DeepSeek 开放平台的 API Key，保存后再测试。');
     for (const [i, api] of result.models.apis.entries()) if (api.enabled && isApiProviderId(api.id) && !hasSecret(apiSecretName(api.id))) issue(`models.apis.${i}.apiKey`, `${api.label}尚未填写 API Key`, '在此 API 通道的密钥栏填写服务商 API Key，保存后再测试。');
     if (result.summary.enabled && !getModelConfig(result, result.summary.provider)?.enabled) issue('summary.provider', '汇总选用的模型通道尚未启用', '请启用所选模型，或为通知汇总选择另一个已启用的模型。');

@@ -36,7 +36,7 @@ function connectorPath(value, filename) {
 /** Host-only file delivery. No argument is supplied by a model except the
  * assetId which the caller has already resolved and approved. Neither an app
  * filesystem path nor a user-supplied URL is ever sent to the connector. */
-export async function sendQqFile({ asset, groupId, action, authorize, onDispatch, signal } = {}) {
+export async function sendQqFile({ asset, groupId, action, authorize, onDispatch, signal, backend = 'napcat' } = {}) {
   let uploadState = 'not_uploaded', deliveryAttempted = false, transferAttempted = false;
   const check = async () => {
     if (signal?.aborted) throw error('QQ_FILE_CANCELLED', '文件发送已取消。', 409);
@@ -48,6 +48,7 @@ export async function sendQqFile({ asset, groupId, action, authorize, onDispatch
   try {
     await check();
     if (!validGroup(groupId)) throw error('QQ_FILE_INVALID', '文件发送缺少当前群身份。', 400);
+    if (!['napcat', 'snowluma'].includes(backend)) throw error('QQ_FILE_INVALID', '文件发送连接端无效。', 400);
     if (typeof action !== 'function') throw Object.assign(error('QQ_ACTION_DENIED', '当前连接端不支持文件发送。', 403), { deliveryUncertain: false });
     if (!asset || !(asset.bytes instanceof Uint8Array) || !asset.bytes.byteLength || asset.bytes.byteLength > QQ_FILE_DELIVERY_LIMITS.totalBytes
       || asset.groupId !== undefined && asset.groupId !== groupId || asset.kind !== undefined && asset.kind !== 'file'
@@ -108,9 +109,13 @@ export async function sendQqFile({ asset, groupId, action, authorize, onDispatch
         }
       }
       const result = await call('upload_file_stream', { stream_id: streamId, is_complete: true, file_retention: 300_000 });
+      // Trusted host backend, not a model option. SnowLuma f2ea3354 prefixes
+      // the generated filename with this exact stream id in its upload root.
+      const nativeFilename = backend === 'snowluma' ? `${streamId}__${filename}` : filename;
       if (!result || result.type !== 'response' || result.status !== 'file_complete' || result.stream_id !== streamId
         || !sameInteger(result.received_chunks, totalChunks) || !sameInteger(result.total_chunks, totalChunks)
-        || !sameInteger(result.file_size, bytes.length) || result.sha256 !== sha256 || !connectorPath(result.file_path, filename)) {
+        || !sameInteger(result.file_size, bytes.length) || result.sha256 !== sha256 || !connectorPath(result.file_path, nativeFilename)
+        || (backend === 'snowluma' || result.file_name !== undefined) && result.file_name !== filename) {
         throw error('QQ_FILE_STREAM_INVALID', '连接端完成回执的文件摘要、大小或临时文件身份不一致，未投递到群。');
       }
       uploadState = 'uploaded';
@@ -126,7 +131,7 @@ export async function sendQqFile({ asset, groupId, action, authorize, onDispatch
     // fall back to another transport after a timeout or malformed response.
     if (failure.unsupported === true || unsupported(failure)) {
       deliveryAttempted = false;
-      failure = Object.assign(error('QQ_ACTION_DENIED', '当前连接端未实现所需文件上传接口，请升级 NapCat；未投递到群。', 403),
+      failure = Object.assign(error('QQ_ACTION_DENIED', '当前连接端未实现所需文件上传接口，请检查连接端版本；未投递到群。', 403),
         { unsupported: true });
     }
     if (transferAttempted && uploadState === 'not_uploaded' && !failure.unsupported) uploadState = 'unknown';

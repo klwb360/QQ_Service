@@ -94,7 +94,9 @@ async function fixture({ social = false, replyTools = [], grants = [], respond, 
       return result.value.asset;
     },
     seed(text, fields = {}) { const row = { ...scope, userId: USER, role: 'user', time: Math.floor(Date.now() / 1000),
-      messageId: String(10000 + ++sequence), text, ...fields }; service.store.conversation.record(row); return row; },
+      messageId: String(10000 + ++sequence), text, ...fields };
+      return { ...row, ...service.store.conversation.recordTransport({ ...row, nativeMessageId: row.messageId,
+        origin: service.runtime.status().messageOrigin }) }; },
     emit(fields = {}) { received++; peer.send(JSON.stringify({ post_type: 'message', message_type: 'group', self_id: Number(QQ),
       group_id: Number(GROUP), user_id: Number(USER), message_id: String(20000 + ++sequence), time: Math.floor(Date.now() / 1000),
       message: [{ type: 'at', data: { qq: QQ } }, { type: 'text', data: { text: ' 请处理当前明确请求' } }], ...fields })); },
@@ -169,8 +171,13 @@ test('approved images, files, canonical forwards and own recalls produce factual
     try {
       let args;
       if (id === 'qq:send_image' || id === 'qq:send_file') args = { assetId: (await f.asset(id === 'qq:send_image' ? 'image' : 'file')).assetId };
-      else if (id === 'qq:forward_messages') { f.seed('本群第一条原文', { messageId: '10001' }); f.seed('本群第二条原文', { messageId: '10002' }); args = { messageIds: ['10001', '10002'] }; }
-      else { f.seed('账号自己已送达的回复', { messageId: '10003', userId: QQ, role: 'assistant', delivery: 'sent' }); args = { messageId: '10003' }; }
+      else if (id === 'qq:forward_messages') {
+        const first = f.seed('本群第一条原文', { messageId: '10001' }), second = f.seed('本群第二条原文', { messageId: '10002' });
+        args = { messageIds: [first.messageId, second.messageId] };
+      } else {
+        const own = f.seed('账号自己已送达的回复', { messageId: '10003', userId: QQ, role: 'assistant', delivery: 'sent' });
+        args = { messageId: own.messageId };
+      }
       f.setInfer(input => input.messages.some(message => message.role === 'tool') ? { text: '我核对过回执了。' } : propose(id, args));
       f.emit(); await f.idle();
       const result = outcome(f); assert.equal(result.executed, true);
@@ -180,16 +187,20 @@ test('approved images, files, canonical forwards and own recalls produce factual
         assert.ok(context.some(row => row.messageId === result.messageId && row.role === 'assistant' && row.text.includes('已发送图片')));
         assert.equal(imageSends(f)[0].params.message.find(segment => segment.type === 'image').data.sub_type ?? 0, 0);
       }
-      if (id === 'qq:send_file') { assert.equal(result.fileId, 'verified-qq-file-id'); assert.equal(result.messageId, undefined); assert.ok(context.every(row => row.messageId !== 'verified-qq-file-id')); }
+      if (id === 'qq:send_file') {
+        assert.equal(result.fileId, 'verified-qq-file-id'); assert.equal(result.messageId, undefined);
+        assert.ok(context.every(row => row.messageId !== 'verified-qq-file-id' && row.nativeMessageId !== 'verified-qq-file-id'));
+      }
       if (id === 'qq:forward_messages') {
+        assert.deepEqual(result.sourceMessageIds, args.messageIds);
         assert.deepEqual(f.actions.find(packet => packet.action === 'send_group_forward_msg').params.messages,
           [{ type: 'node', data: { id: '10001' } }, { type: 'node', data: { id: '10002' } }]);
         assert.ok(context.some(row => row.messageId === result.messageId && row.text.includes('合并转发')));
       }
       if (id === 'qq:recall_own_message') {
-        assert.ok(context.every(row => row.messageId !== '10003'), 'recalled own messages leave visible model context');
+        assert.ok(context.every(row => row.messageId !== args.messageId && row.nativeMessageId !== '10003'), 'recalled own messages leave visible model context');
         assert.deepEqual(f.actions.find(packet => packet.action === 'delete_msg').params, { message_id: '10003' });
-        assert.ok(f.service.store.conversationState.filterHistory({ ...scope, messages: context }).every(row => row.messageId !== '10003'));
+        assert.ok(f.service.store.conversationState.filterHistory({ ...scope, messages: context }).every(row => row.messageId !== args.messageId));
       }
     } finally { await f.close(); }
   });

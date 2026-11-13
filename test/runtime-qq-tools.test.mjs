@@ -9,6 +9,7 @@ import { createStore } from '../src/store.mjs';
 import { createRuntime } from '../src/runtime.mjs';
 import { listBuiltinQQTools } from '../src/qq-tools.mjs';
 import { toolFunctionName } from '../src/tool-router.mjs';
+import { qqMessageReference, parseQqMessageReference } from '../src/qq-message-origin.mjs';
 
 const RECENT = 'qq:current_group_recent', SEARCH = 'qq:current_group_search';
 const scope = { actualQQ: '999999', groupId: '222222' };
@@ -41,7 +42,7 @@ async function fixture({ id = RECENT, args = { limit: 10 }, infer } = {}) {
       const packet = JSON.parse(raw.toString());
       if (packet.action.startsWith('send_')) outbound.push(packet);
       socket.send(JSON.stringify({ echo: packet.echo, status: 'ok', retcode: 0,
-        data: packet.action === 'get_login_info' ? { user_id: Number(scope.actualQQ) } : { message_id: `out-${outbound.length}` } }));
+        data: packet.action === 'get_login_info' ? { user_id: Number(scope.actualQQ) } : { message_id: String(900000 + outbound.length) } }));
     });
   });
   let behavior = infer || (async input => input.messages.some(message => message.role === 'tool')
@@ -53,16 +54,18 @@ async function fixture({ id = RECENT, args = { limit: 10 }, infer } = {}) {
   await runtime.connect();
   return { config, store, runtime, requests, outbound, logs,
     seed(text, fields = {}) {
-      const row = { ...scope, messageId: `seed-${++sequence}`, userId: '555555', role: 'user', text,
+      const row = { ...scope, nativeMessageId: String(100000 + ++sequence), userId: '555555', role: 'user', text,
         time: Math.floor(Date.now() / 1000), displayName: '群友甲', ...fields };
-      store.conversation.record(row); return row;
+      return { ...row, ...store.conversation.recordTransport({ ...row, origin: runtime.status().messageOrigin }) };
     },
     setInfer(value) { behavior = value; },
     emit(fields = {}) {
       received++;
-      peer.send(JSON.stringify({ post_type: 'message', message_type: 'group', self_id: Number(scope.actualQQ),
-        group_id: Number(scope.groupId), user_id: 555555, message_id: `request-${++sequence}`, time: Math.floor(Date.now() / 1000),
-        message: '/工具 帮我查找本群缓存', ...fields }));
+      const packet = { post_type: 'message', message_type: 'group', self_id: Number(scope.actualQQ),
+        group_id: Number(scope.groupId), user_id: 555555, message_id: String(100000 + ++sequence), time: Math.floor(Date.now() / 1000),
+        message: '/工具 帮我查找本群缓存', ...fields };
+      peer.send(JSON.stringify(packet));
+      return qqMessageReference({ origin: runtime.status().messageOrigin, nativeMessageId: String(packet.message_id) });
     },
     async idle() {
       await waitFor(() => runtime.status().metrics.received >= received);
@@ -208,11 +211,13 @@ test('QQ context payload is bounded below24KiB while preserving real message ide
   try {
     const ids = new Set();
     for (let index = 0; index < 30; index++) ids.add(f.seed(`第${index}条` + '星空'.repeat(5000)).messageId);
-    f.emit(); await f.idle();
+    ids.add(f.emit()); await f.idle();
     const result = toolResult(f);
     assert.ok(Buffer.byteLength(JSON.stringify(result)) <= 24 * 1024);
     assert.equal(result.truncated, true);
-    assert.ok(result.messages.every(message => ids.has(message.messageId) || message.messageId.startsWith('request-')));
+    assert.ok(result.messages.every(message => ids.has(message.messageId)));
+    assert.ok(result.messages.every(message => message.actionable === true
+      && parseQqMessageReference(message.messageId)?.nativeMessageId === message.nativeMessageId));
     assert.ok(result.messages.every(message => message.text.length <= 2000));
   } finally { await f.close(); }
 });

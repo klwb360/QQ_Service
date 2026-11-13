@@ -4,6 +4,7 @@ import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 import { createDashboard } from '../src/server.mjs';
+import { SNOWLUMA_REVIEW } from '../src/onebot-connector.mjs';
 
 async function fixture() {
   const directory = fs.mkdtempSync(path.join(os.tmpdir(), 'qq-service-persona-api-'));
@@ -130,19 +131,43 @@ test('conversation clear is versioned, invalidates pending replies and cannot cl
   } finally { await f.close(); }
 });
 
-test('HTTP save cannot activate experimental SnowLuma even when clients forge approval fields', async () => {
+test('manual SnowLuma HTTP configuration requires its own tokens and forged review fields cannot certify or start the account', async () => {
   const f = await fixture();
   try {
     const a = await f.create('111111');
     const config = a.service.store.getConfig(); config.qq.backend = 'snowluma'; config.qq.enabled = true;
     config.qq.httpUrl = 'http://127.0.0.1:3000';
-    const saved = await f.post(a.route + '/config/save', { config, secretUpdates: { snowlumaWsToken: 'ws-only', snowlumaHttpToken: 'http-only' } });
+    const reviewBefore = structuredClone(SNOWLUMA_REVIEW);
+    a.service.store.setSecret('napcatToken', 'inactive-napcat-token');
+    let saved = await f.post(a.route + '/config/save', { config });
     assert.equal(saved.status, 200, JSON.stringify(saved.body));
     const appliedBefore = a.service.store.getConfig();
-    const rejected = await f.post(a.route + '/config/apply', { revision: saved.body.revision, reviewed: true });
+    const rejected = await f.post(a.route + '/config/apply', { revision: saved.body.revision, reviewed: true, nativeValidation: 'passed' });
     assert.equal(rejected.status, 400, JSON.stringify(rejected.body));
+    assert.ok(rejected.body.issues.some(issue => issue.path === 'secrets.snowlumaWsToken'));
+    assert.ok(rejected.body.issues.some(issue => issue.path === 'secrets.snowlumaHttpToken'));
     assert.deepEqual(a.service.store.getConfig(), appliedBefore);
-    assert.equal((await f.post(a.route + '/connection/switch', { backend: 'snowluma', revision: saved.body.revision, reviewed: true })).status, 409);
-    assert.equal(a.service.store.getConfig().qq.backend, 'napcat');
+
+    saved = await f.post(a.route + '/config/save', { config, secretUpdates: { snowlumaWsToken: 'ws-only', snowlumaHttpToken: 'http-only' } });
+    assert.equal(saved.status, 200, JSON.stringify(saved.body));
+    const applied = await f.post(a.route + '/config/apply', { revision: saved.body.revision, reviewed: true, nativeValidation: 'passed' });
+    assert.equal(applied.status, 200, JSON.stringify(applied.body));
+    assert.equal(a.service.store.getConfig().qq.backend, 'snowluma', 'the external manual adapter is an available option');
+    assert.equal(a.service.store.getConfig().permissions.released, false);
+    assert.equal(applied.body.setup.connection.verified, false, 'applying credentials is not a successful QQ handshake');
+    assert.equal(applied.body.connectors.snowluma.available, true);
+    assert.equal(applied.body.connectors.snowluma.externalRuntime, true);
+    assert.equal(applied.body.connectors.snowluma.runtimeManaged, false);
+    assert.equal(applied.body.connectors.snowluma.review.verified, false);
+    assert.equal(applied.body.connectors.snowluma.review.windowsDynamic, 'pending');
+    assert.equal(applied.body.jobs.length, 0, 'configuration does not schedule third-party installation or startup');
+    assert.equal(a.service.store.getSecret('napcatToken'), 'inactive-napcat-token');
+    assert.equal(a.service.store.getSecret('snowlumaWsToken'), 'ws-only');
+    assert.equal(a.service.store.getSecret('snowlumaHttpToken'), 'http-only');
+    const started = await f.post(a.route + '/permissions/release', { revision: applied.body.revision, reviewed: true, nativeValidation: 'passed' });
+    assert.equal(started.status, 409, JSON.stringify(started.body));
+    assert.equal(started.body.code, 'QQ_NOT_CONNECTED');
+    assert.equal(a.service.store.getConfig().permissions.released, false);
+    assert.deepEqual(SNOWLUMA_REVIEW, reviewBefore, 'client review flags do not alter the fixed native/Windows audit record');
   } finally { await f.close(); }
 });

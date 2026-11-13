@@ -7,6 +7,7 @@ import { WebSocketServer } from 'ws';
 import { DEFAULT_CONFIG } from '../src/config.mjs';
 import { createStore } from '../src/store.mjs';
 import { createRuntime } from '../src/runtime.mjs';
+import { qqMessageReference } from '../src/qq-message-origin.mjs';
 
 async function waitFor(predicate) {
   const deadline = Date.now() + 3000;
@@ -65,8 +66,9 @@ async function fixture({ pluginManager } = {}) {
       return messageId;
     },
     seed(messageId, { actualQQ = '999999', groupId = '222222', role = 'assistant' } = {}) {
-      store.conversation.record({ actualQQ, groupId, messageId, role,
-        userId: role === 'assistant' ? actualQQ : '555555', text: 'earlier message', time: Math.floor(Date.now() / 1000) });
+      return store.conversation.recordTransport({ actualQQ, groupId, nativeMessageId: messageId, role,
+        origin: runtime.status().messageOrigin, userId: role === 'assistant' ? actualQQ : '555555',
+        text: 'earlier message', time: Math.floor(Date.now() / 1000) });
     },
     async close() {
       runtime.stop();
@@ -79,6 +81,7 @@ async function fixture({ pluginManager } = {}) {
 
 const mention = text => [{ type: 'at', data: { qq: '999999' } }, { type: 'text', data: { text } }];
 const history = f => f.store.conversation.list({ actualQQ: '999999', groupId: '222222', limit: 100 });
+const sourceId = (f, nativeMessageId) => qqMessageReference({ origin: f.runtime.status().messageOrigin, nativeMessageId });
 
 test('会话存档扩至132000字符，普通回复仍遵守独立模型输入预算', async t => {
   const f = await fixture();
@@ -90,8 +93,9 @@ test('会话存档扩至132000字符，普通回复仍遵守独立模型输入�
       const messageId = await f.emit(mention(text));
       assert.equal(f.requests.length, previous + 1, '会话记录不能提前终止原本已授权的模型请求');
       assert.equal(f.outbound.length, previous + 1);
-      const recorded = history(f).find(entry => entry.messageId === messageId);
+      const recorded = history(f).find(entry => entry.nativeMessageId === messageId);
       assert.ok(recorded, '收到的群消息应进入双向会话');
+      assert.equal(recorded.messageId, sourceId(f, messageId));
       assert.equal(recorded.text.length, Math.min(length, 132000), '扩容后的存档保留原文，超过132000字符才截断');
       assert.ok(recorded.text.startsWith(text.slice(0, 11900)));
       if (length <= 132000) assert.equal(recorded.text, text, '边界内消息不能被无故改写');
@@ -116,13 +120,13 @@ test('超长群消息不会在会话写入处中断已授权的插件分派', as
     f.config.plugins = [{ id: 'review-probe', enabled: true, settings: {} }];
     const text = '群'.repeat(24000), messageId = await f.emit(text);
     assert.equal(calls.length, 1);
-    assert.equal(calls[0].event.messageId, messageId);
+    assert.equal(calls[0].event.messageId, sourceId(f, messageId));
     assert.equal(calls[0].event.text, text.slice(0, 12000), '保留插件独立的输入长度限制');
     assert.equal(calls[0].context.profileId, 'review-profile');
     assert.equal(calls[0].context.actualQQ, '999999');
     assert.equal(f.requests.length, 0);
     assert.equal(f.outbound.length, 0, '只读插件不能因此获得发送权限');
-    assert.ok(history(f).some(entry => entry.messageId === messageId));
+    assert.ok(history(f).some(entry => entry.messageId === sourceId(f, messageId) && entry.nativeMessageId === messageId));
   } finally { await f.close(); }
 });
 
@@ -143,7 +147,9 @@ test('数组和 CQ 字符串引用都能命中同一账号同一群的机器人�
       const previous = f.requests.length, messageId = await f.emit(message);
       assert.equal(f.requests.length, previous + 1, '显式 reply 触发必须兼容两种 OneBot 消息格式');
       assert.equal(f.outbound.length, previous + 1);
-      assert.equal(history(f).find(entry => entry.messageId === messageId)?.replyTo, replyTo);
+      const recorded = history(f).find(entry => entry.nativeMessageId === messageId);
+      assert.equal(recorded?.messageId, sourceId(f, messageId));
+      assert.equal(recorded?.replyTo, sourceId(f, replyTo));
       assert.ok(f.requests.at(-1).at(-1).content.endsWith('请回复当前请求：继续解释'));
     });
   } finally { await f.close(); }
@@ -157,8 +163,10 @@ test('CQ 引用不会绕过引用对象范围、触发开关或账号与群的�
     f.seed('456', { role: 'user' });
     f.seed('777', { actualQQ: '888888' });
     f.seed('888', { groupId: '333333' });
+    f.store.conversation.record({ actualQQ: '999999', groupId: '222222', messageId: sourceId(f, '999'),
+      role: 'assistant', userId: '999999', text: '旧记录只有类似当前引用的字符串，没有可信连接来源', delivery: 'sent' });
     for (const message of ['[CQ:reply,id=456]引用其他群友', '[CQ:reply,id=777]其他账号的回复',
-      '[CQ:reply,id=888]其他群的回复', '[CQ:reply,id=404]不存在的回复',
+      '[CQ:reply,id=888]其他群的回复', '[CQ:reply,id=999]旧无来源记录', '[CQ:reply,id=404]不存在的回复',
       '&#91;CQ:reply,id=123&#93;只是文字',
       [{ type: 'text', data: { text: '[CQ:reply,id=123]只是文字' } }]]) await f.emit(message);
     assert.equal(f.requests.length, 0);

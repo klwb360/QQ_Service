@@ -1,5 +1,6 @@
 import { createHash, randomUUID } from 'node:crypto';
 import { MEMORY_STORAGE_LIMITS } from './memory-storage.mjs';
+import { normalizeQqMessageOrigin, qqMessageReference, parseQqMessageReference, matchesQqMessageOrigin } from './qq-message-origin.mjs';
 
 const fail = (message, statusCode = 400) => Object.assign(new Error(message), { statusCode });
 const identifier = (value, label) => {
@@ -68,6 +69,13 @@ export function createMemoryStore({ db, legacyDb = db, getState }) {
       actual_qq TEXT NOT NULL,group_id TEXT NOT NULL,user_id TEXT NOT NULL,fingerprint TEXT NOT NULL,
       PRIMARY KEY(actual_qq,group_id,user_id,fingerprint));
   `);
+  // Additive migration preserves old rowids and every existing memory/source
+  // identifier. Unknown historic rows remain readable, never action evidence.
+  const conversationColumns = new Set(db.prepare('PRAGMA table_info(conversation_messages)').all().map(column => column.name));
+  for (const name of ['connector_backend', 'connector_origin', 'native_message_id']) {
+    if (!conversationColumns.has(name)) db.exec(`ALTER TABLE conversation_messages ADD COLUMN ${name} TEXT NOT NULL DEFAULT ''`);
+  }
+  db.exec('CREATE INDEX IF NOT EXISTS conversation_scope_origin_time ON conversation_messages(actual_qq,group_id,connector_backend,connector_origin,time)');
   const configurations = () => {
     const state = getState();
     return [state.applied, state.draft].filter(Boolean);
@@ -247,25 +255,81 @@ export function createMemoryStore({ db, legacyDb = db, getState }) {
       return { identities: [...directory.values()].map(entry => ({ ...entry, groups: [...entry.groups.values()].map(node => ({ ...node, members: [...node.members.values()] })) })) };
     },
   };
-  const conversation = {
-    record(input) {
+  const conversationRow = input => {
+    const { connectorBackend, connectorOrigin, nativeMessageId, ...row } = input;
+    try {
+      const origin = normalizeQqMessageOrigin({ backend: connectorBackend, connectionId: connectorOrigin });
+      if (qqMessageReference({ origin, nativeMessageId }) === row.messageId) {
+        return { ...row, origin, nativeMessageId, actionable: matchesQqMessageOrigin({ ...row, origin, nativeMessageId }, origin) };
+      }
+    } catch {}
+    return row;
+  };
+  const writeConversation = (input, provenance) => {
       const { actualQQ, groupId } = scope(input), userId = identifier(input.userId, '发言 QQ');
       if (!['user', 'assistant'].includes(input.role)) throw fail('会话角色无效。');
       if ((input.role === 'assistant' && userId !== actualQQ) || (input.role === 'user' && userId === actualQQ)) throw fail('会话发送身份与角色不符。');
       if (input.role === 'assistant' && input.delivery && input.delivery !== 'sent') return false;
       const messageId = cleanText(String(input.messageId || ''), '消息标识', 300), text = cleanText(input.text, '会话文字', MEMORY_STORAGE_LIMITS.conversationTextChars);
-      const result = db.prepare('INSERT OR IGNORE INTO conversation_messages VALUES (?,?,?,?,?,?,?,?,?,?)').run(actualQQ, groupId, messageId, userId, input.role, text, seconds(input.time), typeof input.replyTo === 'string' ? input.replyTo.slice(0, 300) : '', String(input.displayName || '').slice(0, 80), input.role === 'assistant' ? 'sent' : 'received');
+      const result = db.prepare(`INSERT OR IGNORE INTO conversation_messages
+        (actual_qq,group_id,message_id,user_id,role,text,time,reply_to,display_name,delivery,connector_backend,connector_origin,native_message_id)
+        VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?)`).run(actualQQ, groupId, messageId, userId, input.role, text, seconds(input.time),
+        typeof input.replyTo === 'string' ? input.replyTo.slice(0, 300) : '', String(input.displayName || '').slice(0, 80),
+        input.role === 'assistant' ? 'sent' : 'received', provenance?.origin.backend || '', provenance?.origin.connectionId || '', provenance?.nativeMessageId || '');
       db.prepare('DELETE FROM conversation_messages WHERE time < ?').run(Math.floor(Date.now() / 1000) - MEMORY_STORAGE_LIMITS.conversationRetentionDays * 86400);
       return result.changes > 0;
+  };
+  const conversation = {
+    record: input => writeConversation(input),
+    referenceId: qqMessageReference,
+    /** Host-only transport admission. Its cache ID remains a unique memory
+     * source; the native connector ID is never the primary cache identity. */
+    recordTransport(input) {
+      const origin = normalizeQqMessageOrigin(input.origin);
+      const nativeMessageId = input.nativeMessageId;
+      const messageId = qqMessageReference({ origin, nativeMessageId });
+      const nativeReplyTo = input.nativeReplyTo ?? input.replyTo;
+      let replyTo = typeof nativeReplyTo === 'string' && nativeReplyTo
+        ? qqMessageReference({ origin, nativeMessageId: nativeReplyTo }) : '';
+      const replyToSourceId = input.replyToSourceId ?? (input.nativeReplyTo === undefined && parseQqMessageReference(input.replyTo) ? input.replyTo : undefined);
+      if (replyToSourceId !== undefined && replyToSourceId !== '') {
+        const parsed = parseQqMessageReference(replyToSourceId);
+        if (!parsed || parsed.origin.backend !== origin.backend || parsed.origin.connectionId !== origin.connectionId) throw fail('引用消息不属于当前 QQ 连接来源。');
+        replyTo = replyToSourceId;
+      }
+      const stored = writeConversation({ ...input, messageId, replyTo }, { origin, nativeMessageId });
+      return { stored, messageId, nativeMessageId, origin };
     },
-    list({ actualQQ, groupId, limit = 24 }) {
+    list({ actualQQ, groupId, limit = 24, origin }) {
       scope({ actualQQ, groupId });
+      const source = origin === undefined ? null : normalizeQqMessageOrigin(origin);
       const cutoff = Math.floor(Date.now() / 1000) - MEMORY_STORAGE_LIMITS.conversationRetentionDays * 86400;
-      return db.prepare("SELECT actual_qq AS actualQQ,group_id AS groupId,message_id AS messageId,user_id AS userId,role,text,time,reply_to AS replyTo,display_name AS displayName,delivery FROM conversation_messages WHERE actual_qq=? AND group_id=? AND time>=? AND (role<>'assistant' OR delivery='sent') ORDER BY time DESC,rowid DESC LIMIT ?").all(actualQQ, groupId, cutoff, Math.max(1, Math.min(100, Math.floor(Number(limit) || 24)))).reverse();
+      const where = source ? ' AND connector_backend=? AND connector_origin=?' : '';
+      return db.prepare(`SELECT actual_qq AS actualQQ,group_id AS groupId,message_id AS messageId,user_id AS userId,role,text,time,reply_to AS replyTo,
+        display_name AS displayName,delivery,connector_backend AS connectorBackend,connector_origin AS connectorOrigin,native_message_id AS nativeMessageId
+        FROM conversation_messages WHERE actual_qq=? AND group_id=? AND time>=? AND (role<>'assistant' OR delivery='sent')${where}
+        ORDER BY time DESC,rowid DESC LIMIT ?`).all(actualQQ, groupId, cutoff,
+        ...(source ? [source.backend, source.connectionId] : []), Math.max(1, Math.min(100, Math.floor(Number(limit) || 24)))).reverse().map(conversationRow);
+    },
+    /** Canonical records only; the caller must still apply current clear
+     * watermarks, request authorization and its visible-history bound. */
+    actionMessages({ actualQQ, groupId, limit = 100, origin }) {
+      const source = normalizeQqMessageOrigin(origin);
+      return conversation.list({ actualQQ, groupId, limit, origin: source }).filter(row => matchesQqMessageOrigin(row, source));
+    },
+    markTransportRecalled({ actualQQ, groupId, messageId, origin }) {
+      scope({ actualQQ, groupId });
+      const source = normalizeQqMessageOrigin(origin);
+      const row = db.prepare(`SELECT message_id AS messageId,connector_backend AS connectorBackend,connector_origin AS connectorOrigin,
+        native_message_id AS nativeMessageId FROM conversation_messages WHERE actual_qq=? AND group_id=? AND message_id=? AND user_id=?
+        AND role='assistant' AND delivery='sent'`).get(actualQQ, groupId, messageId, actualQQ);
+      if (!row || !matchesQqMessageOrigin(conversationRow(row), source)) return false;
+      return db.prepare("UPDATE conversation_messages SET delivery='recalled' WHERE actual_qq=? AND group_id=? AND message_id=? AND user_id=? AND role='assistant' AND delivery='sent'")
+        .run(actualQQ, groupId, messageId, actualQQ).changes > 0;
     },
     markRecalled({ actualQQ, groupId, messageId }) {
       scope({ actualQQ, groupId });
-      return db.prepare("UPDATE conversation_messages SET delivery='recalled' WHERE actual_qq=? AND group_id=? AND message_id=? AND user_id=? AND role='assistant' AND delivery='sent'")
+      return db.prepare("UPDATE conversation_messages SET delivery='recalled' WHERE actual_qq=? AND group_id=? AND message_id=? AND user_id=? AND role='assistant' AND delivery='sent' AND connector_backend='' AND connector_origin=''")
         .run(actualQQ, groupId, String(messageId), actualQQ).changes > 0;
     },
   };

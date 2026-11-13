@@ -7,7 +7,7 @@ import { normalizeGroupEvent } from './group-events.mjs';
 import { createModelLimiter, createSocialRuntime } from './social-runtime.mjs';
 import { matchSocialAddress, normalizeVerifiedQQTargets, QQ_TARGET_GUIDANCE } from './social-chat.mjs';
 import { buildPersonaContext } from './persona.mjs';
-import { resolveConnector, assertBackendAvailable, getBackendCapabilities, normalizeConnectorPacket, createSnowLumaHttpClient } from './onebot-connector.mjs';
+import { resolveConnector, assertBackendAvailable, getBackendCapabilities, normalizeConnectorPacket, createSnowLumaHttpClient, validateConnectorUrl } from './onebot-connector.mjs';
 import { onebotHosts } from './network-policy.mjs';
 import { validateMcpToolInput } from './mcp-schema.mjs';
 import { listBuiltinQQTools, executeBuiltinQQTool } from './qq-tools.mjs';
@@ -19,6 +19,7 @@ import { mcpToolId } from './mcp-config.mjs';
 import { bilibiliDigestWindow } from './bilibili-digests.mjs';
 import { MEMORY_STORAGE_LIMITS } from './memory-storage.mjs';
 import { sendQqFile } from './qq-media-delivery.mjs';
+import { createQqMessageOrigin, qqMessageReference, parseQqMessageReference, matchesQqMessageOrigin } from './qq-message-origin.mjs';
 
 const QUEUE_LIMIT = 12;
 const QQ_TIMEOUT_MS = 15_000;
@@ -28,6 +29,24 @@ const isQqWriteAction = name => name.startsWith('send_') || ['group_poke', 'set_
 const QQ_REPLY_WRITES = new Set(['qq:send_sticker', 'qq:send_image', 'qq:send_message', 'qq:react_message', 'qq:poke_member']);
 const QQ_REPLY_READS = new Set(['qq:current_group_recent', 'qq:current_group_search', 'qq:current_group_members', 'qq:current_group_member',
   'qq:current_group_info', 'qq:connection_status', 'qq:list_assets', 'qq:describe_asset']);
+
+// A connection generation proves where an action target came from, but must
+// not reset persistent business idempotency after reconnect/restart.
+const stableRequestReference = value => {
+  const reference = parseQqMessageReference(value);
+  return reference ? `${reference.origin.backend}:${reference.opaque ? 'h' : 'n'}:${reference.opaque ? value.split(':').at(-1) : reference.nativeMessageId}` : value;
+};
+const receiptArguments = (input, legacy = false) => {
+  const result = { ...input };
+  const ref = value => {
+    const source = parseQqMessageReference(value);
+    return source ? legacy ? source.nativeMessageId || value : stableRequestReference(value) : value;
+  };
+  for (const key of ['messageId', 'replyToMessageId']) if (typeof result[key] === 'string') result[key] = ref(result[key]);
+  if (Array.isArray(result.messageIds)) result.messageIds = [...new Set(result.messageIds.map(ref))];
+  if (Array.isArray(result.mentionUserIds)) result.mentionUserIds = [...new Set(result.mentionUserIds)];
+  return result;
+};
 
 function fail(message, status = 400) {
   const error = new Error(message);
@@ -137,7 +156,11 @@ export function createRuntime({ getConfig, getSecret, store, installer, pluginMa
   let socket = null;
   let httpClient = null;
   let socketIdentity = '';
+  let socketHealth = null;
+  let connectorVersion = null;
+  let messageOrigin = null;
   let identityWaiter = null;
+  let cancelHandshake = null;
   let connectionPromise = null;
   let wanted = false;
   let connected = false;
@@ -189,14 +212,48 @@ export function createRuntime({ getConfig, getSecret, store, installer, pluginMa
     lastIssue = publicIssue(error);
   }
 
+  function dropIdentity(issue, activeSocket = socket) {
+    if (!activeSocket || socket !== activeSocket) return;
+    rememberConnectionIssue(issue); connected = false; connectedAt = null;
+    invalidateModelWork(); httpClient?.close();
+    cancelHandshake?.(issue);
+    if (identityWaiter) { clearTimeout(identityWaiter.timer); identityWaiter.reject(issue); identityWaiter = null; }
+    activeSocket.terminate();
+  }
+
+  async function verifySnowIdentity(signal, expectedEpoch = epoch) {
+    if (resolveConnector(getConfig()).backend !== 'snowluma') return;
+    const client = httpClient, sourceSocket = socket, expectedQQ = accountId;
+    if (!client || !connected || !expectedQQ) throw fail('SnowLuma 尚未确认当前 QQ 在线。', 409);
+    let login, health;
+    try {
+      login = await client.getIdentity({ signal });
+      health = await client.request('get_status', {}, { signal });
+    } catch (error) {
+      if (error && typeof error === 'object') error.deliveryUncertain ??= false;
+      if (!signal?.aborted && client === httpClient && error?.code === 'ONEBOT_AUTH_FAILED') dropIdentity(error, sourceSocket);
+      throw error;
+    }
+    if (signal?.aborted || epoch !== expectedEpoch || client !== httpClient || sourceSocket !== socket) throw fail('QQ 操作的连接已改变，已取消。', 409);
+    if (id(login?.user_id) !== expectedQQ || getConfig().botQQ !== expectedQQ) {
+      const issue = setupFailure('QQ_IDENTITY_MISMATCH', 'SnowLuma HTTP 的实际 QQ 身份已改变，旧请求已停止。', { action: '重新核对 HTTP 和事件 WebSocket 对应同一账号，再连接并授权。', status: 409 });
+      dropIdentity(issue, sourceSocket); throw issue;
+    }
+    if (health?.online !== true || health.good !== true) {
+      const issue = setupFailure('QQ_OFFLINE', 'SnowLuma 当前账号已离线或链路未就绪，旧请求已停止。');
+      dropIdentity(issue, sourceSocket); throw issue;
+    }
+  }
+
   function transportIssue(error) {
+    const connector = resolveConnector(getConfig()), name = connector.name;
     const text = String(error?.message || '');
     const httpStatus = Number(error?.statusCode || /Unexpected server response:\s*(\d+)/i.exec(text)?.[1]);
-    if ([401, 403].includes(httpStatus)) return setupFailure('ONEBOT_AUTH_FAILED', 'NapCat 拒绝了 OneBot Token，QQ 连接尚未建立。', { field: 'secrets.napcatToken', action: '把 NapCat 网络配置中正向 WebSocket 的 Token 填入本账号连接设置；它不是 NapCat WebUI 登录密码。', status: 401 });
-    if (httpStatus) return setupFailure('ONEBOT_WRONG_ENDPOINT', `该端口未提供 OneBot WebSocket 服务（HTTP ${httpStatus}）。`, { action: '在 NapCat 中启用 OneBot 正向 WebSocket，并填写它的 ws://127.0.0.1:端口；不要填写 WebUI 端口。' });
-    if (error?.code === 'ECONNREFUSED' || /ECONNREFUSED/i.test(text)) return setupFailure('ONEBOT_UNREACHABLE', '没有连接到 NapCat：本机 OneBot 端口尚未运行或端口填写错误。', { action: '先启动 NapCat、扫码登录这个 QQ，再启用正向 WebSocket；核对两边端口一致。无需安装 Docker 也可以使用 Windows 原生 NapCat。' });
-    if (error?.code === 'ETIMEDOUT' || /timed out|timeout/i.test(text)) return setupFailure('ONEBOT_TIMEOUT', '连接 NapCat 超时，尚未验证 QQ 登录。', { action: '确认 NapCat 正在运行且 QQ 在线，并核对 OneBot 正向 WebSocket 端口。' });
-    return setupFailure('ONEBOT_CONNECTION_FAILED', 'NapCat 连接失败，尚未验证 QQ 登录。', { action: '检查 NapCat 是否启动、QQ 是否登录，以及 OneBot 正向 WebSocket 地址和 Token 是否一致。' });
+    if ([401, 403].includes(httpStatus)) return setupFailure('ONEBOT_AUTH_FAILED', `${name} 拒绝了 WebSocket Token，QQ 连接尚未建立。`, { field: `secrets.${connector.wsTokenName}`, action: `把 ${name} 中本账号事件 WebSocket 的 Token 填入连接设置；它不是 WebUI 密码。`, status: 401 });
+    if (httpStatus) return setupFailure('ONEBOT_WRONG_ENDPOINT', `该端口未提供 OneBot WebSocket 服务（HTTP ${httpStatus}）。`, { action: `在 ${name} 启用事件 WebSocket，填写正确的 ws://127.0.0.1:端口；不要填写管理页端口。` });
+    if (error?.code === 'ECONNREFUSED' || /ECONNREFUSED/i.test(text)) return setupFailure('ONEBOT_UNREACHABLE', `没有连接到 ${name}：本机 OneBot 端口尚未运行或端口填写错误。`, { action: `先在外部启动 ${name} 并登录这个 QQ，再核对两边端口和 Token。` });
+    if (error?.code === 'ETIMEDOUT' || /timed out|timeout/i.test(text)) return setupFailure('ONEBOT_TIMEOUT', `连接 ${name} 超时，尚未验证 QQ 登录。`, { action: `确认 ${name} 正在运行且 QQ 在线，并核对事件 WebSocket 端口。` });
+    return setupFailure('ONEBOT_CONNECTION_FAILED', `${name} 连接失败，尚未验证 QQ 登录。`, { action: `检查 ${name} 是否启动、QQ 是否登录，以及地址和 Token 是否一致。` });
   }
 
   function status() {
@@ -210,6 +267,8 @@ export function createRuntime({ getConfig, getSecret, store, installer, pluginMa
     return {
       backend: resolveConnector(config).backend, capabilities: getBackendCapabilities(config.qq?.backend),
       state: connectionState, connected, accountId, connectedAt, lastError, issue: lastIssue,
+      connectorVersion: connectorVersion ? { ...connectorVersion } : null,
+      messageOrigin: messageOrigin ? { ...messageOrigin } : null,
       modelTests: Object.fromEntries([...modelChecks].map(([provider, result]) => {
         const tested = Boolean(result.status === 'passed' && result.fingerprint && result.fingerprint === modelFingerprint(provider));
         return [provider, { tested, status: result.status === 'passed' && !tested ? 'stale' : result.status, testedAt: result.status === 'passed' ? result.at : null, attemptedAt: result.at, message: result.message || '' }];
@@ -237,7 +296,7 @@ export function createRuntime({ getConfig, getSecret, store, installer, pluginMa
 
   function cancelActions(message) {
     for (const pending of pendingActions.values()) {
-      clearTimeout(pending.timer);
+      pending.cleanup?.(); clearTimeout(pending.timer);
       const error = fail(message, 409);
       if (pending.isSend) error.deliveryUncertain = true;
       pending.reject(error);
@@ -255,8 +314,9 @@ export function createRuntime({ getConfig, getSecret, store, installer, pluginMa
 
   function closeSocket() {
     const old = socket;
+    cancelHandshake?.(fail('连接已取消。', 409)); cancelHandshake = null;
     httpClient?.close(); httpClient = null;
-    socketIdentity = '';
+    socketIdentity = ''; socketHealth = null; connectorVersion = null; messageOrigin = null;
     if (identityWaiter) { clearTimeout(identityWaiter.timer); identityWaiter.reject(fail('连接已取消。', 409)); identityWaiter = null; }
     socket = null;
     connected = false;
@@ -293,35 +353,60 @@ export function createRuntime({ getConfig, getSecret, store, installer, pluginMa
     reconnectTimer.unref?.();
   }
 
-  function action(actionName, params, { handshake = false } = {}) {
+  function action(actionName, params, { handshake = false, signal } = {}) {
+    if (signal?.aborted) return Promise.reject(Object.assign(fail('QQ 操作已取消。', 409), { code: 'ONEBOT_CANCELLED' }));
     if (!socket || socket.readyState !== WebSocket.OPEN || (!connected && !handshake)) {
       return Promise.reject(fail('QQ 尚未完成登录身份验证，请先连接 NapCat。', 409));
     }
     if (resolveConnector(getConfig()).backend === 'snowluma') {
       if (!httpClient) return Promise.reject(fail('SnowLuma HTTP 连接尚未就绪。', 409));
-      return httpClient.request(actionName, params, { isSend: isQqWriteAction(actionName) });
+      return httpClient.request(actionName, params, { isSend: isQqWriteAction(actionName), signal });
     }
     const echo = randomUUID();
     return new Promise((resolve, reject) => {
+      const cleanup = () => { clearTimeout(timer); signal?.removeEventListener('abort', aborted); };
+      const aborted = () => {
+        if (!pendingActions.has(echo)) return;
+        pendingActions.delete(echo); cleanup();
+        const error = Object.assign(fail('QQ 操作已取消。', 409), { code: 'ONEBOT_CANCELLED' });
+        if (isQqWriteAction(actionName)) error.deliveryUncertain = true;
+        reject(error);
+      };
       const timer = setTimeout(() => {
         pendingActions.delete(echo);
+        cleanup();
         const error = setupFailure(actionName === 'get_login_info' ? 'QQ_NOT_LOGGED_IN' : actionName === 'get_group_list' ? 'GROUP_LIST_UNAVAILABLE' : 'ONEBOT_TIMEOUT', actionName === 'get_login_info' ? 'NapCat 已连接，但 QQ 登录验证超时。' : `QQ 操作 ${actionName} 超时。`, { action: '打开 NapCat WebUI，确认 QQ 已扫码登录且在线，再重新连接。' });
         if (isQqWriteAction(actionName)) error.deliveryUncertain = true;
         reject(error);
       }, QQ_TIMEOUT_MS);
       timer.unref?.();
-      pendingActions.set(echo, { resolve, reject, timer, actionName, isSend: isQqWriteAction(actionName) });
+      pendingActions.set(echo, { resolve, reject, timer, cleanup, actionName, isSend: isQqWriteAction(actionName) });
+      signal?.addEventListener('abort', aborted, { once: true });
       socket.send(JSON.stringify({ action: actionName, params, echo }), (error) => {
         if (!error) return;
         const pending = pendingActions.get(echo);
         if (!pending) return;
-        clearTimeout(pending.timer);
+        cleanup();
         pendingActions.delete(echo);
         const sendError = fail(`QQ 操作 ${actionName} 发送失败。`, 502);
         if (isQqWriteAction(actionName)) sendError.deliveryUncertain = true;
         reject(sendError);
       });
     });
+  }
+
+  async function recordTransportMessage(input, origin = messageOrigin) {
+    if (!origin) throw fail('消息缺少当前连接来源，不能保存为可执行引用。', 409);
+    const nativeMessageId = String(input.nativeMessageId || input.messageId || `out:${randomUUID()}`);
+    const replyToSourceId = input.replyToSourceId || (parseQqMessageReference(input.replyTo) ? input.replyTo : '');
+    const value = { ...input, nativeMessageId, origin, ...(replyToSourceId ? { replyToSourceId } : {}) };
+    if (store.conversation?.recordTransport) return store.conversation.recordTransport(value);
+    // Trusted in-memory host adapters use the same explicit provenance; a
+    // prefix alone never upgrades an unknown legacy cache record.
+    const messageId = qqMessageReference({ origin, nativeMessageId });
+    if (typeof store.conversation?.record !== 'function') throw fail('会话存储不可用。', 409);
+    await store.conversation.record({ ...value, messageId, ...(replyToSourceId ? { replyTo: replyToSourceId } : {}) });
+    return { stored: true, messageId, nativeMessageId, origin: { ...origin } };
   }
 
   /** Every send, including errors and summary delivery, passes this gate. */
@@ -393,7 +478,7 @@ export function createRuntime({ getConfig, getSecret, store, installer, pluginMa
     if (triggeredBy && !groupTriggers(group).includes(triggeredBy)) throw fail('该群事件的触发权限已撤销，旧回复已取消。', 409);
   }
 
-  async function send(destination, text, expectedEpoch, purpose, { mentionUserIds = [], replyToMessageId = '', onDispatch, onBeforeAction } = {}) {
+  async function send(destination, text, expectedEpoch, purpose, { mentionUserIds = [], replyToMessageId = '', replyToSourceId = '', onDispatch, onBeforeAction } = {}) {
     const safeText = String(text || '').trim();
     if (!safeText) throw fail('不能发送空消息。');
     const clipped = safeText.slice(0, MAX_REPLY_CHARS) + (safeText.length > MAX_REPLY_CHARS ? '\n[发送内容已截断；完整内容请在仪表盘查看。]' : '');
@@ -405,6 +490,7 @@ export function createRuntime({ getConfig, getSecret, store, installer, pluginMa
       try {
         destinationGate(destination, expectedEpoch, purpose);
         const sendingQQ = accountId;
+        const sendingOrigin = messageOrigin;
         const params = { message: [
           ...(offset === 0 && replyToMessageId ? [{ type: 'reply', data: { id: replyToMessageId } }] : []),
           ...(offset === 0 ? mentionUserIds.map(qq => ({ type: 'at', data: { qq } })) : []),
@@ -412,17 +498,18 @@ export function createRuntime({ getConfig, getSecret, store, installer, pluginMa
         ] };
         if (destination.type === 'private') params.user_id = destination.id;
         else params.group_id = destination.id;
+        await verifySnowIdentity(purpose?.signal, expectedEpoch);
         await onDispatch?.();
         destinationGate(destination, expectedEpoch, purpose);
         onBeforeAction?.();
-        const delivered = await action(destination.type === 'private' ? 'send_private_msg' : 'send_group_msg', params);
+        const delivered = await action(destination.type === 'private' ? 'send_private_msg' : 'send_group_msg', params, { signal: purpose?.signal });
         if (delivered?.message_id !== undefined) messageIds.push(id(delivered.message_id));
         if (destination.type === 'group' && store.conversation) {
           try {
-            await store.conversation.record({ actualQQ: sendingQQ, groupId: destination.id,
-              messageId: id(delivered?.message_id) || `out:${randomUUID()}`, userId: sendingQQ, role: 'assistant',
+            await recordTransportMessage({ actualQQ: sendingQQ, groupId: destination.id,
+              nativeMessageId: id(delivered?.message_id) || `out:${randomUUID()}`, userId: sendingQQ, role: 'assistant',
               text: clipped.slice(offset, offset + 1800), time: Math.floor(Date.now() / 1000),
-              replyTo: replyToMessageId || purpose?.messageId || '', delivery: 'sent' });
+              replyToSourceId: replyToSourceId || (parseQqMessageReference(purpose?.messageId) ? purpose.messageId : ''), delivery: 'sent' }, sendingOrigin);
           } catch (cause) { report('warn', `消息已发送，但对话记录保存失败：${cause.message}`); }
         }
       } catch (error) {
@@ -692,13 +779,15 @@ export function createRuntime({ getConfig, getSecret, store, installer, pluginMa
     if (signal?.aborted) throw fail('QQ 发送任务已取消。', 409);
     destinationGate({ type: 'group', id: scope.groupId }, taskEpoch, purpose);
     const sendingQQ = accountId;
+    const sendingOrigin = messageOrigin;
     onDispatch();
-    const delivered = await action('send_group_msg', { group_id: scope.groupId, message: segments });
+    const delivered = await action('send_group_msg', { group_id: scope.groupId, message: segments }, { signal });
     const messageId = id(delivered?.message_id);
     if (!messageId || !/^-?[1-9]\d{0,19}$/u.test(messageId)) throw Object.assign(fail('QQ 已处理发送请求，但没有返回有效消息编号，不能确认结果。', 502), { deliveryUncertain: true });
     counters.sent++;
-    try { await store.conversation?.record({ actualQQ: sendingQQ, groupId: scope.groupId, messageId, userId: sendingQQ,
-      role: 'assistant', text: text.slice(0, 2000), time: Math.floor(Date.now() / 1000), replyTo: scope.messageId || '', delivery: 'sent' }); }
+    try { await recordTransportMessage({ actualQQ: sendingQQ, groupId: scope.groupId, nativeMessageId: messageId, userId: sendingQQ,
+      role: 'assistant', text: text.slice(0, 2000), time: Math.floor(Date.now() / 1000),
+      replyToSourceId: parseQqMessageReference(scope.messageId) ? scope.messageId : '', delivery: 'sent' }, sendingOrigin); }
     catch (error) { report('warn', `QQ 内容已发送，但上下文保存失败：${error.message}`); }
     return { executed: true, messageId, messageIds: [messageId] };
   }
@@ -789,6 +878,8 @@ export function createRuntime({ getConfig, getSecret, store, installer, pluginMa
     const bilibiliHostTool = bilibiliBinding && BILIBILI_HOST_TOOL_NAMES.includes(tool.remoteName);
     const builtinQQ = tool.source === 'qq';
     const builtinAccount = builtinQQ ? accountId : '';
+    const builtinOrigin = builtinQQ ? messageOrigin : null;
+    const builtinBackend = resolveConnector(getConfig()).backend;
     const [pluginId, name, extra] = String(toolId).split('/');
     const entry = mcp || builtinQQ ? null : pluginGate(pluginId, taskEpoch).entry;
     if (!mcp && !builtinQQ && (extra !== undefined || !name)) throw fail('工具不存在或未在当前账号启用。', 409);
@@ -800,7 +891,8 @@ export function createRuntime({ getConfig, getSecret, store, installer, pluginMa
         if (!active || active.source !== 'mcp' || active.definitionHash !== tool.definitionHash
           || active.connectionHash !== tool.connectionHash || active.effect !== tool.effect) throw fail('MCP 服务、目录或工具授权已变化，旧调用已取消。', 409);
       } else if (builtinQQ) {
-        if (getConfig().tools?.builtinQQ !== true || !scope?.groupId || !accountId || accountId !== builtinAccount || getConfig().botQQ !== builtinAccount) {
+        if (getConfig().tools?.builtinQQ !== true || !scope?.groupId || !accountId || accountId !== builtinAccount || getConfig().botQQ !== builtinAccount
+          || !builtinOrigin || messageOrigin !== builtinOrigin) {
           throw fail('QQ 上下文工具仅限当前已验证账号的群请求，不支持本地或跨账号读取。', 409);
         }
       } else pluginGate(pluginId, taskEpoch);
@@ -832,11 +924,17 @@ export function createRuntime({ getConfig, getSecret, store, installer, pluginMa
     let writeReceiptKey = '';
     if (tool.effect === 'write') {
       if (!scope?.messageId || !store.getTask || !store.setTask) throw fail('外部写入缺少可持久化的请求身份，已停止执行。', 409);
-      const identity = createHash('sha256').update(JSON.stringify([accountId,
-        scope.messageType === 'private' ? `private:${scope.userId}` : scope.groupId, scope.messageId])).digest('hex');
-      const key = `tool-write:${identity}:${toolCallFingerprint(toolId, arguments_)}`;
+      const destinationId = scope.messageType === 'private' ? `private:${scope.userId}` : scope.groupId;
+      const identity = createHash('sha256').update(JSON.stringify([accountId, destinationId, stableRequestReference(scope.messageId)])).digest('hex');
+      const key = `tool-write:${identity}:${toolCallFingerprint(toolId, builtinQQ ? receiptArguments(arguments_) : arguments_)}`;
       writeReceiptKey = key;
       if (await store.getTask(key)) throw fail('这条群消息已经尝试过相同的外部写入，请先核对结果，不能自动重复提交。', 409);
+      const prior = parseQqMessageReference(scope.messageId);
+      if (prior?.origin.backend === 'napcat' && prior.nativeMessageId) {
+        const oldIdentity = createHash('sha256').update(JSON.stringify([accountId, destinationId, prior.nativeMessageId])).digest('hex');
+        const oldKey = `tool-write:${oldIdentity}:${toolCallFingerprint(toolId, builtinQQ ? receiptArguments(arguments_, true) : arguments_)}`;
+        if (await store.getTask(oldKey)) throw fail('这条消息在升级前已经尝试过相同写入，请先核对结果，不能自动重复提交。', 409);
+      }
       authorize();
       // Mark before executing: a timeout/transport failure may already have
       // changed the external app. Replays after reload must not repeat it.
@@ -858,6 +956,7 @@ export function createRuntime({ getConfig, getSecret, store, installer, pluginMa
     };
     const beforeQqWrite = async () => {
       authorize();
+      await verifySnowIdentity(signal, taskEpoch);
       destinationGate({ type: 'group', id: scope.groupId }, taskEpoch, qqPurpose);
       if (!qqReserved) { await reserveQqReplyAction(scope, taskEpoch, toolId); qqReserved = true; }
       authorize();
@@ -885,22 +984,23 @@ export function createRuntime({ getConfig, getSecret, store, installer, pluginMa
         modelFingerprint: modelFingerprint(getConfig().chat.provider) },
       requestText: String(scope.requestText || '').slice(0, 6000), signal })
       : mcp ? await mcpManager.call(toolId, arguments_, { signal })
-      : builtinQQ ? await executeBuiltinQQTool(toolId, arguments_, { store, assets, actualQQ: builtinAccount, groupId: scope.groupId, signal, authorize,
+      : builtinQQ ? await executeBuiltinQQTool(toolId, arguments_, { store, assets, actualQQ: builtinAccount, groupId: scope.groupId, signal, authorize, messageOrigin: builtinOrigin,
         getConnectionStatus: () => ({ actualQQ: accountId, connected, state: connectionState,
           transport: resolveConnector(getConfig()).transport, connector: resolveConnector(getConfig()).backend }),
         action: async (name, params) => {
           authorize();
           if (isQqWriteAction(name)) await beforeQqWrite();
+          else await verifySnowIdentity(signal, taskEpoch);
           authorize();
           if (isQqWriteAction(name)) markQqDispatch();
-          const value = await action(name, params);
+          const value = await action(name, params, { signal });
           authorize();
           return value;
         },
-        sendMessage: async ({ text, mentionUserIds, replyToMessageId }) => {
+        sendMessage: async ({ text, mentionUserIds, replyToMessageId, replyToSourceId }) => {
           authorize();
           return send({ type: 'group', id: scope.groupId }, text, taskEpoch,
-            qqPurpose, { mentionUserIds, replyToMessageId, onDispatch: beforeQqWrite, onBeforeAction: markQqDispatch });
+            qqPurpose, { mentionUserIds, replyToMessageId, replyToSourceId, onDispatch: beforeQqWrite, onBeforeAction: markQqDispatch });
         },
         sendImage: async ({ assetId, caption = '' }) => {
           const asset = await resolveAsset(assetId, 'image'); authorize();
@@ -918,28 +1018,29 @@ export function createRuntime({ getConfig, getSecret, store, installer, pluginMa
         },
         sendFile: async ({ assetId }) => {
           const asset = await resolveAsset(assetId, 'file'); authorize();
-          return sendQqFile({ asset, groupId: scope.groupId, signal, authorize,
+          return sendQqFile({ asset, groupId: scope.groupId, signal, authorize, backend: builtinBackend,
             onDispatch: beforeQqWrite, action: async (name, params) => {
+              await verifySnowIdentity(signal, taskEpoch);
               authorize(); destinationGate({ type: 'group', id: scope.groupId }, taskEpoch, qqPurpose);
               if (name === 'upload_group_file') markQqDispatch();
-              const value = await action(name, params); authorize(); return value;
+              const value = await action(name, params, { signal }); authorize(); return value;
             } });
         },
         sendForward: async ({ messageIds }) => {
           authorize(); await beforeQqWrite(); markQqDispatch();
           const delivered = await action('send_group_forward_msg', { group_id: scope.groupId,
-            messages: messageIds.map(messageId => ({ type: 'node', data: { id: messageId } })) });
+            messages: messageIds.map(messageId => ({ type: 'node', data: { id: messageId } })) }, { signal });
           const messageId = id(delivered?.message_id);
           if (!/^-?[1-9]\d{0,19}$/u.test(messageId)) throw Object.assign(fail('QQ 转发请求没有返回有效消息编号，结果未确认。', 502), { deliveryUncertain: true });
           counters.sent++;
-          await store.conversation?.record({ actualQQ: builtinAccount, groupId: scope.groupId, messageId, userId: builtinAccount,
-            role: 'assistant', text: `[已合并转发本群 ${messageIds.length} 条消息]`, time: Math.floor(Date.now() / 1000), delivery: 'sent' });
+          await recordTransportMessage({ actualQQ: builtinAccount, groupId: scope.groupId, nativeMessageId: messageId, userId: builtinAccount,
+            role: 'assistant', text: `[已合并转发本群 ${messageIds.length} 条消息]`, time: Math.floor(Date.now() / 1000), delivery: 'sent' }, builtinOrigin);
           return { executed: true, messageId };
         },
-        recallMessage: async ({ messageId }) => {
+        recallMessage: async ({ messageId, sourceMessageId }) => {
           authorize(); await beforeQqWrite(); markQqDispatch();
-          await action('delete_msg', { message_id: messageId });
-          store.conversation?.markRecalled?.({ actualQQ: builtinAccount, groupId: scope.groupId, messageId });
+          await action('delete_msg', { message_id: messageId }, { signal });
+          store.conversation?.markTransportRecalled?.({ actualQQ: builtinAccount, groupId: scope.groupId, messageId: sourceMessageId, origin: builtinOrigin });
           return { executed: true };
         },
       })
@@ -1234,16 +1335,23 @@ export function createRuntime({ getConfig, getSecret, store, installer, pluginMa
     const config = getConfig();
     const receiptEpoch = epoch;
     const input = normalizeInput(event, accountId);
+    const receiptMemoryRevision = memoryRevision(input.groupId);
     counters.received++;
     let decision = selectPolicy(event);
     if (decision.action === 'ignore') { counters.ignored++; return; }
-    const dedupKey = `${accountId}:${input.messageType}:${input.groupId}:${input.messageId || createHash('sha256').update(`${input.userId}:${input.time}:${input.text}`).digest('hex')}`;
-    if (seenMessages.has(dedupKey)) return;
     const backend = resolveConnector(config).backend;
+    const receiptOrigin = messageOrigin;
+    if (!receiptOrigin) return;
+    const dedupKey = `${accountId}:${backend}:${input.messageType}:${input.groupId}:${input.messageId || createHash('sha256').update(`${input.userId}:${input.time}:${input.text}`).digest('hex')}`;
+    if (seenMessages.has(dedupKey)) return;
     const crossKey = createHash('sha256').update(JSON.stringify([input.messageType, input.groupId, input.userId, input.time, input.text, input.replyTo, input.kind, input.targetId])).digest('hex');
     if (store.claimEvent && !store.claimEvent({ actualQQ: accountId, backend, key: dedupKey, crossKey })) return;
     seenMessages.set(dedupKey, Date.now());
     while (seenMessages.size > 10_000) seenMessages.delete(seenMessages.keys().next().value);
+    input.nativeMessageId = input.messageId || dedupKey;
+    input.nativeReplyTo = input.replyTo || '';
+    input.messageId = qqMessageReference({ origin: receiptOrigin, nativeMessageId: input.nativeMessageId });
+    input.replyTo = input.nativeReplyTo ? qqMessageReference({ origin: receiptOrigin, nativeMessageId: input.nativeReplyTo }) : '';
     if (input.messageType === 'group') {
       const group = config.groups.find((entry) => entry.id === input.groupId);
       if (!group || group.read !== true) return;
@@ -1257,16 +1365,18 @@ export function createRuntime({ getConfig, getSecret, store, installer, pluginMa
         counters.selected++;
       }
       if (!input.isNotice && input.text && !input.ownMessage && input.userId !== accountId && store.conversation) {
-        input.messageId ||= dedupKey;
-        await store.conversation.record({ actualQQ: accountId, groupId: input.groupId, messageId: input.messageId,
+        if (receiptEpoch !== epoch || receiptOrigin !== messageOrigin || memoryRevision(input.groupId) !== receiptMemoryRevision) return;
+        await recordTransportMessage({ actualQQ: accountId, groupId: input.groupId, nativeMessageId: input.nativeMessageId,
           userId: input.userId, role: 'user', text: input.text.slice(0, MEMORY_STORAGE_LIMITS.conversationTextChars), time: input.time,
-          replyTo: input.replyTo, displayName: input.displayName });
+          nativeReplyTo: input.nativeReplyTo, displayName: input.displayName }, receiptOrigin);
+        if (receiptEpoch !== epoch || receiptOrigin !== messageOrigin || memoryRevision(input.groupId) !== receiptMemoryRevision) return;
         store.conversationState?.observe({ actualQQ: accountId, groupId: input.groupId, event: input });
         if (input.replyTo) {
           const recent = await store.conversation.list({ actualQQ: accountId, groupId: input.groupId, limit: 50 });
-          input.replyToBot = recent.some(item => item.role === 'assistant' && item.messageId === input.replyTo);
+          input.replyToBot = recent.some(item => item.role === 'assistant' && item.delivery === 'sent' && item.messageId === input.replyTo
+            && item.origin?.backend === receiptOrigin.backend && item.origin?.connectionId === receiptOrigin.connectionId);
           const target = recent.find(item => item.messageId === input.replyTo && item.actualQQ === accountId && item.groupId === input.groupId
-            && (item.role === 'user' || item.role === 'assistant' && item.delivery === 'sent'));
+            && matchesQqMessageOrigin(item, receiptOrigin) && (item.role === 'user' || item.role === 'assistant' && item.delivery === 'sent'));
           if (target) input.replyTarget = { messageId: target.messageId, userId: target.userId, displayName: target.displayName || '' };
         }
       }
@@ -1324,7 +1434,7 @@ export function createRuntime({ getConfig, getSecret, store, installer, pluginMa
         ];
       }
       const result = await infer(decision.provider, messages, signal);
-      await send(decision.destination, result.text, taskEpoch, purpose);
+      await send(decision.destination, result.text, taskEpoch, { ...purpose, signal });
       return result;
     });
   }
@@ -1334,20 +1444,31 @@ export function createRuntime({ getConfig, getSecret, store, installer, pluginMa
     let packet;
     try { packet = JSON.parse(raw.toString()); } catch { report('warn', 'NapCat 发来了无法解析的 JSON，已忽略。'); return; }
     const backend = resolveConnector(getConfig()).backend;
+    const rawSelf = packet?.self_id ?? packet?.selfId;
+    const validSelf = (typeof rawSelf === 'string' || typeof rawSelf === 'number' && Number.isSafeInteger(rawSelf)) && /^[1-9]\d{3,19}$/u.test(String(rawSelf));
+    if (backend === 'snowluma' && validSelf && getConfig().botQQ && String(rawSelf) !== getConfig().botQQ) {
+      dropIdentity(setupFailure('QQ_IDENTITY_MISMATCH', 'SnowLuma 事件通道的 QQ 身份与配置不一致，旧连接已停止。', { action: '为每个账号使用独立的 HTTP／事件 WebSocket 连接，核对同一 QQ 后重试。', status: 409 }), activeSocket);
+      return;
+    }
     packet = normalizeConnectorPacket(packet, { backend, expectedQQ: getConfig().botQQ });
     if (!packet) return;
     if (packet.self_id) {
       socketIdentity = id(packet.self_id);
-      if (identityWaiter && identityWaiter.qq === socketIdentity) { clearTimeout(identityWaiter.timer); identityWaiter.resolve(); identityWaiter = null; }
     }
-    if (packet.post_type === 'meta_event' && connected && (packet.status?.online === false || packet.status?.good === false)) {
-      rememberConnectionIssue(setupFailure('QQ_OFFLINE', 'QQ 连接端报告账号离线或消息链路异常，请检查登录状态。'));
-      activeSocket.terminate(); return;
+    if (backend === 'snowluma' && packet.post_type === 'meta_event') {
+      socketHealth = { online: packet.status?.online === true, good: packet.status?.good === true };
+    }
+    if (identityWaiter && identityWaiter.qq === socketIdentity && socketHealth?.online === true && socketHealth?.good === true) {
+      clearTimeout(identityWaiter.timer); identityWaiter.resolve(); identityWaiter = null;
+    }
+    const unhealthy = packet.post_type === 'meta_event' && (packet.status?.online === false || packet.status?.good === false);
+    if ((unhealthy && (connected || backend === 'snowluma')) || packet.post_type === 'notice' && packet.notice_type === 'bot_offline') {
+      dropIdentity(setupFailure('QQ_OFFLINE', 'QQ 连接端报告账号离线或消息链路异常，请检查登录状态。'), activeSocket); return;
     }
     if (packet.echo && pendingActions.has(id(packet.echo))) {
       const pending = pendingActions.get(id(packet.echo));
       pendingActions.delete(id(packet.echo));
-      clearTimeout(pending.timer);
+      pending.cleanup?.(); clearTimeout(pending.timer);
       if (packet.status === 'failed' || Number(packet.retcode) !== 0) {
         pending.reject(setupFailure(pending.actionName === 'get_login_info' ? 'QQ_NOT_LOGGED_IN' : pending.actionName === 'get_group_list' ? 'GROUP_LIST_UNAVAILABLE' : 'ONEBOT_ACTION_FAILED', pending.actionName === 'get_login_info' ? 'NapCat 尚未确认 QQ 登录，请先在 NapCat 中完成扫码登录。' : pending.actionName === 'get_group_list' ? 'QQ 群列表读取失败，请检查 NapCat 中账号是否在线。' : `NapCat 操作失败（retcode ${packet.retcode ?? '未知'}）。`, { action: '在 NapCat WebUI 检查 QQ 登录状态；确认在线后重新连接。', details: [String(packet.message || packet.wording || '接口未返回成功结果').slice(0, 200)] }));
       } else pending.resolve(packet.data);
@@ -1391,7 +1512,7 @@ export function createRuntime({ getConfig, getSecret, store, installer, pluginMa
     assertBackendAvailable(connector.backend);
     if (!config.qq?.enabled) throw setupFailure('QQ_DISABLED', '本账号尚未应用 QQ 连接设置。', { field: 'qq.enabled', action: '在账号的 QQ 连接步骤启用连接，保存并应用为只读后，再测试连接。', status: 409 });
     let url;
-    try { url = new URL(config.qq.wsUrl); } catch { throw setupFailure('ONEBOT_WRONG_ENDPOINT', 'OneBot WebSocket 地址格式不正确。', { action: '填写 NapCat 正向 WebSocket 的本机地址，例如 ws://127.0.0.1:3001。', status: 400 }); }
+    try { url = connector.backend === 'snowluma' ? validateConnectorUrl(connector.wsUrl, { kind: 'ws', allowedHosts: onebotHosts() }) : new URL(config.qq.wsUrl); } catch { throw setupFailure('ONEBOT_WRONG_ENDPOINT', 'OneBot WebSocket 地址格式不正确。', { action: `填写 ${connector.name} 事件 WebSocket 的本机地址，例如 ws://127.0.0.1:3001。`, status: 400 }); }
     if (!['ws:', 'wss:'].includes(url.protocol) || url.username || url.password || url.search) {
       throw setupFailure('ONEBOT_WRONG_ENDPOINT', 'OneBot WebSocket 地址应以 ws:// 开头，不能包含 Token 或查询参数。', { action: '将 Token 填入单独的 OneBot Token 输入框；WebUI 地址仅用于扫码登录。', status: 400 });
     }
@@ -1405,20 +1526,34 @@ export function createRuntime({ getConfig, getSecret, store, installer, pluginMa
     const connectEpoch = epoch;
     const token = await getSecret(connector.wsTokenName);
     if (!wanted || connectEpoch !== epoch) throw fail('连接已取消。', 409);
-    if (!token) throw setupFailure('NAPCAT_TOKEN_MISSING', '尚未配置本账号的 OneBot Token。', { field: 'secrets.napcatToken', action: '复制 NapCat 网络配置中正向 WebSocket 的 Token，保存并应用到本账号；不要使用 WebUI 登录密码。', status: 409 });
-    if (connector.backend === 'snowluma') httpClient = createSnowLumaHttpClient({ baseUrl: connector.httpUrl, token: await getSecret(connector.httpTokenName), allowedHosts: onebotHosts() });
+    if (!token) throw setupFailure(connector.backend === 'snowluma' ? 'SNOWLUMA_WS_TOKEN_MISSING' : 'NAPCAT_TOKEN_MISSING', '尚未配置本账号的 OneBot WebSocket Token。', { field: `secrets.${connector.wsTokenName}`, action: `复制 ${connector.name} 中本账号 WebSocket 的 Token，保存并应用；不要使用 WebUI 登录密码。`, status: 409 });
+    if (connector.backend === 'snowluma') {
+      const httpToken = await getSecret(connector.httpTokenName);
+      if (!wanted || connectEpoch !== epoch) throw fail('连接已取消。', 409);
+      httpClient = createSnowLumaHttpClient({ baseUrl: connector.httpUrl, token: httpToken, allowedHosts: onebotHosts() });
+    }
     const activeSocket = new WebSocket(url, {
       headers: token ? { Authorization: `Bearer ${token}` } : {},
       handshakeTimeout: QQ_TIMEOUT_MS, maxPayload: 1024 * 1024,
     });
     socket = activeSocket;
+    messageOrigin = createQqMessageOrigin(connector.backend);
     const handshake = new Promise((resolve, reject) => {
       let settled = false;
+      const deadline = setTimeout(() => {
+        if (socket !== activeSocket) { rejectOnce(fail('连接已取消。', 409)); return; }
+        const issue = setupFailure('ONEBOT_IDENTITY_UNVERIFIED', 'QQ 双通道身份或在线状态未在时限内确认。', { action: `检查 ${connector.name} 的事件型 WebSocket、HTTP 账号与登录状态。` });
+        rememberConnectionIssue(issue); httpClient?.close(); rejectOnce(issue); activeSocket.terminate();
+      }, QQ_TIMEOUT_MS * 2);
+      deadline.unref?.();
       const rejectOnce = (error) => {
         if (settled) return;
+        clearTimeout(deadline);
+        if (cancelHandshake === rejectOnce) cancelHandshake = null;
         settled = true;
         reject(error);
       };
+      cancelHandshake = rejectOnce;
       activeSocket.on('message', (raw) => acceptPacket(raw, activeSocket));
       activeSocket.on('open', async () => {
         let alive = true;
@@ -1434,10 +1569,21 @@ export function createRuntime({ getConfig, getSecret, store, installer, pluginMa
           const login = await action('get_login_info', {}, { handshake: true });
           if (socket !== activeSocket || !wanted) throw fail('连接已取消。', 409);
           const actualId = id(login?.user_id);
-          if (connector.backend === 'snowluma' && socketIdentity !== actualId) await new Promise((resolve, reject) => {
-            const timer = setTimeout(() => { identityWaiter = null; reject(setupFailure('ONEBOT_IDENTITY_UNVERIFIED', 'HTTP 已返回身份，但 WebSocket 身份尚未匹配，请核对两端连接的是同一个 QQ。')); }, QQ_TIMEOUT_MS);
-            timer.unref?.(); identityWaiter = { qq: actualId, resolve, reject, timer };
-          });
+          if (!/^[1-9]\d{3,19}$/.test(actualId)) throw setupFailure('QQ_NOT_LOGGED_IN', `${connector.name} 尚未返回有效 QQ 登录账号。`, { action: `打开 ${connector.name} 管理页，完成当前 QQ 登录后重试。` });
+          if (getConfig().botQQ && actualId !== getConfig().botQQ) throw setupFailure('QQ_IDENTITY_MISMATCH', `${connector.name} 实际登录 QQ ${actualId}，与本账号填写的 QQ ${getConfig().botQQ} 不一致，已拒绝连接。`, { field: 'botQQ', action: '核对实际登录 QQ 与账号配置，使两边一致后重新应用。', status: 409 });
+          if (connector.backend === 'snowluma') {
+            const version = await action('get_version_info', {}, { handshake: true });
+            if (version?.app_name !== 'SnowLuma' || version.app_version !== '2.4.2-node' || version.protocol_version !== 'v11') {
+              throw setupFailure('SNOWLUMA_VERSION_UNSUPPORTED', '当前仅适配已审查的 SnowLuma 2.4.2-node／OneBot v11。', { action: '核对固定版本和两个端口；其他 fork、OneBot12 或新版本需要单独适配。' });
+            }
+            const health = await action('get_status', {}, { handshake: true });
+            if (health?.online !== true || health.good !== true) throw setupFailure('QQ_OFFLINE', 'SnowLuma HTTP 返回账号离线或消息链路未就绪，不能启动账号。', { action: '先在外部 SnowLuma 完成 QQ 登录并确认在线，再重试。' });
+            if (socketIdentity !== actualId || socketHealth?.online !== true || socketHealth?.good !== true) await new Promise((resolve, reject) => {
+              const timer = setTimeout(() => { identityWaiter = null; reject(setupFailure('ONEBOT_IDENTITY_UNVERIFIED', 'HTTP 已返回在线身份，但 WebSocket 事件身份与在线状态尚未匹配。', { action: '使用当前账号的 Event／Universal WebSocket；Api-only连接不能接收事件。' })); }, QQ_TIMEOUT_MS);
+              timer.unref?.(); identityWaiter = { qq: actualId, resolve, reject, timer };
+            });
+            connectorVersion = { appName: version.app_name, appVersion: version.app_version, protocol: version.protocol_version };
+          }
           if (socket !== activeSocket || !wanted || connectEpoch !== epoch) throw fail('连接已取消。', 409);
           if (!/^[1-9]\d{3,19}$/.test(actualId)) throw setupFailure('QQ_NOT_LOGGED_IN', 'NapCat 尚未返回有效 QQ 登录账号。', { action: '打开 NapCat WebUI，使用本账号 QQ 扫码登录；显示在线后再测试连接。' });
           if (getConfig().botQQ && actualId !== getConfig().botQQ) throw setupFailure('QQ_IDENTITY_MISMATCH', `NapCat 实际登录 QQ ${actualId}，与本账号填写的 QQ ${getConfig().botQQ} 不一致，已拒绝连接。`, { field: 'botQQ', action: '切换 NapCat 登录账号，或修改当前账号的接入 QQ 号，使两边一致后重新应用。', status: 409 });
@@ -1449,12 +1595,15 @@ export function createRuntime({ getConfig, getSecret, store, installer, pluginMa
           reconnectAttempts = 0;
           lastError = ''; lastIssue = null;
           settled = true;
+          clearTimeout(deadline);
+          if (cancelHandshake === rejectOnce) cancelHandshake = null;
           report('info', `QQ 连接已验证，当前账号 ${actualId}。`);
           resolve(status());
         } catch (error) {
-          rejectOnce(error);
+          const issue = ['QQ_OFFLINE', 'QQ_IDENTITY_MISMATCH'].includes(lastIssue?.code) ? Object.assign(fail(lastIssue.message, 409), lastIssue) : error;
+          rejectOnce(issue);
           if (socket !== activeSocket) return;
-          rememberConnectionIssue(error);
+          rememberConnectionIssue(issue);
           connectionState = 'error';
           activeSocket.close();
         }
@@ -1475,11 +1624,13 @@ export function createRuntime({ getConfig, getSecret, store, installer, pluginMa
       });
       activeSocket.on('close', () => {
         if (socket !== activeSocket) return;
-        if (wanted && !lastIssue) rememberConnectionIssue(setupFailure('ONEBOT_CONNECTION_CLOSED', 'NapCat 连接已关闭，QQ 当前不在线。', { action: '重新打开 NapCat，确认 QQ 在线和正向 WebSocket 已启用，再测试连接。' }));
+        if (wanted && !lastIssue) rememberConnectionIssue(setupFailure('ONEBOT_CONNECTION_CLOSED', `${connector.name} 连接已关闭，QQ 当前不在线。`, { action: `重新打开 ${connector.name}，确认 QQ 在线和事件 WebSocket 已启用，再测试连接。` }));
         connected = false;
         connectedAt = null;
         accountId = '';
+        messageOrigin = null; connectorVersion = null; socketHealth = null;
         socket = null;
+        httpClient?.close(); httpClient = null;
         clearInterval(heartbeatTimer);
         heartbeatTimer = null;
         invalidateModelWork();
@@ -1535,7 +1686,8 @@ export function createRuntime({ getConfig, getSecret, store, installer, pluginMa
       }
     };
     authorize();
-    const result = await action('fetch_custom_face', { count: limit });
+    await verifySnowIdentity(signal, syncEpoch);
+    const result = await action('fetch_custom_face', { count: limit }, { signal });
     authorize();
     if (!Array.isArray(result) || result.length > 200 || result.some(item => typeof item !== 'string')) {
       throw fail('连接端没有返回受支持的收藏表情列表，请检查版本；未创建替代数据。', 502);
@@ -1549,6 +1701,7 @@ export function createRuntime({ getConfig, getSecret, store, installer, pluginMa
     if (!config.botQQ || accountId !== config.botQQ) throw setupFailure('QQ_IDENTITY_MISMATCH', 'QQ 登录账号与账号控制配置不一致，拒绝读取群列表。', { field: 'botQQ', action: '将接入 QQ 号和 NapCat 实际登录账号设置为同一个账号。', status: 409 });
     const listEpoch = epoch;
     const listAccount = accountId;
+    await verifySnowIdentity(undefined, listEpoch);
     const groups = await action('get_group_list', {});
     if (listEpoch !== epoch || !connected || listAccount !== accountId || accountId !== getConfig().botQQ) {
       throw fail('读取期间 QQ 账号或配置发生变化，群列表已丢弃。', 409);
@@ -1706,6 +1859,7 @@ export function createRuntime({ getConfig, getSecret, store, installer, pluginMa
     if (!connected || !accountId) throw fail('请先连接并验证 QQ 登录账号。', 409);
     const syncAccount = accountId;
     const syncEpoch = epoch;
+    await verifySnowIdentity(undefined, syncEpoch);
     const result = await action('get_collection_list', { category: '0', count: String(config.favorites.count) });
     if (result?.errCode != null && Number(result.errCode) !== 0) {
       throw fail(`QQ 收藏接口失败：${String(result.errMsg || `errCode ${result.errCode}`).slice(0, 200)}`, 502);

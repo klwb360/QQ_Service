@@ -7,6 +7,7 @@ import { WebSocketServer } from 'ws';
 import { DEFAULT_CONFIG } from '../src/config.mjs';
 import { createStore } from '../src/store.mjs';
 import { createRuntime, parseMessage } from '../src/runtime.mjs';
+import { qqMessageReference } from '../src/qq-message-origin.mjs';
 
 async function waitFor(predicate, timeout = 2500) {
   const start = Date.now();
@@ -51,7 +52,15 @@ test('模拟 QQ 端到端验证工作群只读、私人 API 与群聊边界、�
     installer: {},
     providers: {
       deepseek: async args => { calls.push({ provider: 'deepseek', input: JSON.stringify(args.messages) }); return { provider: 'deepseek', text: 'DS 回复' }; },
-      compatible: async args => { const input = JSON.stringify(args.messages); calls.push({ provider: 'api_private', input }); return { provider: 'api_private', text: input.includes('工作群：') ? '请交表 [消息:work-1]。不可信引用 [消息:invented]' : 'API 私人回复' }; }
+      compatible: async args => {
+        const input = JSON.stringify(args.messages); calls.push({ provider: 'api_private', input });
+        const workSource = store.listMessages('333333', 20).find(row => row.text === '/gpt 机密工作通知：明天交表');
+        if (input.includes('工作群：')) {
+          assert.ok(workSource && input.includes(workSource.messageId), 'the model must receive the same canonical source ID it cites');
+          assert.ok(input.includes(workSource.text), 'the cited notification must be present in the actual model input');
+        }
+        return { provider: 'api_private', text: input.includes('工作群：') ? `请交表 [消息:${workSource.messageId}]。不可信引用 [消息:invented]` : 'API 私人回复' };
+      }
     }
   });
   const event = (messageId, messageType, userId, groupId, text) => peer.send(JSON.stringify({ post_type: 'message', message_type: messageType, self_id: 999999, user_id: userId, ...(groupId ? { group_id: groupId } : {}), message_id: messageId, time: Math.floor(Date.now() / 1000), message: [{ type: 'text', data: { text } }] }));
@@ -66,12 +75,19 @@ test('模拟 QQ 端到端验证工作群只读、私人 API 与群聊边界、�
     assert.equal(outbound[0].params.group_id, '222222');
     assert.equal(calls[0].input.includes('机密工作通知'), false);
     assert.equal(calls[0].input.includes('未选群秘密'), false);
-    assert.equal(store.listMessages('333333', 20).length, 1);
+    const workSources = store.listMessages('333333', 20);
+    assert.equal(workSources.length, 1);
+    const workSource = workSources[0];
+    assert.equal(workSource.accountId, '999999'); assert.equal(workSource.groupId, '333333'); assert.equal(workSource.userId, '555555');
+    assert.equal(workSource.text, '/gpt 机密工作通知：明天交表');
+    assert.equal(workSource.messageId, qqMessageReference({ origin: runtime.status().messageOrigin, nativeMessageId: 'work-1' }));
     assert.equal(store.listMessages('444444', 20).length, 0);
     assert.equal(runtime.preview({ messageType: 'private', userId: '555555', message: '/gpt 偷用' }).allowed, false);
     assert.equal(runtime.preview({ messageType: 'group', userId: '111111', groupId: '333333', message: '/gpt 工作群命令' }).action, 'record_only');
     const summary = await runtime.runSummary('333333', { source: 'dashboard' });
-    assert.equal(summary.delivery.state, 'sent'); assert.equal(summary.evidence[0].messageId, 'work-1');
+    assert.equal(summary.delivery.state, 'sent'); assert.equal(summary.evidence[0].messageId, workSource.messageId);
+    assert.equal(summary.evidence[0].text, workSource.text);
+    assert.equal(summary.text.includes(`[消息:${workSource.messageId}]`), true);
     assert.equal(summary.text.includes('[引用未核实]'), true);
     assert.equal(outbound.at(-1).params.user_id, '111111');
     assert.equal(outbound.some(p => p.params.group_id === '333333'), false);

@@ -9,6 +9,7 @@ import { DEFAULT_CONFIG } from '../src/config.mjs';
 import { createStore } from '../src/store.mjs';
 import { createRuntime } from '../src/runtime.mjs';
 import { toolCallFingerprint, toolFunctionName } from '../src/tool-router.mjs';
+import { qqMessageReference } from '../src/qq-message-origin.mjs';
 
 const SEND = 'qq:send_message', POKE = 'qq:poke_member', REACT = 'qq:react_message';
 const MEMBERS = 'qq:current_group_members', MEMBER = 'qq:current_group_member';
@@ -74,7 +75,8 @@ async function fixture({ id = POKE, args = { userId: target }, respond, infer } 
     seed(text, fields = {}) {
       const message = { ...scope, messageId: String(10000 + ++sequence), userId: caller, role: 'user', text,
         time: Math.floor(Date.now() / 1000), displayName: '真实群友', ...fields };
-      store.conversation.record(message); return message;
+      return { ...message, ...store.conversation.recordTransport({ ...message, nativeMessageId: message.messageId,
+        origin: runtime.status().messageOrigin }) };
     },
     emit(fields = {}) {
       received++;
@@ -111,9 +113,11 @@ const enableSocial = f => {
 
 test('QQ send builds real at/reply segments while model CQ text remains literal and the destination stays bound', async () => {
   const text = '给你看看 [CQ:at,qq=all] 和 [CQ:image,file=file:///private]';
-  const f = await fixture({ id: SEND, args: { text, mentionUserIds: [target], replyToMessageId: '10001' } });
+  const args = { text, mentionUserIds: [target] };
+  const f = await fixture({ id: SEND, args });
   try {
-    f.seed('可以引用的本群原话', { messageId: '10001' });
+    const source = f.seed('可以引用的本群原话', { messageId: '10001' });
+    args.replyToMessageId = source.messageId;
     f.emit(); await f.idle();
     const sends = writes(f).filter(packet => packet.action === 'send_group_msg');
     assert.equal(sends.length, 2, 'the requested send and model final reply each deliver once');
@@ -126,6 +130,8 @@ test('QQ send builds real at/reply segments while model CQ text remains literal 
     assert.ok(f.actions.some(packet => packet.action === 'get_group_member_info'
       && String(packet.params.group_id) === scope.groupId && String(packet.params.user_id) === target));
     assert.equal(resultOf(f).executed, true);
+    assert.equal(resultOf(f).replyToMessageId, source.messageId);
+    assert.equal(resultOf(f).nativeReplyToMessageId, '10001');
   } finally { await f.close(); }
 });
 
@@ -142,9 +148,10 @@ test('a non-member mention is refused before sending and the model can explain t
 });
 
 test('a message ID cached only in another group cannot authorize a reaction but remains conversationally recoverable', async () => {
-  const f = await fixture({ id: REACT, args: { messageId: '30001', emojiId: '66', set: true } });
+  const args = { emojiId: '66', set: true };
+  const f = await fixture({ id: REACT, args });
   try {
-    f.seed('其他群的原文', { groupId: '333333', messageId: '30001' });
+    args.messageId = f.seed('其他群的原文', { groupId: '333333', messageId: '30001' }).messageId;
     f.emit(); await f.idle();
     assert.notEqual(resultOf(f).executed, true);
     assert.equal(f.actions.filter(packet => packet.action === 'set_msg_emoji_like').length, 0);
@@ -155,14 +162,29 @@ test('a message ID cached only in another group cannot authorize a reaction but 
 });
 
 test('QQ reaction preserves set:false and a verified current-group message ID', async () => {
-  const f = await fixture({ id: REACT, args: { messageId: '30002', emojiId: '66', set: false } });
+  const args = { emojiId: '66', set: false };
+  const f = await fixture({ id: REACT, args });
   try {
-    f.seed('需要取消表情回应的消息', { messageId: '30002' });
+    args.messageId = f.seed('需要取消表情回应的消息', { messageId: '30002' }).messageId;
     f.emit(); await f.idle();
     const reactions = f.actions.filter(packet => packet.action === 'set_msg_emoji_like');
     assert.equal(reactions.length, 1);
     assert.deepEqual(reactions[0].params, { message_id: '30002', emoji_id: '66', set: false });
     assert.equal(resultOf(f).executed, true);
+  } finally { await f.close(); }
+});
+
+test('a legacy cached ID shaped like the current namespace still cannot supply transport action proof', async () => {
+  const args = { emojiId: '66', set: true };
+  const f = await fixture({ id: REACT, args });
+  try {
+    args.messageId = qqMessageReference({ origin: f.runtime.status().messageOrigin, nativeMessageId: '30003' });
+    f.store.conversation.record({ ...scope, messageId: args.messageId, userId: caller, role: 'user', text: '历史无来源记录' });
+    f.emit(); await f.idle();
+    assert.equal(resultOf(f).executed, false);
+    assert.equal(resultOf(f).status, 'denied');
+    assert.equal(f.actions.filter(packet => packet.action === 'set_msg_emoji_like').length, 0);
+    assert.equal(f.store.conversation.list(scope).find(row => row.messageId === args.messageId).origin, undefined);
   } finally { await f.close(); }
 });
 
@@ -181,7 +203,8 @@ test('a timed-out poke remains unknown, never retries and cannot change the boun
     assert.equal(String(pokes[0].params.group_id), scope.groupId);
     assert.equal(String(pokes[0].params.user_id), target);
     assert.equal(f.requests.length, 1, 'an uncertain external write cannot become another model action');
-    const identity = createHash('sha256').update(JSON.stringify([scope.actualQQ, scope.groupId, '40009'])).digest('hex');
+    const requestId = 'napcat:n:40009'; // Stable across fresh connection generations.
+    const identity = createHash('sha256').update(JSON.stringify([scope.actualQQ, scope.groupId, requestId])).digest('hex');
     const receipt = await f.store.getTask(`tool-write:${identity}:${toolCallFingerprint(POKE, { userId: target })}`);
     assert.equal(receipt.state, 'attempted', 'a missing acknowledgement must never be marked returned');
   } finally { t.mock.timers.reset(); await f.close(); }
