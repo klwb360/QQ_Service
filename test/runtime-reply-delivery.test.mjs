@@ -298,6 +298,22 @@ test('停止只撤销该发起者自己的等待消息，其他成员的新明�
   } finally { await f.close(); }
 });
 
+test('新成员提问打断旧回复后可用无点名停止撤销自己的排队请求', async () => {
+  const f = await fixture({ holdAck: (packet, number) => number === 1 });
+  try {
+    f.emit(); await waitFor(() => f.outbound.length === 1);
+    f.emit({ text: '我有一个新问题', userId: '666666' });
+    await waitFor(() => f.runtime.status().queue.pending === 1);
+    f.emit({ text: '等一下，别发了', userId: '666666', addressed: false });
+    await f.received(); await delay(20);
+    f.releaseAck(); await f.idle();
+    assert.deepEqual(f.texts(), [bubbles[0]], '旧尾部与已撤销的新问题都不应继续发送');
+    assert.deepEqual(f.rows().map(row => row.text), [bubbles[0]]);
+    assert.equal(f.requests.length, 1, '撤销排队的新请求不额外调用模型');
+    assert.equal(f.runtime.status().queue.pending, 0);
+  } finally { await f.close(); }
+});
+
 test('旧发送已经结束而补充仍在合并队列时，停止清理自身排队与定时器', async () => {
   const f = await fixture();
   try {

@@ -536,11 +536,13 @@ export function createSocialRuntime({ getConfig, getIdentity, getEpoch, store, i
     // A supplement may already have stopped the old delivery and be waiting
     // for its next batch. The same person's stop still cancels that queued
     // request instead of becoming a new model prompt alongside it.
-    if (stopping && active?.phase !== 'delivery' && state.pending.some(pending => pending.input.userId === input.userId)) {
+    if (stopping && state.pending.some(pending => pending.input.userId === input.userId)) {
       state.pending = state.pending.filter(pending => pending.input.userId !== input.userId);
       if (!state.pending.length) { clearTimeout(state.timer); state.timer = null; }
-      explain(state, '已取消该成员尚未处理的消息', 'interrupted');
-      return true;
+      if (active?.phase !== 'delivery' || (!active.authors.has(input.userId) && !explicitAddress)) {
+        explain(state, '已取消该成员尚未处理的消息', 'interrupted');
+        return true;
+      }
     }
     if (active?.phase === 'delivery' && !input.isNotice) {
       const sameAuthor = active.authors.has(input.userId);
