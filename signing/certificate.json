@@ -1,0 +1,9 @@
+{
+    "schemaVersion":  1,
+    "subject":  "CN=QQ_Service Self-Signed Publisher",
+    "sha1":  "9AF8A7A2D110CFC5EAADC2976D1058FFBDF10332",
+    "sha256":  "7ED7D9B3C042CB8219D247A333410552C1864095A80DE662560861EEC1B96C74",
+    "notBefore":  "2026-11-14T05:13:11.000Z",
+    "notAfter":  "2029-11-13T05:13:11.000Z",
+    "usage":  "codeSigning"
+}
