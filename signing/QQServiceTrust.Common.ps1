@@ -153,7 +153,7 @@ function Add-QQServiceUserTrustCertificate {
         [Parameter(Mandatory = $true)]$Publisher
     )
     # Callers validate the publisher before the explicit ShouldProcess prompt.
-    # Snapshot immutable public DER so certutil never reopens a source file
+    # Snapshot immutable public DER so the native worker never reopens a source file
     # which could have changed while that prompt was displayed.
     $bytes = $Publisher.Certificate.RawData
     if ($Publisher.Certificate.HasPrivateKey -or
@@ -178,13 +178,89 @@ function Add-QQServiceUserTrustCertificate {
         }
         finally { $identity.Dispose() }
         $publicPath = Join-Path $temporary 'QQ_Service.cer'
-        if ($publicPath -match '["\x00-\x1f]') { throw 'The temporary certificate path cannot be passed safely to certutil.' }
+        $workerPath = Join-Path $temporary 'Import-QQServicePublicTrust.ps1'
+        if ($publicPath -match '["\x00-\x1f]' -or $workerPath -match '["\x00-\x1f]') { throw 'The temporary certificate paths cannot be passed safely to the native worker.' }
         [System.IO.File]::WriteAllBytes($publicPath, $bytes)
-        $binary = Join-Path ([Environment]::SystemDirectory) 'certutil.exe'
-        if (-not [System.IO.File]::Exists($binary)) { throw 'The Windows system certutil.exe was not found.' }
+        # This is static reviewed code. No caller input is interpolated into
+        # the script; certificate paths, target store and fingerprint are argv.
+        $worker = @'
+[CmdletBinding()]
+param(
+    [Parameter(Mandatory = $true)][ValidateSet('Root', 'TrustedPublisher')][string]$StoreName,
+    [Parameter(Mandatory = $true)][string]$CertificatePath,
+    [Parameter(Mandatory = $true)][ValidatePattern('^[0-9A-F]{64}$')][string]$ExpectedSha256
+)
+Set-StrictMode -Version Latest
+$ErrorActionPreference = 'Stop'
+$certificate = $null
+try {
+    $encoded = [IO.File]::ReadAllBytes($CertificatePath)
+    $certificate = [Security.Cryptography.X509Certificates.X509Certificate2]::new($encoded)
+    $digest = [Security.Cryptography.SHA256]::Create()
+    try { $actual = [BitConverter]::ToString($digest.ComputeHash($certificate.RawData)).Replace('-', '') }
+    finally { $digest.Dispose() }
+    if ($certificate.HasPrivateKey -or $actual -cne $ExpectedSha256 -or [Convert]::ToBase64String($encoded) -cne [Convert]::ToBase64String($certificate.RawData)) {
+        throw 'The native trust worker did not receive the pinned public DER certificate.'
+    }
+    Add-Type -TypeDefinition @"
+using System;
+using System.Runtime.InteropServices;
+using System.Security.Cryptography.X509Certificates;
+
+public static class QQServiceCryptUIImport {
+    [StructLayout(LayoutKind.Sequential)]
+    private struct CRYPTUI_WIZ_IMPORT_SRC_INFO {
+        public uint dwSize;
+        public uint dwSubjectChoice;
+        public IntPtr pCertContext;
+        public uint dwFlags;
+        public IntPtr pwszPassword;
+    }
+
+    [DllImport("cryptui.dll", CharSet = CharSet.Unicode, ExactSpelling = true, SetLastError = true)]
+    [return: MarshalAs(UnmanagedType.Bool)]
+    private static extern bool CryptUIWizImport(uint flags, IntPtr parent, string title,
+        ref CRYPTUI_WIZ_IMPORT_SRC_INFO source, IntPtr destination);
+
+    public static int Import(X509Certificate2 certificate, string name) {
+        if (name != "Root" && name != "TrustedPublisher") throw new ArgumentException("Unsupported user store.");
+        using (var store = new X509Store(name, StoreLocation.CurrentUser)) {
+            store.Open(OpenFlags.ReadWrite);
+            var source = new CRYPTUI_WIZ_IMPORT_SRC_INFO {
+                dwSize = (uint)Marshal.SizeOf(typeof(CRYPTUI_WIZ_IMPORT_SRC_INFO)),
+                dwSubjectChoice = 2, // CRYPTUI_WIZ_IMPORT_SUBJECT_CERT_CONTEXT
+                pCertContext = certificate.Handle,
+                dwFlags = 0,
+                pwszPassword = IntPtr.Zero
+            };
+            // Only documented CRYPTUI_WIZ_NO_UI=1. No root-unprotection,
+            // LocalMachine, private-key or policy-changing flags are used.
+            bool imported = CryptUIWizImport(1, IntPtr.Zero, null, ref source, store.StoreHandle);
+            int error = imported ? 0 : Marshal.GetLastWin32Error();
+            GC.KeepAlive(certificate);
+            GC.KeepAlive(store);
+            return imported ? 0 : (error == 0 ? unchecked((int)0x80004005) : error);
+        }
+    }
+}
+"@
+    $code = [QQServiceCryptUIImport]::Import($certificate, $StoreName)
+    if ($code -ne 0) {
+        $message = (New-Object ComponentModel.Win32Exception -ArgumentList $code).Message
+        throw ('CryptUIWizImport failed (0x' + $code.ToString('X8') + '): ' + $message)
+    }
+    Write-Output 'The pinned public certificate was imported to the selected CurrentUser store.'
+}
+catch { [Console]::Error.WriteLine($_.Exception.Message); exit 1 }
+finally { if ($null -ne $certificate) { $certificate.Dispose() } }
+'@
+        [IO.File]::WriteAllText($workerPath, $worker, [Text.Encoding]::ASCII)
+        $binary = Join-Path $PSHOME 'powershell.exe'
+        if (-not [System.IO.File]::Exists($binary)) { $binary = Join-Path $PSHOME 'pwsh.exe' }
+        if (-not [System.IO.File]::Exists($binary)) { throw 'The current Windows PowerShell host executable was not found.' }
         $start = New-Object Diagnostics.ProcessStartInfo
         $start.FileName = $binary
-        $start.Arguments = '-silent -user -f -addstore ' + $Name + ' "' + $publicPath + '"'
+        $start.Arguments = '-NoProfile -NonInteractive -ExecutionPolicy Bypass -File "' + $workerPath + '" -StoreName ' + $Name + ' -CertificatePath "' + $publicPath + '" -ExpectedSha256 ' + $Publisher.Sha256
         $start.UseShellExecute = $false
         $start.CreateNoWindow = $true
         $start.RedirectStandardOutput = $true
@@ -193,8 +269,8 @@ function Add-QQServiceUserTrustCertificate {
         $process = New-Object Diagnostics.Process
         $process.StartInfo = $start
         if (-not $process.Start()) { throw 'Could not start the Windows certificate import tool.' }
-        # -silent requests the documented non-interactive CryptoAPI mode.
-        # EOF also prevents a console confirmation from waiting for input.
+        # EOF prevents console interaction. The worker itself uses the
+        # documented CryptUI no-UI mode, inside this bounded child process.
         # The entry script has already obtained explicit ShouldProcess consent.
         $process.StandardInput.Close()
         $output = $process.StandardOutput.ReadToEndAsync()
@@ -202,18 +278,18 @@ function Add-QQServiceUserTrustCertificate {
         if (-not $process.WaitForExit(25000)) {
             try { $process.Kill(); [void]$process.WaitForExit(2000) } catch { }
             try { [void][Threading.Tasks.Task]::WaitAll([Threading.Tasks.Task[]]@($output, $errors), 2000) } catch { }
-            $diagnostic = Get-QQServiceCertutilPublicDiagnostic -OutputTask $output -ErrorTask $errors
+            $diagnostic = Get-QQServiceNativeTrustDiagnostic -OutputTask $output -ErrorTask $errors
             throw ('Windows certificate import exceeded its 25-second deadline. ' + $diagnostic + ' A Windows policy may require administrator-managed trust; no machine-wide fallback was attempted.')
         }
         if (-not [Threading.Tasks.Task]::WaitAll([Threading.Tasks.Task[]]@($output, $errors), 3000)) {
-            $diagnostic = Get-QQServiceCertutilPublicDiagnostic -OutputTask $output -ErrorTask $errors
+            $diagnostic = Get-QQServiceNativeTrustDiagnostic -OutputTask $output -ErrorTask $errors
             throw ('Windows certificate import output did not close within its deadline. ' + $diagnostic)
         }
-        # certutil receives only a public certificate; never print arbitrary
+        # The worker receives only a public certificate; never print arbitrary
         # unbounded process output or interpret it as success. On failure only
         # bounded public-certificate diagnostics are included. No PFX is used.
         if ($process.ExitCode -ne 0) {
-            $diagnostic = Get-QQServiceCertutilPublicDiagnostic -OutputTask $output -ErrorTask $errors
+            $diagnostic = Get-QQServiceNativeTrustDiagnostic -OutputTask $output -ErrorTask $errors
             throw ('Windows certificate import failed with exit code ' + $process.ExitCode + '. ' + $diagnostic)
         }
         $store = Open-QQServiceUserStore -Name $Name
@@ -242,7 +318,7 @@ function Add-QQServiceUserTrustCertificate {
     }
 }
 
-function Get-QQServiceCertutilPublicDiagnostic {
+function Get-QQServiceNativeTrustDiagnostic {
     param(
         [Parameter(Mandatory = $true)][Threading.Tasks.Task]$OutputTask,
         [Parameter(Mandatory = $true)][Threading.Tasks.Task]$ErrorTask

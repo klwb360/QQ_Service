@@ -90,6 +90,9 @@ jobs:
             ./scripts/test-windows-signing.ps1 -Stage Setup -ProjectRoot $PWD.Path `
               -CertificateDirectory "$env:RUNNER_TEMP/qq-early-trust-public" `
               -WorkDirectory "$env:RUNNER_TEMP/qq-early-trust-private"
+            & "$env:SystemRoot/System32/WindowsPowerShell/v1.0/powershell.exe" -NoProfile -NonInteractive -ExecutionPolicy Bypass `
+              -File ./scripts/test-qqservice-trust.ps1 -CertificateDirectory "$env:RUNNER_TEMP/qq-early-trust-public"
+            if ($LASTEXITCODE -ne 0) { throw 'Windows PowerShell 5.1 current-user trust validation failed.' }
             ./scripts/test-qqservice-trust.ps1 -CertificateDirectory "$env:RUNNER_TEMP/qq-early-trust-public"
           }
           finally {
