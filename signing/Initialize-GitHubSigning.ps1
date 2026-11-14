@@ -74,11 +74,33 @@ function Invoke-Gh {
         $start.RedirectStandardInput = $true
         $start.RedirectStandardOutput = $true
         $start.RedirectStandardError = $true
+        # Modern .NET exposes this property; .NET Framework used by Windows
+        # PowerShell 5.1 instead copies Console.InputEncoding during Start().
+        $inputEncodingProperty = $start.GetType().GetProperty('StandardInputEncoding')
+        if ($null -ne $inputEncodingProperty -and $inputEncodingProperty.CanWrite) {
+            $inputEncodingProperty.SetValue($start, [Text.UTF8Encoding]::new($false), $null)
+        }
     }
     $process = [Diagnostics.Process]::new()
     $process.StartInfo = $start
+    $inputBytes = $null
     try {
-        [void]$process.Start()
+        $restoreConsoleEncoding = $false
+        $originalConsoleEncoding = $null
+        try {
+            if (-not $Interactive -and $null -eq $inputEncodingProperty) {
+                $originalConsoleEncoding = [Console]::InputEncoding
+                # No change is necessary for an existing BOM-free code page:
+                # raw UTF8 bytes below do not use its character encoder.
+                if ($originalConsoleEncoding.GetPreamble().Length -gt 0) {
+                    $restoreConsoleEncoding = $true
+                    [Console]::InputEncoding = [Text.UTF8Encoding]::new($false)
+                }
+            }
+            [void]$process.Start()
+        } finally {
+            if ($restoreConsoleEncoding) { [Console]::InputEncoding = $originalConsoleEncoding }
+        }
         if ($Interactive) {
             $process.WaitForExit()
             if ($process.ExitCode -ne 0) { throw 'GitHub CLI browser authentication did not complete.' }
@@ -86,7 +108,13 @@ function Invoke-Gh {
         }
         $outputTask = $process.StandardOutput.ReadToEndAsync()
         $errorTask = $process.StandardError.ReadToEndAsync()
-        if ($null -ne $InputText) { $process.StandardInput.Write($InputText) }
+        # Process.Start can immediately flush its StreamWriter preamble.
+        # Check the selected encoding, then bypass text encoding entirely.
+        if ($process.StandardInput.Encoding.GetPreamble().Length -ne 0) { throw 'GitHub CLI input encoding is not safely configured.' }
+        if ($null -ne $InputText) {
+            $inputBytes = [Text.UTF8Encoding]::new($false).GetBytes($InputText)
+            $process.StandardInput.BaseStream.Write($inputBytes, 0, $inputBytes.Length)
+        }
         $process.StandardInput.Close()
         $process.WaitForExit()
         $output = $outputTask.GetAwaiter().GetResult()
@@ -99,14 +127,23 @@ function Invoke-Gh {
             throw ('GitHub operation failed: ' + $safeError)
         }
         return $result
-    } finally { $process.Dispose() }
+    } catch {
+        # Do not leave a child waiting for input or let a local encoding error
+        # turn into an empty API request after the parent closes its handles.
+        try { if (-not $process.HasExited) { $process.Kill(); $process.WaitForExit() } } catch {}
+        throw
+    } finally {
+        if ($null -ne $inputBytes) { [Array]::Clear($inputBytes, 0, $inputBytes.Length) }
+        $process.Dispose()
+    }
 }
 
 function GitHub-Json([string]$Path, [string]$Method = 'GET', $Body = $null) {
     $arguments = @('api', '--hostname', 'github.com', '--method', $Method, $Path)
     $text = $null
     if ($null -ne $Body) { $arguments += @('--input', '-'); $text = $Body | ConvertTo-Json -Depth 12 -Compress }
-    $response = Invoke-Gh -Arguments $arguments -InputText $text
+    try { $response = Invoke-Gh -Arguments $arguments -InputText $text }
+    catch { throw ("GitHub API $Method $Path failed: " + $_.Exception.Message) }
     if ([string]::IsNullOrWhiteSpace($response.Output)) { return $null }
     return ($response.Output | ConvertFrom-Json)
 }

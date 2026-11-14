@@ -58,8 +58,13 @@ jobs:
             if ($parseErrors.Count -gt 0) { throw "PowerShell syntax check failed: $($file.Name): $($parseErrors[0].Message)" }
           }
 
-      - name: Run tests
-        run: npm test
+      - name: Verify native stdin on Windows PowerShell 5.1
+        shell: powershell
+        run: ./scripts/test-signing-bootstrap-input.ps1
+
+      - name: Verify native stdin on PowerShell 7
+        shell: pwsh
+        run: ./scripts/test-signing-bootstrap-input.ps1
 
       - name: Check one-time signing initializer without side effects
         shell: pwsh
@@ -75,6 +80,9 @@ jobs:
           if-no-files-found: error
           retention-days: 14
           overwrite: true
+
+      - name: Run tests
+        run: npm test
 
       - name: Build portable application
         run: npm run build:exe

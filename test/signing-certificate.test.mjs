@@ -65,7 +65,7 @@ test('signed overlay signs only own current-version executables through the offi
   assert.equal(config.forceCodeSigning, true); assert.equal(config.win.signExecutable, true);
   assert.deepEqual(config.win.signExts, ['QQ_Service.exe', 'QQ_Service-0.8.0-Windows-x64.exe', '!.exe']);
   assert.deepEqual(config.win.signtoolOptions.signingHashAlgorithms, ['sha256']);
-  assert.equal(config.win.signtoolOptions.rfc3161TimeStampServer, 'https://timestamp.digicert.com');
+  assert.equal(config.win.signtoolOptions.rfc3161TimeStampServer, 'http://timestamp.digicert.com');
   assert.equal(config.win.signtoolOptions.certificateSha1, readSigningCertificate({ directory: source, now: fixtureNow }).sha1);
   const { WinPackager } = require('app-builder-lib');
   const shouldSign = file => WinPackager.prototype.shouldSignFile.call({ platformSpecificBuildOptions: config.win }, file, true);

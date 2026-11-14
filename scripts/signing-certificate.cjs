@@ -72,7 +72,10 @@ function createSignedBuildConfiguration({ projectRoot, version, certificateDirec
       signtoolOptions: {
         certificateSha1: publicCertificate.sha1,
         signingHashAlgorithms: ['sha256'],
-        rfc3161TimeStampServer: 'https://timestamp.digicert.com',
+        // The locked Windows SignTool accepts HTTP TSA URLs. RFC3161 binds
+        // its CA-authenticated response to the signature hash; verification
+        // checks that binding, certificate chain and time before upload.
+        rfc3161TimeStampServer: 'http://timestamp.digicert.com',
       },
     },
   };

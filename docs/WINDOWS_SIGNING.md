@@ -75,3 +75,15 @@ powershell.exe -NoProfile -ExecutionPolicy Bypass -File .\Remove-QQServiceTrust.
 - 正式标签发布只复用**相同源码提交**的 main 已签名产物，不获取私钥。最多等待30分钟；缺失、过期或验证失败则停止，维护者需重跑对应 main 构建。
 
 当前签名覆盖便携版。NSIS 安装包还需独立接入和验收，不能据此把原有未签名安装包标为已签名。实际 Windows 构建与测试结果见[验证记录](VALIDATION.md)。
+
+## 维护者首次初始化
+
+如果云端连接不能管理 GitHub Environment／Secrets，可在自己的 Windows 上从当前 PR 源码或 `QQ_Service-signing-setup` 产物下载 `Initialize-GitHubSigning.ps1`，在文件所在目录运行：
+
+```powershell
+powershell.exe -NoProfile -ExecutionPolicy Bypass -File .\Initialize-GitHubSigning.ps1
+```
+
+它核验固定版本的官方便携 GitHub CLI，要求仓库所有者登录，先验证管理权限和 main-only 环境，再生成证书、上传加密 Secrets，并仅提交公开证书和元数据。临时私钥清理后只留 GitHub 中的加密副本；不会安装本机信任、自动换证或合并 PR。
+
+看到 `SUCCESS` 后即可回到项目对话继续验收。若上传已完成而公开提交中断，使用 `-ResumePublicCommit` 只恢复公开提交，不能重新生成一套证书。完整操作及失败恢复见[初始化说明](../signing/SETUP.txt)。
