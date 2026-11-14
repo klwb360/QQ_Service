@@ -12,7 +12,9 @@ $install = Join-Path $trustDirectory 'Install-QQServiceTrust.ps1'
 $remove = Join-Path $trustDirectory 'Remove-QQServiceTrust.ps1'
 $isGitHubActions = $env:GITHUB_ACTIONS -eq 'true'
 $ciInstallArguments = @{}
+$ciRemoveArguments = @{}
 if ($isGitHubActions) { $ciInstallArguments.CiApproveOwnedImportDialog = $true }
+if ($isGitHubActions) { $ciRemoveArguments.CiApproveOwnedRemovalDialog = $true }
 
 function Assert-TrustTest {
     param([bool]$Condition, [string]$Message)
@@ -94,12 +96,12 @@ try {
     foreach ($name in @('Root', 'TrustedPublisher')) {
         Assert-TrustTest (Test-TrustTestPublisherPresent -Name $name -Publisher $publisher) 'install must add exactly one matching trust entry'
     }
-    & $remove -CertificateDirectory $CertificateDirectory -WhatIf
+    & $remove -CertificateDirectory $CertificateDirectory -WhatIf @ciRemoveArguments
     foreach ($name in @('Root', 'TrustedPublisher')) {
         Assert-TrustTest (Test-TrustTestPublisherPresent -Name $name -Publisher $publisher) 'WhatIf removal must retain trust'
     }
-    & $remove -CertificateDirectory $CertificateDirectory -Confirm:$false
-    & $remove -CertificateDirectory $CertificateDirectory -Confirm:$false
+    & $remove -CertificateDirectory $CertificateDirectory -Confirm:$false @ciRemoveArguments
+    & $remove -CertificateDirectory $CertificateDirectory -Confirm:$false @ciRemoveArguments
     foreach ($name in @('Root', 'TrustedPublisher')) {
         Assert-TrustTest (-not (Test-TrustTestPublisherPresent -Name $name -Publisher $publisher)) 'remove must clear only the fixture publisher'
         Assert-TrustTest (@(Get-TrustTestStoreHashes -Name $name) -contains $sentinelHash) 'an unrelated publisher must remain trusted'
@@ -119,10 +121,10 @@ finally {
     $cleanupErrors = [Collections.Generic.List[string]]::new()
     if ($cleanupAllowed) {
         foreach ($name in @('Root', 'TrustedPublisher')) {
-            try { [void](Remove-QQServiceUserTrustCertificate -Name $name -Publisher $publisher) }
+            try { [void](Remove-QQServiceUserTrustCertificate -Name $name -Publisher $publisher -ApproveOwnedRemovalDialog:$isGitHubActions) }
             catch { $cleanupErrors.Add($_.Exception.Message) }
             if ($null -ne $sentinelPublisher) {
-                try { [void](Remove-QQServiceUserTrustCertificate -Name $name -Publisher $sentinelPublisher) }
+                try { [void](Remove-QQServiceUserTrustCertificate -Name $name -Publisher $sentinelPublisher -ApproveOwnedRemovalDialog:$isGitHubActions) }
                 catch { $cleanupErrors.Add($_.Exception.Message) }
             }
         }

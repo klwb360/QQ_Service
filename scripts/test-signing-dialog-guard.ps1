@@ -79,4 +79,66 @@ Assert-DialogGuard -Case 'oversized expected subject' -Name ('A' * 257)
 Assert-DialogGuard -Case 'missing body' -Text $null
 Assert-DialogGuard -Case 'oversized body' -Text ($body + ('A' * 8193))
 
+# Exact public static text captured from the owned Windows removal dialog in
+# the native fixture run. The full serial and SHA1 are matched independently;
+# the legacy MD5 field is only a structural terminator, never a trust pin.
+$removalSha1 = '534B3EBF286213B6970092FBBD4CD0C192B13CC8'
+$removalHash = '534B3EBF 286213B6 970092FB BD4CD0C1 92B13CC8'
+$removalSerial = '2BF64B3CDE7669A5451174AC5DE14442'
+$groupedSerial = '2BF64B3C DE7669A5 451174AC 5DE14442'
+$removalBody = @"
+Do you want to DELETE the following certificate from the Root Store?
+
+Subject : QQ_Service Self-Signed Publisher
+Issuer : Self Issued
+Time Validity : Saturday, November 14, 2026 through Sunday, November 15, 2026
+Serial Number : $groupedSerial
+Thumbprint (sha1) : $removalHash
+Thumbprint (md5) : D9DCDE99 A4F69D63 66660F74 98F51FF0
+"@
+$removalBody = $removalBody.Replace("`r`n", "`n")
+
+function Assert-RemovalDialogGuard {
+    param(
+        [Parameter(Mandatory = $true)][string]$Case,
+        [AllowNull()][string]$Title = 'Root Certificate Store',
+        [AllowNull()][string]$Text = $removalBody,
+        [AllowNull()][string]$Sha1 = $removalSha1,
+        [AllowNull()][string]$Name = $expectedName,
+        [AllowNull()][string]$Serial = $removalSerial,
+        [bool]$Expected = $false
+    )
+    $actual = [QQServiceOwnedTrustWindows]::MatchesExpectedRemovalText($Title, $Text, $Sha1, $Name, $Serial)
+    if ($actual -ne $Expected) { throw ('Removal dialog predicate failed for ' + $Case + ': expected ' + $Expected + ', got ' + $actual + '.') }
+    $script:checked++
+}
+
+Assert-RemovalDialogGuard -Case 'captured full Root Certificate Store dialog' -Expected $true
+Assert-RemovalDialogGuard -Case 'native controls separated by multiple spaces' -Text ($removalBody.Replace("`n", '  ')) -Expected $true
+Assert-RemovalDialogGuard -Case 'lowercase displayed serial and SHA1' -Text ($removalBody.Replace($removalHash, $removalHash.ToLowerInvariant()).Replace($groupedSerial, $groupedSerial.ToLowerInvariant())) -Expected $true
+Assert-RemovalDialogGuard -Case 'wrong operation despite identical identity fields' -Text ($removalBody.Replace('DELETE', 'EXPORT'))
+Assert-RemovalDialogGuard -Case 'installation dialog is not a removal operation' -Title 'Security Warning' -Text $body
+Assert-RemovalDialogGuard -Case 'wrong window title' -Title 'Certificate Store'
+Assert-RemovalDialogGuard -Case 'title with untrusted suffix' -Title 'Root Certificate Store - Another Application'
+Assert-RemovalDialogGuard -Case 'same SHA1 but wrong displayed subject' -Text ($removalBody.Replace('Subject : QQ_Service Self-Signed Publisher', 'Subject : Another publisher'))
+Assert-RemovalDialogGuard -Case 'subject sharing the expected prefix' -Text ($removalBody.Replace('Subject : QQ_Service Self-Signed Publisher', 'Subject : QQ_Service Self-Signed Publisher Administrator'))
+Assert-RemovalDialogGuard -Case 'different expected subject' -Name 'Another publisher'
+Assert-RemovalDialogGuard -Case 'issuer not self issued' -Text ($removalBody.Replace('Issuer : Self Issued', 'Issuer : Another Authority'))
+Assert-RemovalDialogGuard -Case 'wrong displayed full SHA1' -Text ($removalBody.Replace($removalHash, '634B3EBF 286213B6 970092FB BD4CD0C1 92B13CC8'))
+Assert-RemovalDialogGuard -Case 'wrong expected full SHA1' -Sha1 '634B3EBF286213B6970092FBBD4CD0C192B13CC8'
+Assert-RemovalDialogGuard -Case 'truncated displayed SHA1' -Text ($removalBody.Replace($removalHash, '534B3EBF 286213B6 970092FB BD4CD0C1 92B13CC'))
+Assert-RemovalDialogGuard -Case 'sixth SHA1 group sharing the expected prefix' -Text ($removalBody.Replace($removalHash, ($removalHash + ' DEADBEEF')))
+Assert-RemovalDialogGuard -Case 'wrong displayed full serial' -Text ($removalBody.Replace($groupedSerial, '3BF64B3C DE7669A5 451174AC 5DE14442'))
+Assert-RemovalDialogGuard -Case 'wrong expected full serial' -Serial '3BF64B3CDE7669A5451174AC5DE14442'
+Assert-RemovalDialogGuard -Case 'truncated serial sharing the expected prefix' -Text ($removalBody.Replace($groupedSerial, '2BF64B3C DE7669A5 451174AC 5DE1444'))
+Assert-RemovalDialogGuard -Case 'extra serial group sharing the expected prefix' -Text ($removalBody.Replace($groupedSerial, ($groupedSerial + ' DEADBEEF')))
+Assert-RemovalDialogGuard -Case 'missing expected serial' -Serial $null
+Assert-RemovalDialogGuard -Case 'duplicate subject fields' -Text ($removalBody.Replace('Issuer :', "Subject : Another publisher`nIssuer :"))
+Assert-RemovalDialogGuard -Case 'duplicate fingerprint fields' -Text ($removalBody.Replace('Thumbprint (md5) :', ("Thumbprint (sha1) : " + $removalHash + "`nThumbprint (md5) :")))
+Assert-RemovalDialogGuard -Case 'duplicate serial fields' -Text ($removalBody.Replace('Thumbprint (sha1) :', ("Serial Number : " + $groupedSerial + "`nThumbprint (sha1) :")))
+Assert-RemovalDialogGuard -Case 'SHA1 present only as unrelated MD5 text' -Text ($removalBody.Replace($removalHash, '634B3EBF 286213B6 970092FB BD4CD0C1 92B13CC8').Replace('D9DCDE99 A4F69D63 66660F74 98F51FF0', $removalHash))
+Assert-RemovalDialogGuard -Case 'unexpected field between SHA1 and MD5' -Text ($removalBody.Replace('Thumbprint (md5) :', "Issuer : Another Authority`nThumbprint (md5) :"))
+Assert-RemovalDialogGuard -Case 'missing body' -Text $null
+Assert-RemovalDialogGuard -Case 'oversized body' -Text ($removalBody + ('A' * 8193))
+
 Write-Output ('PASS ' + $script:checked + ' actual dialog-predicate cases; no windows or certificate stores were touched.')

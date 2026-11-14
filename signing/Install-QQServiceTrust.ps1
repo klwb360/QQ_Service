@@ -36,7 +36,9 @@ try {
     catch {
         foreach ($name in $added) {
             try {
-                [void](Remove-QQServiceUserTrustCertificate -Name $name -Publisher $publisher)
+                $removalOptions = @{}
+                if ($CiApproveOwnedImportDialog) { $removalOptions.ApproveOwnedRemovalDialog = $true }
+                [void](Remove-QQServiceUserTrustCertificate -Name $name -Publisher $publisher @removalOptions)
             }
             catch { Write-Warning ('Could not roll back the new QQ_Service entry in CurrentUser\' + $name + '. Run the removal script to check it.') }
         }

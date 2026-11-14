@@ -96,7 +96,7 @@ function Remove-OwnedStoreCertificate([string]$StoreName, [string]$Thumbprint, [
             try {
                 . (Join-Path $ProjectRoot 'signing/QQServiceTrust.Common.ps1')
                 $publisher = [pscustomobject]@{ Certificate = $publicCertificate; Metadata = @{ sha1 = $Thumbprint }; Sha256 = $Sha256 }
-                [void](Remove-QQServiceUserTrustCertificate -Name $StoreName -Publisher $publisher)
+                [void](Remove-QQServiceUserTrustCertificate -Name $StoreName -Publisher $publisher -ApproveOwnedRemovalDialog:($env:GITHUB_ACTIONS -eq 'true'))
             } finally { $publicCertificate.Dispose() }
         }
         return

@@ -350,7 +350,10 @@ finally { if ($null -ne $certificate) { $certificate.Dispose() } }
         # confirmation can otherwise retain the store's native write lock.
         if ($workerStarted -and -not $process.HasExited) { try { $process.Kill(); [void]$process.WaitForExit(2000) } catch { } }
         try {
-            [void](Remove-QQServiceUserTrustCertificate -Name $Name -Publisher $Publisher)
+            if ($workerStarted -and -not $process.HasExited) { throw 'The import worker is still active; store cleanup was skipped to avoid a native lock.' }
+            $removalOptions = @{}
+            if ($ApproveOwnedImportDialog) { $removalOptions.ApproveOwnedRemovalDialog = $true }
+            [void](Remove-QQServiceUserTrustCertificate -Name $Name -Publisher $Publisher @removalOptions)
         }
         catch { Write-Warning ('Could not clean up the new matching publisher in CurrentUser\' + $Name + '.') }
         throw
@@ -368,8 +371,10 @@ function Remove-QQServiceUserTrustCertificate {
     [CmdletBinding()]
     param(
         [Parameter(Mandatory = $true)][ValidateSet('Root', 'TrustedPublisher')][string]$Name,
-        [Parameter(Mandatory = $true)]$Publisher
+        [Parameter(Mandatory = $true)]$Publisher,
+        [switch]$ApproveOwnedRemovalDialog
     )
+    if ($ApproveOwnedRemovalDialog -and $env:GITHUB_ACTIONS -ne 'true') { throw 'Owned removal confirmation is restricted to an explicit GitHub Actions invocation.' }
     if ($Publisher.Certificate.HasPrivateKey -or
         (Get-QQServiceCertificateSha256 -Certificate $Publisher.Certificate) -cne $Publisher.Sha256 -or
         $Publisher.Certificate.Thumbprint.ToUpperInvariant() -cne $Publisher.Metadata.sha1 -or
@@ -379,16 +384,73 @@ function Remove-QQServiceUserTrustCertificate {
     $store = Open-QQServiceUserStore -Name $Name
     try { if (@(Get-QQServiceStoreCertificate -Store $store -Publisher $Publisher).Count -eq 0) { return $false } }
     finally { $store.Dispose() }
-    $binary = Join-Path ([Environment]::SystemDirectory) 'certutil.exe'
-    if (-not [IO.File]::Exists($binary)) { throw 'The Windows system certificate removal tool was not found.' }
+    $temporary = Join-Path ([IO.Path]::GetTempPath()) ('qq-service-exact-trust-removal-' + [Guid]::NewGuid().ToString('N'))
     $process = New-Object Diagnostics.Process
     $started = $false
     try {
+        [void][IO.Directory]::CreateDirectory($temporary)
+        $acl = Get-Acl -LiteralPath $temporary
+        $acl.SetAccessRuleProtection($true, $false)
+        $identity = [Security.Principal.WindowsIdentity]::GetCurrent()
+        try {
+            $rule = New-Object Security.AccessControl.FileSystemAccessRule -ArgumentList $identity.User, ([Security.AccessControl.FileSystemRights]::FullControl), ([Security.AccessControl.InheritanceFlags]::ContainerInherit -bor [Security.AccessControl.InheritanceFlags]::ObjectInherit), ([Security.AccessControl.PropagationFlags]::None), ([Security.AccessControl.AccessControlType]::Allow)
+            $acl.AddAccessRule($rule)
+            Set-Acl -LiteralPath $temporary -AclObject $acl
+        }
+        finally { $identity.Dispose() }
+        $publicPath = Join-Path $temporary 'QQ_Service.cer'
+        $workerPath = Join-Path $temporary 'Remove-ExactQQServicePublicTrust.ps1'
+        if ($publicPath -match '["\x00-\x1f]' -or $workerPath -match '["\x00-\x1f]') { throw 'Invalid native removal paths.' }
+        [IO.File]::WriteAllBytes($publicPath, $Publisher.Certificate.RawData)
+        $worker = @'
+[CmdletBinding()]
+param(
+    [Parameter(Mandatory = $true)][ValidateSet('Root', 'TrustedPublisher')][string]$StoreName,
+    [Parameter(Mandatory = $true)][string]$CertificatePath,
+    [Parameter(Mandatory = $true)][ValidatePattern('^[0-9A-F]{64}$')][string]$ExpectedSha256
+)
+Set-StrictMode -Version Latest
+$ErrorActionPreference = 'Stop'
+$certificate = $null
+$store = $null
+$selected = $null
+function Get-PublicHash($Certificate) {
+    $digest = [Security.Cryptography.SHA256]::Create()
+    try { return [BitConverter]::ToString($digest.ComputeHash($Certificate.RawData)).Replace('-', '') }
+    finally { $digest.Dispose() }
+}
+try {
+    [Console]::Out.WriteLine('trust-remove-native: worker-start')
+    [Console]::Out.Flush()
+    $encoded = [IO.File]::ReadAllBytes($CertificatePath)
+    $certificate = [Security.Cryptography.X509Certificates.X509Certificate2]::new($encoded)
+    if ($certificate.HasPrivateKey -or (Get-PublicHash $certificate) -cne $ExpectedSha256 -or [Convert]::ToBase64String($encoded) -cne [Convert]::ToBase64String($certificate.RawData)) { throw 'Exact public removal certificate validation failed.' }
+    $store = [Security.Cryptography.X509Certificates.X509Store]::new($StoreName, [Security.Cryptography.X509Certificates.StoreLocation]::CurrentUser)
+    $store.Open([Security.Cryptography.X509Certificates.OpenFlags]::ReadWrite)
+    $matches = @($store.Certificates.Find([Security.Cryptography.X509Certificates.X509FindType]::FindByThumbprint, $certificate.Thumbprint, $false))
+    if ($matches.Count -ne 1) { throw 'The exact removal certificate is absent or ambiguous.' }
+    $selected = $matches[0]
+    if ((Get-PublicHash $selected) -cne $ExpectedSha256 -or [Convert]::ToBase64String($selected.RawData) -cne [Convert]::ToBase64String($encoded)) { throw 'The selected store certificate does not match the full public DER pin.' }
+    [Console]::Out.WriteLine('trust-remove-native: before-exact-context-remove')
+    [Console]::Out.Flush()
+    $store.Remove($selected)
+    [Console]::Out.WriteLine('trust-remove-native: after-exact-context-remove')
+    [Console]::Out.Flush()
+}
+catch { [Console]::Error.WriteLine($_.Exception.Message); exit 1 }
+finally {
+    if ($null -ne $selected) { $selected.Dispose() }
+    if ($null -ne $store) { $store.Dispose() }
+    if ($null -ne $certificate) { $certificate.Dispose() }
+}
+'@
+        [IO.File]::WriteAllText($workerPath, $worker, [Text.Encoding]::ASCII)
+        $binary = Join-Path $PSHOME 'powershell.exe'
+        if (-not [IO.File]::Exists($binary)) { $binary = Join-Path $PSHOME 'pwsh.exe' }
+        if (-not [IO.File]::Exists($binary)) { throw 'The current Windows PowerShell host executable was not found.' }
         $start = New-Object Diagnostics.ProcessStartInfo
         $start.FileName = $binary
-        # Unlike addstore, delstore documents the -silent option. Full SHA1 is
-        # used only after its public DER has passed the independent SHA256 pin.
-        $start.Arguments = '-silent -user -delstore ' + $Name + ' ' + $Publisher.Metadata.sha1
+        $start.Arguments = '-NoProfile -NonInteractive -ExecutionPolicy Bypass -File "' + $workerPath + '" -StoreName ' + $Name + ' -CertificatePath "' + $publicPath + '" -ExpectedSha256 ' + $Publisher.Sha256
         $start.UseShellExecute = $false
         $start.CreateNoWindow = $true
         $start.RedirectStandardInput = $true
@@ -405,7 +467,19 @@ function Remove-QQServiceUserTrustCertificate {
         $errors = $process.StandardError.ReadToEndAsync()
         $deadline = 60000
         if ($ciDiagnostics) { $deadline = 20000 }
-        if (-not $process.WaitForExit($deadline)) {
+        $confirmationSent = $false
+        $clock = [Diagnostics.Stopwatch]::StartNew()
+        $timedOut = $false
+        while (-not $process.WaitForExit(200)) {
+            if ($ApproveOwnedRemovalDialog -and $Name -eq 'Root' -and -not $confirmationSent) {
+                $simpleName = $Publisher.Certificate.GetNameInfo([Security.Cryptography.X509Certificates.X509NameType]::SimpleName, $false)
+                $approval = [QQServiceOwnedTrustWindows]::TryApproveRootRemoval($process.Id, $Publisher.Metadata.sha1, $simpleName, $Publisher.Certificate.SerialNumber)
+                if ($approval -lt 0) { throw 'The owned root-removal dialog did not match the exact public certificate. No confirmation was sent.' }
+                if ($approval -eq 1) { $confirmationSent = $true; Write-Host 'Confirmed one exact owned CI root-removal dialog matching full SHA1, serial number and subject.' }
+            }
+            if ($clock.ElapsedMilliseconds -ge $deadline) { $timedOut = $true; break }
+        }
+        if ($timedOut) {
             if ($ciDiagnostics) { Write-Host ('QQ_Service owned removal windows: ' + [QQServiceOwnedTrustWindows]::Describe($process.Id)) }
             try { $process.Kill(); [void]$process.WaitForExit(2000) } catch { }
             try { [void][Threading.Tasks.Task]::WaitAll([Threading.Tasks.Task[]]@($output, $errors), 2000) } catch { }
@@ -414,6 +488,7 @@ function Remove-QQServiceUserTrustCertificate {
         if (-not [Threading.Tasks.Task]::WaitAll([Threading.Tasks.Task[]]@($output, $errors), 3000)) {
             throw ('Windows certificate removal output did not close within its deadline. ' + (Get-QQServiceNativeTrustDiagnostic -OutputTask $output -ErrorTask $errors))
         }
+        if ($process.ExitCode -ne 0) { throw ('Exact certificate-context removal failed. ' + (Get-QQServiceNativeTrustDiagnostic -OutputTask $output -ErrorTask $errors)) }
         $store = Open-QQServiceUserStore -Name $Name
         try { $remaining = @(Get-QQServiceStoreCertificate -Store $store -Publisher $Publisher).Count }
         finally { $store.Dispose() }
@@ -427,6 +502,7 @@ function Remove-QQServiceUserTrustCertificate {
     finally {
         if ($started -and -not $process.HasExited) { try { $process.Kill(); [void]$process.WaitForExit(2000) } catch { } }
         $process.Dispose()
+        if (Test-Path -LiteralPath $temporary) { Remove-Item -LiteralPath $temporary -Recurse -Force }
     }
 }
 
@@ -516,6 +592,68 @@ public static class QQServiceOwnedTrustWindows {
         if (!Regex.IsMatch(body, claim, RegexOptions.CultureInvariant)) return false;
         MatchCollection hashes = Regex.Matches(body, @"Thumbprint \(sha1\):\s*([0-9A-Fa-f]{8}(?:\s+[0-9A-Fa-f]{8}){4})\s+Warning:", RegexOptions.CultureInvariant);
         return hashes.Count == 1 && Regex.Replace(hashes[0].Groups[1].Value, @"\s", "").ToUpperInvariant() == expectedSha1;
+    }
+
+    public static bool MatchesExpectedRemovalText(string title, string text, string expectedSha1, string expectedName, string expectedSerial) {
+        if (title != "Root Certificate Store" || text == null || text.Length > 8192 || expectedSha1 == null || expectedSerial == null ||
+            !Regex.IsMatch(expectedSha1, "^[0-9A-F]{40}$", RegexOptions.CultureInvariant) ||
+            !Regex.IsMatch(expectedSerial, "^[0-9A-F]{2,64}$", RegexOptions.CultureInvariant) || expectedSerial.Length % 2 != 0 ||
+            String.IsNullOrEmpty(expectedName) || expectedName.Length > 256 || expectedName.IndexOfAny(new char[] {'\r', '\n', '\0'}) >= 0) return false;
+        string body = text.Trim();
+        if (!body.StartsWith("Do you want to DELETE the following certificate from the Root Store?", StringComparison.Ordinal)) return false;
+        foreach (string label in new string[] { @"Subject\s*:", @"Issuer\s*:", @"Serial Number\s*:", @"Thumbprint \(sha1\)\s*:", @"Thumbprint \(md5\)\s*:" }) {
+            if (Regex.Matches(body, label, RegexOptions.CultureInvariant).Count != 1) return false;
+        }
+        string subject = @"Subject\s*:\s*" + Regex.Escape(expectedName) + @"\s+Issuer\s*:\s*Self Issued\s+Time Validity\s*:";
+        if (!Regex.IsMatch(body, subject, RegexOptions.CultureInvariant)) return false;
+        MatchCollection serials = Regex.Matches(body, @"Serial Number\s*:\s*([0-9A-Fa-f\s]+?)\s+Thumbprint \(sha1\)\s*:", RegexOptions.CultureInvariant);
+        if (serials.Count != 1 || Regex.Replace(serials[0].Groups[1].Value, @"\s", "").ToUpperInvariant() != expectedSerial) return false;
+        MatchCollection hashes = Regex.Matches(body, @"Thumbprint \(sha1\)\s*:\s*([0-9A-Fa-f]{8}(?:\s+[0-9A-Fa-f]{8}){4})\s+Thumbprint \(md5\)\s*:\s*[0-9A-Fa-f]{8}(?:\s+[0-9A-Fa-f]{8}){3}\s*$", RegexOptions.CultureInvariant);
+        return hashes.Count == 1 && Regex.Replace(hashes[0].Groups[1].Value, @"\s", "").ToUpperInvariant() == expectedSha1;
+    }
+
+    public static int TryApproveRootRemoval(int owner, string expectedSha1, string expectedName, string expectedSerial) {
+        var dialogs = new List<IntPtr>();
+        Enumerate find = delegate(IntPtr window, IntPtr state) {
+            if (IsOwned(window, owner) && IsWindowVisible(window) && ClassName(window) == "#32770") dialogs.Add(window);
+            return dialogs.Count < 2;
+        };
+        EnumWindows(find, IntPtr.Zero);
+        GC.KeepAlive(find);
+        if (dialogs.Count == 0) return 0;
+        if (dialogs.Count != 1) return -1;
+        IntPtr dialog = dialogs[0];
+        string title;
+        if (!ReadText(dialog, out title) || String.IsNullOrWhiteSpace(title)) return 0;
+        if (title != "Root Certificate Store") return -1;
+        var body = new StringBuilder();
+        var yesButtons = new List<IntPtr>();
+        bool valid = true;
+        int count = 0;
+        Enumerate children = delegate(IntPtr item, IntPtr state) {
+            if (++count > 24 || body.Length > 8192) { valid = false; return false; }
+            if (!IsOwned(item, owner)) { valid = false; return false; }
+            string kind = ClassName(item), text;
+            if (kind == "Static") {
+                if (!ReadText(item, out text)) { valid = false; return false; }
+                if (text.Length > 0) body.AppendLine(text);
+            }
+            if (kind == "Button" && GetDlgCtrlID(item) == 6 && GetParent(item) == dialog && IsWindowVisible(item) && IsWindowEnabled(item)) {
+                if (!ReadText(item, out text) || (text != "&Yes" && text != "Yes")) { valid = false; return false; }
+                yesButtons.Add(item);
+            }
+            return true;
+        };
+        EnumChildWindows(dialog, children, IntPtr.Zero);
+        GC.KeepAlive(children);
+        if (!valid || yesButtons.Count > 1) return -1;
+        if (yesButtons.Count == 0 || body.ToString().IndexOf("Thumbprint (md5)", StringComparison.Ordinal) < 0) return 0;
+        if (!MatchesExpectedRemovalText(title, body.ToString(), expectedSha1, expectedName, expectedSerial)) return -1;
+        IntPtr yes = yesButtons[0];
+        if (!IsOwned(dialog, owner) || !IsOwned(yes, owner) || !IsWindowVisible(dialog) || ClassName(dialog) != "#32770" ||
+            ClassName(yes) != "Button" || GetDlgCtrlID(yes) != 6 || GetParent(yes) != dialog || !IsWindowVisible(yes) || !IsWindowEnabled(yes)) return -1;
+        if (!PostMessage(dialog, 0x0111, (UIntPtr)6u, yes)) throw new InvalidOperationException("Could not post the owned root-removal confirmation.");
+        return 1;
     }
 
     // Returns 0 while waiting, 1 after exactly one matched confirmation, and
