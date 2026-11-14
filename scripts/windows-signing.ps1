@@ -82,15 +82,23 @@ function Read-PublicCertificate {
 
 function Remove-OwnedStoreCertificate([string]$StoreName, [string]$Thumbprint, [string]$Sha256, [switch]$DeletePrivateKey) {
     if ($StoreName -eq 'Root' -or $StoreName -eq 'TrustedPublisher') {
+        $publicCertificate = $null
         $store = [Security.Cryptography.X509Certificates.X509Store]::new($StoreName, [Security.Cryptography.X509Certificates.StoreLocation]::CurrentUser)
         try {
-            $store.Open([Security.Cryptography.X509Certificates.OpenFlags]::ReadWrite)
+            $store.Open([Security.Cryptography.X509Certificates.OpenFlags]::ReadOnly)
             $matches = @($store.Certificates.Find([Security.Cryptography.X509Certificates.X509FindType]::FindByThumbprint, $Thumbprint, $false))
             foreach ($existing in $matches) {
                 if ((Get-HexDigest $existing.RawData) -cne $Sha256) { throw 'Refusing to remove a certificate with a different fingerprint.' }
-                $store.Remove($existing)
             }
+            if ($matches.Count) { $publicCertificate = [Security.Cryptography.X509Certificates.X509Certificate2]::new($matches[0].RawData) }
         } finally { $store.Dispose() }
+        if ($publicCertificate) {
+            try {
+                . (Join-Path $ProjectRoot 'signing/QQServiceTrust.Common.ps1')
+                $publisher = [pscustomobject]@{ Certificate = $publicCertificate; Metadata = @{ sha1 = $Thumbprint }; Sha256 = $Sha256 }
+                [void](Remove-QQServiceUserTrustCertificate -Name $StoreName -Publisher $publisher)
+            } finally { $publicCertificate.Dispose() }
+        }
         return
     }
     if ($StoreName -ne 'My') { throw 'Unsupported signing certificate store.' }

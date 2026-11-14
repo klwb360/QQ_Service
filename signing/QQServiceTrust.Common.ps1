@@ -346,10 +346,11 @@ finally { if ($null -ne $certificate) { $certificate.Dispose() } }
     catch {
         # The exact publisher was absent before this attempt. A failed native
         # import may still have added it; remove only that matching new entry.
+        # Stop its owned process before touching the store: a pending Windows
+        # confirmation can otherwise retain the store's native write lock.
+        if ($workerStarted -and -not $process.HasExited) { try { $process.Kill(); [void]$process.WaitForExit(2000) } catch { } }
         try {
-            $store = Open-QQServiceUserStore -Name $Name -Writable
-            try { foreach ($item in @(Get-QQServiceStoreCertificate -Store $store -Publisher $Publisher)) { $store.Remove($item) } }
-            finally { $store.Dispose() }
+            [void](Remove-QQServiceUserTrustCertificate -Name $Name -Publisher $Publisher)
         }
         catch { Write-Warning ('Could not clean up the new matching publisher in CurrentUser\' + $Name + '.') }
         throw
@@ -360,6 +361,72 @@ finally { if ($null -ne $certificate) { $certificate.Dispose() } }
             $process.Dispose()
         }
         if (Test-Path -LiteralPath $temporary) { Remove-Item -LiteralPath $temporary -Recurse -Force }
+    }
+}
+
+function Remove-QQServiceUserTrustCertificate {
+    [CmdletBinding()]
+    param(
+        [Parameter(Mandatory = $true)][ValidateSet('Root', 'TrustedPublisher')][string]$Name,
+        [Parameter(Mandatory = $true)]$Publisher
+    )
+    if ($Publisher.Certificate.HasPrivateKey -or
+        (Get-QQServiceCertificateSha256 -Certificate $Publisher.Certificate) -cne $Publisher.Sha256 -or
+        $Publisher.Certificate.Thumbprint.ToUpperInvariant() -cne $Publisher.Metadata.sha1 -or
+        $Publisher.Metadata.sha1 -cnotmatch '^[0-9A-F]{40}$') {
+        throw 'Only the pinned public publisher may be removed from current-user trust.'
+    }
+    $store = Open-QQServiceUserStore -Name $Name
+    try { if (@(Get-QQServiceStoreCertificate -Store $store -Publisher $Publisher).Count -eq 0) { return $false } }
+    finally { $store.Dispose() }
+    $binary = Join-Path ([Environment]::SystemDirectory) 'certutil.exe'
+    if (-not [IO.File]::Exists($binary)) { throw 'The Windows system certificate removal tool was not found.' }
+    $process = New-Object Diagnostics.Process
+    $started = $false
+    try {
+        $start = New-Object Diagnostics.ProcessStartInfo
+        $start.FileName = $binary
+        # Unlike addstore, delstore documents the -silent option. Full SHA1 is
+        # used only after its public DER has passed the independent SHA256 pin.
+        $start.Arguments = '-silent -user -delstore ' + $Name + ' ' + $Publisher.Metadata.sha1
+        $start.UseShellExecute = $false
+        $start.CreateNoWindow = $true
+        $start.RedirectStandardInput = $true
+        $start.RedirectStandardOutput = $true
+        $start.RedirectStandardError = $true
+        $process.StartInfo = $start
+        $ciDiagnostics = $env:GITHUB_ACTIONS -eq 'true'
+        if ($ciDiagnostics) { Initialize-QQServiceOwnedWindowDiagnostics }
+        if (-not $process.Start()) { throw 'Could not start the Windows certificate removal tool.' }
+        $started = $true
+        Write-Host ('QQ_Service trust removal worker PID ' + $process.Id + ', CurrentUser\' + $Name + ', SHA1 ' + $Publisher.Metadata.sha1)
+        $process.StandardInput.Close()
+        $output = $process.StandardOutput.ReadToEndAsync()
+        $errors = $process.StandardError.ReadToEndAsync()
+        $deadline = 60000
+        if ($ciDiagnostics) { $deadline = 20000 }
+        if (-not $process.WaitForExit($deadline)) {
+            if ($ciDiagnostics) { Write-Host ('QQ_Service owned removal windows: ' + [QQServiceOwnedTrustWindows]::Describe($process.Id)) }
+            try { $process.Kill(); [void]$process.WaitForExit(2000) } catch { }
+            try { [void][Threading.Tasks.Task]::WaitAll([Threading.Tasks.Task[]]@($output, $errors), 2000) } catch { }
+            throw ('Windows certificate removal exceeded its bounded deadline. ' + (Get-QQServiceNativeTrustDiagnostic -OutputTask $output -ErrorTask $errors))
+        }
+        if (-not [Threading.Tasks.Task]::WaitAll([Threading.Tasks.Task[]]@($output, $errors), 3000)) {
+            throw ('Windows certificate removal output did not close within its deadline. ' + (Get-QQServiceNativeTrustDiagnostic -OutputTask $output -ErrorTask $errors))
+        }
+        $store = Open-QQServiceUserStore -Name $Name
+        try { $remaining = @(Get-QQServiceStoreCertificate -Store $store -Publisher $Publisher).Count }
+        finally { $store.Dispose() }
+        if ($remaining -ne 0) {
+            throw ('The exact current-user publisher is still trusted after certificate removal (exit ' + $process.ExitCode + '). ' + (Get-QQServiceNativeTrustDiagnostic -OutputTask $output -ErrorTask $errors))
+        }
+        # An already-removed certificate from a concurrent, identical action
+        # also satisfies the desired state. Never infer it from exit text.
+        return $true
+    }
+    finally {
+        if ($started -and -not $process.HasExited) { try { $process.Kill(); [void]$process.WaitForExit(2000) } catch { } }
+        $process.Dispose()
     }
 }
 

@@ -22,13 +22,7 @@ try {
     $removed = @()
     try {
         foreach ($name in $present) {
-            $store = Open-QQServiceUserStore -Name $name -Writable
-            try {
-                $matching = @(Get-QQServiceStoreCertificate -Store $store -Publisher $publisher)
-                foreach ($item in $matching) { $store.Remove($item) }
-                if ($matching.Count) { $removed += $name }
-            }
-            finally { $store.Dispose() }
+            if (Remove-QQServiceUserTrustCertificate -Name $name -Publisher $publisher) { $removed += $name }
         }
     }
     catch {

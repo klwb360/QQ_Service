@@ -45,8 +45,10 @@ foreach ($value in @('2026-11-14T03:00:00.000Z', '2026-11-14T11:00:00+08:00', $e
 $publisher = Read-QQServiceTrustCertificate -CertificateDirectory $CertificateDirectory
 $sentinel = $null
 $sentinelPublic = $null
+$sentinelPublisher = $null
 $temporary = $null
 $cleanupAllowed = $false
+$trustTestsPassed = $false
 try {
     Assert-TrustTest (($publisher.Certificate.NotAfter - $publisher.Certificate.NotBefore).TotalDays -le 2) 'only an ephemeral certificate valid for at most two days may be tested'
     foreach ($name in @('Root', 'TrustedPublisher')) {
@@ -108,23 +110,21 @@ try {
     Assert-TrustTest ((@(Get-TrustTestStoreHashes -Name 'Root' -Location LocalMachine) -join ',') -ceq $machineRootBefore) 'machine Root must not change'
     Assert-TrustTest ((@(Get-TrustTestStoreHashes -Name 'TrustedPublisher' -Location LocalMachine) -join ',') -ceq $machinePublishersBefore) 'machine publishers must not change'
     Assert-TrustTest ((Get-ExecutionPolicy -List | ConvertTo-Json -Compress) -ceq $executionPolicyBefore) 'execution policy must not change'
+    $trustTestsPassed = $true
     Write-Output 'PASS current-user trust, idempotence, WhatIf, wrong fingerprint, unrelated publishers, private-key and machine-store isolation.'
 }
 finally {
     # Only the disposable fixture and the sentinel created by this script are
     # eligible for cleanup. This does not enumerate or remove other publishers.
+    $cleanupErrors = [Collections.Generic.List[string]]::new()
     if ($cleanupAllowed) {
         foreach ($name in @('Root', 'TrustedPublisher')) {
-            $store = Open-QQServiceUserStore -Name $name -Writable
-            try {
-                foreach ($item in @(Get-QQServiceStoreCertificate -Store $store -Publisher $publisher)) { $store.Remove($item) }
-                if ($null -ne $sentinel) {
-                    foreach ($item in @($store.Certificates.Find([System.Security.Cryptography.X509Certificates.X509FindType]::FindByThumbprint, $sentinel.Thumbprint, $false))) {
-                        if ((Get-QQServiceCertificateSha256 -Certificate $item) -ceq (Get-QQServiceCertificateSha256 -Certificate $sentinel)) { $store.Remove($item) }
-                    }
-                }
+            try { [void](Remove-QQServiceUserTrustCertificate -Name $name -Publisher $publisher) }
+            catch { $cleanupErrors.Add($_.Exception.Message) }
+            if ($null -ne $sentinelPublisher) {
+                try { [void](Remove-QQServiceUserTrustCertificate -Name $name -Publisher $sentinelPublisher) }
+                catch { $cleanupErrors.Add($_.Exception.Message) }
             }
-            finally { $store.Dispose() }
         }
     }
     if ($null -ne $sentinel) {
@@ -134,4 +134,8 @@ finally {
     if ($null -ne $sentinelPublic) { $sentinelPublic.Dispose() }
     if ($null -ne $temporary -and (Test-Path -LiteralPath $temporary)) { Remove-Item -LiteralPath $temporary -Recurse -Force }
     $publisher.Certificate.Dispose()
+    if ($cleanupErrors.Count) {
+        foreach ($message in $cleanupErrors) { Write-Warning ('Trust fixture cleanup: ' + $message) }
+        if ($trustTestsPassed) { throw 'Trust fixture cleanup did not remove every owned temporary publisher.' }
+    }
 }

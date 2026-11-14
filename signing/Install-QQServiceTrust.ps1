@@ -36,9 +36,7 @@ try {
     catch {
         foreach ($name in $added) {
             try {
-                $store = Open-QQServiceUserStore -Name $name -Writable
-                try { foreach ($item in @(Get-QQServiceStoreCertificate -Store $store -Publisher $publisher)) { $store.Remove($item) } }
-                finally { $store.Dispose() }
+                [void](Remove-QQServiceUserTrustCertificate -Name $name -Publisher $publisher)
             }
             catch { Write-Warning ('Could not roll back the new QQ_Service entry in CurrentUser\' + $name + '. Run the removal script to check it.') }
         }
