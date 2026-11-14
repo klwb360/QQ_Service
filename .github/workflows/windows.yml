@@ -81,6 +81,23 @@ jobs:
           retention-days: 14
           overwrite: true
 
+      - name: Verify current-user trust before packaging
+        shell: pwsh
+        timeout-minutes: 3
+        run: |
+          $ErrorActionPreference = 'Stop'
+          try {
+            ./scripts/test-windows-signing.ps1 -Stage Setup -ProjectRoot $PWD.Path `
+              -CertificateDirectory "$env:RUNNER_TEMP/qq-early-trust-public" `
+              -WorkDirectory "$env:RUNNER_TEMP/qq-early-trust-private"
+            ./scripts/test-qqservice-trust.ps1 -CertificateDirectory "$env:RUNNER_TEMP/qq-early-trust-public"
+          }
+          finally {
+            ./scripts/test-windows-signing.ps1 -Stage Cleanup -ProjectRoot $PWD.Path `
+              -CertificateDirectory "$env:RUNNER_TEMP/qq-early-trust-public" `
+              -WorkDirectory "$env:RUNNER_TEMP/qq-early-trust-private"
+          }
+
       - name: Run tests
         run: npm test
 

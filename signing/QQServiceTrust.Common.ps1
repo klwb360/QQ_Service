@@ -184,26 +184,38 @@ function Add-QQServiceUserTrustCertificate {
         if (-not [System.IO.File]::Exists($binary)) { throw 'The Windows system certutil.exe was not found.' }
         $start = New-Object Diagnostics.ProcessStartInfo
         $start.FileName = $binary
-        $start.Arguments = '-user -f -addstore ' + $Name + ' "' + $publicPath + '"'
+        $start.Arguments = '-silent -user -f -addstore ' + $Name + ' "' + $publicPath + '"'
         $start.UseShellExecute = $false
         $start.CreateNoWindow = $true
         $start.RedirectStandardOutput = $true
         $start.RedirectStandardError = $true
+        $start.RedirectStandardInput = $true
         $process = New-Object Diagnostics.Process
         $process.StartInfo = $start
         if (-not $process.Start()) { throw 'Could not start the Windows certificate import tool.' }
+        # -silent requests the documented non-interactive CryptoAPI mode.
+        # EOF also prevents a console confirmation from waiting for input.
+        # The entry script has already obtained explicit ShouldProcess consent.
+        $process.StandardInput.Close()
         $output = $process.StandardOutput.ReadToEndAsync()
         $errors = $process.StandardError.ReadToEndAsync()
         if (-not $process.WaitForExit(25000)) {
             try { $process.Kill(); [void]$process.WaitForExit(2000) } catch { }
-            throw 'Windows certificate import exceeded its 25-second deadline.'
+            try { [void][Threading.Tasks.Task]::WaitAll([Threading.Tasks.Task[]]@($output, $errors), 2000) } catch { }
+            $diagnostic = Get-QQServiceCertutilPublicDiagnostic -OutputTask $output -ErrorTask $errors
+            throw ('Windows certificate import exceeded its 25-second deadline. ' + $diagnostic + ' A Windows policy may require administrator-managed trust; no machine-wide fallback was attempted.')
         }
         if (-not [Threading.Tasks.Task]::WaitAll([Threading.Tasks.Task[]]@($output, $errors), 3000)) {
-            throw 'Windows certificate import output did not close within its deadline.'
+            $diagnostic = Get-QQServiceCertutilPublicDiagnostic -OutputTask $output -ErrorTask $errors
+            throw ('Windows certificate import output did not close within its deadline. ' + $diagnostic)
         }
         # certutil receives only a public certificate; never print arbitrary
-        # process output or interpret it as success. Verify the actual store.
-        if ($process.ExitCode -ne 0) { throw ('Windows certificate import failed with exit code ' + $process.ExitCode + '.') }
+        # unbounded process output or interpret it as success. On failure only
+        # bounded public-certificate diagnostics are included. No PFX is used.
+        if ($process.ExitCode -ne 0) {
+            $diagnostic = Get-QQServiceCertutilPublicDiagnostic -OutputTask $output -ErrorTask $errors
+            throw ('Windows certificate import failed with exit code ' + $process.ExitCode + '. ' + $diagnostic)
+        }
         $store = Open-QQServiceUserStore -Name $Name
         try {
             if (@(Get-QQServiceStoreCertificate -Store $store -Publisher $Publisher).Count -ne 1) {
@@ -228,4 +240,24 @@ function Add-QQServiceUserTrustCertificate {
         if ($null -ne $process) { $process.Dispose() }
         if (Test-Path -LiteralPath $temporary) { Remove-Item -LiteralPath $temporary -Recurse -Force }
     }
+}
+
+function Get-QQServiceCertutilPublicDiagnostic {
+    param(
+        [Parameter(Mandatory = $true)][Threading.Tasks.Task]$OutputTask,
+        [Parameter(Mandatory = $true)][Threading.Tasks.Task]$ErrorTask
+    )
+    $messages = @()
+    foreach ($item in @(@{ Label = 'stdout'; Task = $OutputTask }, @{ Label = 'stderr'; Task = $ErrorTask })) {
+        $text = '[pipe not closed]'
+        if ($item.Task.IsCompleted -and -not $item.Task.IsFaulted -and -not $item.Task.IsCanceled) {
+            $text = [string]$item.Task.Result
+            $text = $text -replace '[\x00-\x08\x0B\x0C\x0E-\x1F\x7F]', ''
+            if ($text.Length -gt 1200) { $text = $text.Substring(0, 1200) + ' [truncated]' }
+            if (-not $text.Trim()) { $text = '[empty]' }
+        }
+        elseif ($item.Task.IsFaulted -or $item.Task.IsCanceled) { $text = '[pipe failed]' }
+        $messages += ($item.Label + ': ' + $text.Trim())
+    }
+    return ($messages -join ' | ')
 }

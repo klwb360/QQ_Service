@@ -295,6 +295,25 @@ function Assert-Sha256Timestamp([string]$Path, $Public) {
     Assert-Rfc3161Binding $timestamp $cms.SignerInfos[0].Certificate (Get-PrimarySignatureValue $cms)
 }
 
+function Write-CiTrustDiagnostics($Stdout, $Stderr) {
+    foreach ($entry in @(@{ Name = 'stdout'; Task = $Stdout }, @{ Name = 'stderr'; Task = $Stderr })) {
+        $text = '[diagnostic stream unavailable]'
+        if ($entry.Task) {
+            try {
+                if ($entry.Task.Wait(1000)) { $text = $entry.Task.GetAwaiter().GetResult() }
+                else { $text = '[diagnostic stream did not close within one second]' }
+            } catch { $text = '[diagnostic stream could not be read]' }
+        }
+        # This process receives only a public CER path and store name, never a
+        # PFX, password or signing-key argument. Retain bounded native failure
+        # details so platform policy and a hidden interactive prompt differ.
+        $text = ([string]$text -replace '[\x00-\x08\x0b\x0c\x0e-\x1f\x7f]', '').Trim()
+        if ($text.Length -gt 2048) { $text = $text.Substring(0, 2048) + ' [truncated]' }
+        if (-not $text) { $text = '[empty]' }
+        Write-Host ('certutil public ' + $entry.Name + ': ' + $text)
+    }
+}
+
 function Import-CiTrustCertificate([string]$StoreName, $Public) {
     if ($StoreName -ne 'Root' -and $StoreName -ne 'TrustedPublisher') { throw 'Unsupported temporary trust store.' }
     $path = [IO.Path]::GetFullPath($CertificatePath)
@@ -303,29 +322,36 @@ function Import-CiTrustCertificate([string]$StoreName, $Public) {
     if (-not (Test-Path -LiteralPath $native -PathType Leaf)) { throw 'The Windows certificate utility is unavailable.' }
     $start = [Diagnostics.ProcessStartInfo]::new()
     $start.FileName = $native
-    $start.Arguments = '-user -f -addstore ' + $StoreName + ' "' + $path + '"'
+    $start.Arguments = '-user -f -silent -addstore ' + $StoreName + ' "' + $path + '"'
     $start.UseShellExecute = $false
     $start.CreateNoWindow = $true
     $start.RedirectStandardOutput = $true
     $start.RedirectStandardError = $true
+    $start.RedirectStandardInput = $true
     $process = [Diagnostics.Process]::new()
     $process.StartInfo = $start
     try {
         Write-Host ('Importing the pinned public certificate into temporary CurrentUser/' + $StoreName + ' trust (30 second deadline).')
         if (-not $process.Start()) { throw 'Could not start the Windows certificate utility.' }
+        $process.StandardInput.Close()
         $stdout = $process.StandardOutput.ReadToEndAsync()
         $stderr = $process.StandardError.ReadToEndAsync()
         if (-not $process.WaitForExit(30000)) {
             try { $process.Kill($true) } catch { try { $process.Kill() } catch {} }
             [void]$process.WaitForExit(5000)
+            Write-CiTrustDiagnostics $stdout $stderr
             throw ('Temporary CurrentUser/' + $StoreName + ' trust import exceeded its 30 second deadline.')
         }
-        # Drain the small native diagnostics, which contain only public
-        # certificate data. Do not copy native output or credentials to logs.
-        if (-not $stdout.Wait(1000) -or -not $stderr.Wait(1000)) { throw 'The Windows certificate utility did not close its diagnostic streams.' }
+        if (-not $stdout.Wait(1000) -or -not $stderr.Wait(1000)) {
+            Write-CiTrustDiagnostics $stdout $stderr
+            throw 'The Windows certificate utility did not close its diagnostic streams.'
+        }
         [void]$stdout.GetAwaiter().GetResult()
         [void]$stderr.GetAwaiter().GetResult()
-        if ($process.ExitCode -ne 0) { throw ('Temporary CurrentUser/' + $StoreName + ' trust import failed with exit code ' + $process.ExitCode + '.') }
+        if ($process.ExitCode -ne 0) {
+            Write-CiTrustDiagnostics $stdout $stderr
+            throw ('Temporary CurrentUser/' + $StoreName + ' trust import failed with exit code ' + $process.ExitCode + '.')
+        }
         $target = 'Cert:\CurrentUser\' + $StoreName + '\' + $Public.Sha1
         if (-not (Test-Path -LiteralPath $target) -or (Get-HexDigest (Get-Item -LiteralPath $target).RawData) -cne $Public.Sha256) { throw 'The imported temporary trust entry does not match the pinned certificate.' }
         Write-Host ('Pinned CurrentUser/' + $StoreName + ' trust entry is present.')
