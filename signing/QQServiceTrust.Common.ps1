@@ -145,3 +145,87 @@ function Open-QQServiceUserStore {
     }
     catch { $store.Dispose(); throw }
 }
+
+function Add-QQServiceUserTrustCertificate {
+    [CmdletBinding()]
+    param(
+        [Parameter(Mandatory = $true)][ValidateSet('Root', 'TrustedPublisher')][string]$Name,
+        [Parameter(Mandatory = $true)]$Publisher
+    )
+    # Callers validate the publisher before the explicit ShouldProcess prompt.
+    # Snapshot immutable public DER so certutil never reopens a source file
+    # which could have changed while that prompt was displayed.
+    $bytes = $Publisher.Certificate.RawData
+    if ($Publisher.Certificate.HasPrivateKey -or
+        (Get-QQServiceCertificateSha256 -Certificate $Publisher.Certificate) -cne $Publisher.Sha256 -or
+        $Publisher.Certificate.Thumbprint.ToUpperInvariant() -cne $Publisher.Metadata.sha1) {
+        throw 'Only the validated public publisher certificate may be imported.'
+    }
+    $store = Open-QQServiceUserStore -Name $Name
+    try { if (@(Get-QQServiceStoreCertificate -Store $store -Publisher $Publisher).Count) { return $false } }
+    finally { $store.Dispose() }
+    $temporary = Join-Path ([System.IO.Path]::GetTempPath()) ('qq-service-public-trust-' + [Guid]::NewGuid().ToString('N'))
+    $process = $null
+    try {
+        [void][System.IO.Directory]::CreateDirectory($temporary)
+        $acl = Get-Acl -LiteralPath $temporary
+        $acl.SetAccessRuleProtection($true, $false)
+        $identity = [Security.Principal.WindowsIdentity]::GetCurrent()
+        try {
+            $rule = New-Object Security.AccessControl.FileSystemAccessRule -ArgumentList $identity.User, ([Security.AccessControl.FileSystemRights]::FullControl), ([Security.AccessControl.InheritanceFlags]::ContainerInherit -bor [Security.AccessControl.InheritanceFlags]::ObjectInherit), ([Security.AccessControl.PropagationFlags]::None), ([Security.AccessControl.AccessControlType]::Allow)
+            $acl.AddAccessRule($rule)
+            Set-Acl -LiteralPath $temporary -AclObject $acl
+        }
+        finally { $identity.Dispose() }
+        $publicPath = Join-Path $temporary 'QQ_Service.cer'
+        if ($publicPath -match '["\x00-\x1f]') { throw 'The temporary certificate path cannot be passed safely to certutil.' }
+        [System.IO.File]::WriteAllBytes($publicPath, $bytes)
+        $binary = Join-Path ([Environment]::SystemDirectory) 'certutil.exe'
+        if (-not [System.IO.File]::Exists($binary)) { throw 'The Windows system certutil.exe was not found.' }
+        $start = New-Object Diagnostics.ProcessStartInfo
+        $start.FileName = $binary
+        $start.Arguments = '-user -f -addstore ' + $Name + ' "' + $publicPath + '"'
+        $start.UseShellExecute = $false
+        $start.CreateNoWindow = $true
+        $start.RedirectStandardOutput = $true
+        $start.RedirectStandardError = $true
+        $process = New-Object Diagnostics.Process
+        $process.StartInfo = $start
+        if (-not $process.Start()) { throw 'Could not start the Windows certificate import tool.' }
+        $output = $process.StandardOutput.ReadToEndAsync()
+        $errors = $process.StandardError.ReadToEndAsync()
+        if (-not $process.WaitForExit(25000)) {
+            try { $process.Kill(); [void]$process.WaitForExit(2000) } catch { }
+            throw 'Windows certificate import exceeded its 25-second deadline.'
+        }
+        if (-not [Threading.Tasks.Task]::WaitAll([Threading.Tasks.Task[]]@($output, $errors), 3000)) {
+            throw 'Windows certificate import output did not close within its deadline.'
+        }
+        # certutil receives only a public certificate; never print arbitrary
+        # process output or interpret it as success. Verify the actual store.
+        if ($process.ExitCode -ne 0) { throw ('Windows certificate import failed with exit code ' + $process.ExitCode + '.') }
+        $store = Open-QQServiceUserStore -Name $Name
+        try {
+            if (@(Get-QQServiceStoreCertificate -Store $store -Publisher $Publisher).Count -ne 1) {
+                throw 'Windows did not install the expected publisher certificate.'
+            }
+        }
+        finally { $store.Dispose() }
+        return $true
+    }
+    catch {
+        # The exact publisher was absent before this attempt. A failed native
+        # import may still have added it; remove only that matching new entry.
+        try {
+            $store = Open-QQServiceUserStore -Name $Name -Writable
+            try { foreach ($item in @(Get-QQServiceStoreCertificate -Store $store -Publisher $Publisher)) { $store.Remove($item) } }
+            finally { $store.Dispose() }
+        }
+        catch { Write-Warning ('Could not clean up the new matching publisher in CurrentUser\' + $Name + '.') }
+        throw
+    }
+    finally {
+        if ($null -ne $process) { $process.Dispose() }
+        if (Test-Path -LiteralPath $temporary) { Remove-Item -LiteralPath $temporary -Recurse -Force }
+    }
+}

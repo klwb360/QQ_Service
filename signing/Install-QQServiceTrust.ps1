@@ -22,14 +22,7 @@ try {
     $added = @()
     try {
         foreach ($name in $missing) {
-            $store = Open-QQServiceUserStore -Name $name -Writable
-            try {
-                if (@(Get-QQServiceStoreCertificate -Store $store -Publisher $publisher).Count -eq 0) {
-                    $store.Add($publisher.Certificate)
-                    $added += $name
-                }
-            }
-            finally { $store.Dispose() }
+            if (Add-QQServiceUserTrustCertificate -Name $name -Publisher $publisher) { $added += $name }
         }
     }
     catch {

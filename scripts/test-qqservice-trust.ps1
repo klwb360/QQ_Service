@@ -41,6 +41,7 @@ foreach ($value in @('2026-11-14T03:00:00.000Z', '2026-11-14T11:00:00+08:00', $e
 
 $publisher = Read-QQServiceTrustCertificate -CertificateDirectory $CertificateDirectory
 $sentinel = $null
+$sentinelPublic = $null
 $temporary = $null
 $cleanupAllowed = $false
 try {
@@ -55,10 +56,10 @@ try {
 
     $sentinel = New-SelfSignedCertificate -Type CodeSigningCert -Subject 'CN=QQ_Service unrelated trust fixture' -KeyLength 2048 -HashAlgorithm SHA256 -CertStoreLocation 'Cert:\CurrentUser\My' -NotAfter ([DateTime]::Now.AddDays(1))
     $sentinelHash = Get-QQServiceCertificateSha256 -Certificate $sentinel
+    $sentinelPublic = [Security.Cryptography.X509Certificates.X509Certificate2]::new($sentinel.RawData)
+    $sentinelPublisher = [pscustomobject]@{ Certificate = $sentinelPublic; Sha256 = $sentinelHash; Metadata = @{ sha1 = $sentinel.Thumbprint.ToUpperInvariant() } }
     foreach ($name in @('Root', 'TrustedPublisher')) {
-        $store = Open-QQServiceUserStore -Name $name -Writable
-        try { $store.Add($sentinel) }
-        finally { $store.Dispose() }
+        [void](Add-QQServiceUserTrustCertificate -Name $name -Publisher $sentinelPublisher)
     }
     $myBefore = @(Get-TrustTestStoreHashes -Name 'My') -join ','
     $rootBefore = @(Get-TrustTestStoreHashes -Name 'Root') -join ','
@@ -127,6 +128,7 @@ finally {
         Remove-Item -LiteralPath ('Cert:\CurrentUser\My\' + $sentinel.Thumbprint) -DeleteKey -ErrorAction SilentlyContinue
         $sentinel.Dispose()
     }
+    if ($null -ne $sentinelPublic) { $sentinelPublic.Dispose() }
     if ($null -ne $temporary -and (Test-Path -LiteralPath $temporary)) { Remove-Item -LiteralPath $temporary -Recurse -Force }
     $publisher.Certificate.Dispose()
 }

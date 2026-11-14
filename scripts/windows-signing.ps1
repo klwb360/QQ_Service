@@ -265,11 +265,14 @@ function Assert-Rfc3161Binding($Timestamp, $ParentSigner, [byte[]]$ParentSignatu
         $chain.ChainPolicy.RevocationMode = [Security.Cryptography.X509Certificates.X509RevocationMode]::Online
         $chain.ChainPolicy.RevocationFlag = [Security.Cryptography.X509Certificates.X509RevocationFlag]::ExcludeRoot
         $chain.ChainPolicy.UrlRetrievalTimeout = [TimeSpan]::FromSeconds(10)
+        Write-Host 'RFC3161 imprint is bound; checking the trusted TSA chain and online revocation (10 seconds per URL).'
         if (-not $chain.Build($tsa)) { throw 'The RFC3161 signer does not chain to a trusted timestamp authority at its generation time.' }
+        Write-Host 'RFC3161 TSA chain and generation-time policy passed.'
     } finally { $chain.Dispose() }
 }
 
 function Assert-Sha256Timestamp([string]$Path, $Public) {
+    Write-Host ('Checking Authenticode CMS, SHA256 digest and RFC3161 token: ' + [IO.Path]::GetFileName($Path))
     $cms = Read-AuthenticodeCms $Path
     if ($cms.SignerInfos.Count -ne 1 -or $cms.SignerInfos[0].DigestAlgorithm.Value -ne '2.16.840.1.101.3.4.2.1' -or (Get-HexDigest $cms.SignerInfos[0].Certificate.RawData) -cne $Public.Sha256) { throw 'Expected exactly one SHA256 signature from the pinned publisher.' }
     $cms.CheckSignature($true)
@@ -292,6 +295,43 @@ function Assert-Sha256Timestamp([string]$Path, $Public) {
     Assert-Rfc3161Binding $timestamp $cms.SignerInfos[0].Certificate (Get-PrimarySignatureValue $cms)
 }
 
+function Import-CiTrustCertificate([string]$StoreName, $Public) {
+    if ($StoreName -ne 'Root' -and $StoreName -ne 'TrustedPublisher') { throw 'Unsupported temporary trust store.' }
+    $path = [IO.Path]::GetFullPath($CertificatePath)
+    if ($path.Contains('"')) { throw 'Invalid public certificate path.' }
+    $native = Join-Path $env:SystemRoot 'System32/certutil.exe'
+    if (-not (Test-Path -LiteralPath $native -PathType Leaf)) { throw 'The Windows certificate utility is unavailable.' }
+    $start = [Diagnostics.ProcessStartInfo]::new()
+    $start.FileName = $native
+    $start.Arguments = '-user -f -addstore ' + $StoreName + ' "' + $path + '"'
+    $start.UseShellExecute = $false
+    $start.CreateNoWindow = $true
+    $start.RedirectStandardOutput = $true
+    $start.RedirectStandardError = $true
+    $process = [Diagnostics.Process]::new()
+    $process.StartInfo = $start
+    try {
+        Write-Host ('Importing the pinned public certificate into temporary CurrentUser/' + $StoreName + ' trust (30 second deadline).')
+        if (-not $process.Start()) { throw 'Could not start the Windows certificate utility.' }
+        $stdout = $process.StandardOutput.ReadToEndAsync()
+        $stderr = $process.StandardError.ReadToEndAsync()
+        if (-not $process.WaitForExit(30000)) {
+            try { $process.Kill($true) } catch { try { $process.Kill() } catch {} }
+            [void]$process.WaitForExit(5000)
+            throw ('Temporary CurrentUser/' + $StoreName + ' trust import exceeded its 30 second deadline.')
+        }
+        # Drain the small native diagnostics, which contain only public
+        # certificate data. Do not copy native output or credentials to logs.
+        if (-not $stdout.Wait(1000) -or -not $stderr.Wait(1000)) { throw 'The Windows certificate utility did not close its diagnostic streams.' }
+        [void]$stdout.GetAwaiter().GetResult()
+        [void]$stderr.GetAwaiter().GetResult()
+        if ($process.ExitCode -ne 0) { throw ('Temporary CurrentUser/' + $StoreName + ' trust import failed with exit code ' + $process.ExitCode + '.') }
+        $target = 'Cert:\CurrentUser\' + $StoreName + '\' + $Public.Sha1
+        if (-not (Test-Path -LiteralPath $target) -or (Get-HexDigest (Get-Item -LiteralPath $target).RawData) -cne $Public.Sha256) { throw 'The imported temporary trust entry does not match the pinned certificate.' }
+        Write-Host ('Pinned CurrentUser/' + $StoreName + ' trust entry is present.')
+    } finally { $process.Dispose() }
+}
+
 function With-TemporaryTrust($Public, [scriptblock]$Task) {
     $added = [Collections.Generic.List[string]]::new()
     try {
@@ -301,20 +341,27 @@ function With-TemporaryTrust($Public, [scriptblock]$Task) {
             if (Test-Path -LiteralPath $target) {
                 if ((Get-HexDigest (Get-Item -LiteralPath $target).RawData) -cne $Public.Sha256) { throw 'Existing trust entry does not match the pinned certificate.' }
             } else {
-                Import-Certificate -FilePath $CertificatePath -CertStoreLocation $location | Out-Null
+                # Record ownership before invoking native CAPI: a timeout may
+                # occur after the certificate was added, and still needs cleanup.
                 $added.Add($storeName)
+                Import-CiTrustCertificate $storeName $Public
             }
         }
         & $Task
     } finally {
-        foreach ($storeName in $added) { Remove-OwnedStoreCertificate $storeName $Public.Sha1 $Public.Sha256 }
+        foreach ($storeName in $added) {
+            Write-Host ("Removing this verifier's temporary CurrentUser/" + $storeName + ' trust entry.')
+            Remove-OwnedStoreCertificate $storeName $Public.Sha1 $Public.Sha256
+        }
     }
 }
 
 function Assert-ValidSignature([string]$Path, $Public) {
     Assert-Sha256Timestamp $Path $Public
+    Write-Host ('Checking Windows Authenticode policy: ' + [IO.Path]::GetFileName($Path))
     $signature = Get-AuthenticodeSignature -LiteralPath $Path
     if ($signature.Status -ne [Management.Automation.SignatureStatus]::Valid -or -not $signature.SignerCertificate -or (Get-HexDigest $signature.SignerCertificate.RawData) -cne $Public.Sha256 -or -not $signature.TimeStamperCertificate) { throw ('Invalid, untrusted or incorrectly timestamped QQ_Service signature: ' + [IO.Path]::GetFileName($Path)) }
+    Write-Host ('Windows Authenticode policy passed: ' + [IO.Path]::GetFileName($Path))
 }
 
 function Get-PackageVersion {
@@ -330,8 +377,11 @@ function Verify-Signing($Public) {
     $outerName = "QQ_Service-$version-Windows-x64.exe"
     $outer = Join-Path $dist $outerName
     $inner = Join-Path $dist 'win-unpacked/QQ_Service.exe'
+    Write-Host 'Beginning strict signature verification for the internal and portable QQ_Service executables.'
     With-TemporaryTrust $Public {
+        Write-Host 'Verifying the internal application executable.'
         Assert-ValidSignature $inner $Public
+        Write-Host 'Verifying the outer portable executable.'
         Assert-ValidSignature $outer $Public
     }
     $outerHash = (Get-FileHash -LiteralPath $outer -Algorithm SHA256).Hash.ToLowerInvariant()

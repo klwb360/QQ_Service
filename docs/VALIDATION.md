@@ -4,6 +4,17 @@
 相关旧版检查数量不代表当前版本的验证结果。当前发布须重新执行源码、后台、
 桌面和打包检查，并记录实际结果。
 
+## 开发分支 · Windows 自签名与受控自动签名（2026-11-14）
+
+- 初始Linux全量939项：934通过、5项条件跳过、0失败；其中一项当时等待生产公钥，初始化完成后6项证书专项全部通过。源码语法检查覆盖184个JavaScript文件。
+- 固定公开证书已由维护者本机初始化器提交，RSA-4096、SHA256、仅代码签名用途，有效期1095天。公开SHA256为`7ED7D9B3C042CB8219D247A333410552C1864095A80DE662560861EEC1B96C74`。独立读取GitHub环境策略，确认仅允许`main`，没有标签或PR规则；私钥及密码仅存于受保护Secrets。
+- WindowsPowerShell5.1和PowerShell7使用本地原生输入夹具，验证ASCII／中文JSON、密码／PFX假数据的精确UTF8无BOM字节、强制BOM父编码恢复和敏感错误遮蔽。该回归修复维护者首次初始化遇到的HTTP400；首次失败发生在生成私钥之前。
+- 实际Windows一次性证书已完成内部与外层EXE签名，并通过两个第三方EXE的完整文件集合及SHA256比较；内置Node等字节未改。锁定SignTool使用标准HTTP时间戳入口，RFC3161响应仍严格核对SHA256绑定、生成时刻与受信TSA证书链。
+- Windows资源准备、verify:stage、smoke:stage通过：78项资源、43模块、5个UI脚本、18QQ／12Bilibili／2网页工具及8预设，7条资源和正常IPC退出。PFX／P12／PEM／KEY应用资源注入在加载前被拒绝。
+- 独立验签、篡改、时间戳移植、当前用户信任幂等／移除／隔离，以及最终生产证书构建，均以[当前PR检查](https://github.com/klwb360/QQ_Service/pull/7/checks)及合并后[main工作流](https://github.com/klwb360/QQ_Service/actions/workflows/windows.yml)的实际结果为准。签名任务使用独立运行器，普通PR和标签不取得生产私钥。
+
+已发布的旧EXE仍未签名。首次信任导入须由用户在自己的Windows显式运行；当前流程只覆盖便携版，不把自签名视为公共CA信任或SmartScreen声誉保证。操作见[签名与信任指南](WINDOWS_SIGNING.md)。
+
 ## 开发分支 · 自然回复节奏与打断（2026-11-14，未发布）
 
 - `npm run check`覆盖177个JavaScript文件，差异检查通过；最终Linux完整913项，910通过、3项平台／可选GUI条件跳过、0失败，约123秒。

@@ -34,9 +34,7 @@ try {
     catch {
         foreach ($name in $removed) {
             try {
-                $store = Open-QQServiceUserStore -Name $name -Writable
-                try { if (@(Get-QQServiceStoreCertificate -Store $store -Publisher $publisher).Count -eq 0) { $store.Add($publisher.Certificate) } }
-                finally { $store.Dispose() }
+                [void](Add-QQServiceUserTrustCertificate -Name $name -Publisher $publisher)
             }
             catch { Write-Warning ('Could not restore the QQ_Service entry in CurrentUser\' + $name + '. Run the removal script again to check it.') }
         }
