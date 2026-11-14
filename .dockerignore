@@ -12,5 +12,11 @@
 !examples/
 !examples/plugins/
 !examples/plugins/**
+!examples/mcp/
+!examples/mcp/**
+!docs/
+!docs/MCP.md
+!docs/assets/
+!docs/assets/mcp-services.png
 !scripts/
 !scripts/docker-healthcheck.mjs

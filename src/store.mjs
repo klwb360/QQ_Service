@@ -1,12 +1,14 @@
 import fs from 'node:fs';
 import path from 'node:path';
 import { DatabaseSync } from 'node:sqlite';
-import { randomBytes, createCipheriv, createDecipheriv } from 'node:crypto';
+import { randomBytes, createCipheriv, createDecipheriv, createHmac } from 'node:crypto';
 import { DEFAULT_CONFIG, configHash, migrateConfig, isCredentialName } from './config.mjs';
 import { createMemoryStore } from './memory-store.mjs';
 import { createPersonaStore, normalizePersona } from './persona.mjs';
 import { createExperienceStore } from './experience-store.mjs';
 import { createConversationStateStore } from './conversation-state.mjs';
+import { canonicalMcpConnection, mcpSecretName, parseMcpSecretName } from './mcp-config.mjs';
+import { openMemoryDatabase } from './memory-storage.mjs';
 
 export function atomicJson(file, value) {
   const temp = `${file}.${process.pid}.tmp`;
@@ -14,7 +16,7 @@ export function atomicJson(file, value) {
   fs.renameSync(temp, file);
 }
 
-export function createStore(dataDir) {
+export function createStore(dataDir, { memoryDirectory = dataDir, profileId = 'legacy' } = {}) {
   fs.mkdirSync(dataDir, { recursive: true, mode: 0o700 });
   const configFile = path.join(dataDir, 'config.json');
   const vaultFile = path.join(dataDir, 'vault.json');
@@ -41,8 +43,8 @@ export function createStore(dataDir) {
   if (needsMigration) {
     // Only configuration changes. Retired login directories and account data
     // remain untouched, including when no schema-version bump is needed.
-    const oldVersion = Math.min(...['draft', 'applied', 'previous'].map(name => state[name]?.schemaVersion || 3));
-    const backupFile = path.join(dataDir, oldVersion < 3 ? `config.v${oldVersion}.backup.json` : 'config.pre-api-only.backup.json');
+    const oldVersion = Math.min(...['draft', 'applied', 'previous'].filter(name => state[name]).map(name => state[name].schemaVersion || 4));
+    const backupFile = path.join(dataDir, oldVersion < 4 ? `config.v${oldVersion}.backup.json` : 'config.pre-api-only.backup.json');
     if (!fs.existsSync(backupFile)) {
       fs.copyFileSync(configFile, backupFile, fs.constants.COPYFILE_EXCL);
       fs.chmodSync(backupFile, 0o600);
@@ -69,29 +71,53 @@ export function createStore(dataDir) {
   const saveState = (next) => { atomicJson(configFile, next); state = next; };
   const stagedSecretNames = () => Object.keys(secrets).filter(name => name.startsWith('draft:') && isCredentialName(name.slice(6)));
   const secretsPending = () => stagedSecretNames().some(name => secrets[name] !== secrets[name.slice(6)]);
-  const { memory, conversation } = createMemoryStore({ db, getState: () => state });
-  const personas = createPersonaStore({ db });
-  const experiences = createExperienceStore({ db, getState: () => state });
-  const conversationState = createConversationStateStore({ db, getState: () => state });
+  let memoryStorage;
+  try { memoryStorage = openMemoryDatabase({ dataDir, memoryDirectory, profileId, legacyDb: db }); }
+  catch (cause) { db.close(); throw cause; }
+  const memoryDb = memoryStorage.db;
+  const { memory, conversation } = createMemoryStore({ db: memoryDb, legacyDb: db, getState: () => state });
+  const personas = createPersonaStore({ db: memoryDb });
+  const experiences = createExperienceStore({ db: memoryDb, getState: () => state });
+  const conversationState = createConversationStateStore({ db: memoryDb, legacyDb: db, getState: () => state });
   const recordPersona = (config = state.applied) => {
     if (!/^[1-9]\d{3,19}$/.test(config.botQQ || '')) return;
     const current = personas.get({ actualQQ: config.botQQ });
     return personas.save({ actualQQ: config.botQQ, persona: normalizePersona(config), expectedRevision: current?.revision || 0 });
   };
   recordPersona();
+  const setupKey = actualQQ => `account-setup-completed:${actualQQ}`;
+  const recordSetupCompleted = actualQQ => {
+    if (!/^[1-9]\d{3,19}$/.test(actualQQ || '')) return;
+    db.prepare('INSERT OR IGNORE INTO tasks VALUES (?,?)').run(setupKey(actualQQ), JSON.stringify({ completedAt: new Date().toISOString() }));
+  };
+  // Existing explicitly started accounts stay in editing mode after a later
+  // apply returns them to read-only, or when the QQ transport goes offline.
+  for (const config of [state.applied, state.previous]) if (config?.permissions?.released === true) recordSetupCompleted(config.botQQ);
   return {
-    dataDir,
-    memory, conversation, personas, experiences, conversationState, recordPersona,
+    dataDir, memoryPath: memoryStorage.file,
+    memory, conversation, personas, experiences, conversationState, recordPersona, recordSetupCompleted,
+    isSetupCompleted: actualQQ => Boolean(db.prepare('SELECT 1 FROM tasks WHERE key=?').get(setupKey(actualQQ))),
     getState: () => structuredClone(state),
     getConfig: () => structuredClone(state.applied),
     getSecret: (name) => secrets[name] || '',
+    getDraftSecret: name => secrets[`draft:${name}`] ?? secrets[name] ?? '',
+    mcpConnectionHash(server, getSecretValue = name => secrets[name] || '') {
+      const descriptor = canonicalMcpConnection(server);
+      const read = (kind, name) => {
+        const value = getSecretValue(mcpSecretName(descriptor.id, kind, name));
+        if (typeof value !== 'string') throw new TypeError('MCP 连接指纹需要同步文字凭据读取器。');
+        return [name, value];
+      };
+      const credentials = { env: descriptor.envKeys.map(name => read('env', name)), headers: descriptor.headerKeys.map(name => read('header', name)) };
+      return createHmac('sha256', key).update(JSON.stringify({ version: 1, descriptor, credentials })).digest('hex');
+    },
     hasSecret: (name) => Boolean(secrets[name]),
     hasDraftSecret: (name) => Boolean(secrets[`draft:${name}`] ?? secrets[name]),
     getSecretSnapshot: () => structuredClone(secrets),
     restoreSecrets(snapshot) { secrets = structuredClone(snapshot); saveSecrets(); },
     stageSecrets(updates) {
       for (const [name, value] of Object.entries(updates)) if (!isCredentialName(name) || typeof value !== 'string') throw new TypeError('凭据字段无效');
-      for (const [name, value] of Object.entries(updates)) if (value.trim()) secrets[`draft:${name}`] = value.trim();
+      for (const [name, value] of Object.entries(updates)) if (value.trim()) secrets[`draft:${name}`] = parseMcpSecretName(name) ? value : value.trim();
       saveSecrets();
     },
     commitSecrets() { for (const stagedName of stagedSecretNames()) { secrets[stagedName.slice(6)] = secrets[stagedName]; delete secrets[stagedName]; } saveSecrets(); },
@@ -138,6 +164,6 @@ export function createStore(dataDir) {
     getTask: (key) => { const row = db.prepare('SELECT value FROM tasks WHERE key=?').get(key); return row ? JSON.parse(row.value) : null; },
     setTask(key, value) { db.prepare('INSERT OR REPLACE INTO tasks VALUES (?,?)').run(key, JSON.stringify(value)); },
     metrics: () => ({ storedMessages: db.prepare('SELECT count(*) AS n FROM messages').get().n, storedSummaries: db.prepare('SELECT count(*) AS n FROM summaries').get().n }),
-    close: () => db.close()
+    close: () => { try { memoryStorage.close(); } finally { db.close(); } }
   };
 }

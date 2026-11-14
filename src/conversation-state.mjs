@@ -1,6 +1,11 @@
+import { MEMORY_STORAGE_LIMITS } from './memory-storage.mjs';
+
 const fail = (message, statusCode = 400) => Object.assign(new Error(message), { statusCode });
 const validId = value => typeof value === 'string' && /^[1-9]\d{3,19}$/.test(value);
-const HISTORY_MS = 30 * 24 * 60 * 60 * 1000;
+const HISTORY_MS = MEMORY_STORAGE_LIMITS.conversationRetentionDays * 24 * 60 * 60 * 1000;
+// Archive retention and replay tombstones expand together. The model-facing
+// retrieval horizon stays unchanged even when much older records are stored.
+const RETRIEVAL_HISTORY_MS = 30 * 24 * 60 * 60 * 1000;
 const scope = ({ actualQQ, groupId } = {}) => {
   if (!validId(actualQQ) || !validId(groupId)) throw fail('请提供实际登录 QQ 和群号。');
   return { actualQQ, groupId };
@@ -18,7 +23,7 @@ const empty = ({ actualQQ, groupId }, version = 0, expired = false) => ({
  * The enclosing profile database and the actual QQ/group keys are both required.
  * Topic text remains untrusted context; this store never changes permissions.
  */
-export function createConversationStateStore({ db, getState, now = () => Date.now(), ttlMs = 2 * 60 * 60 * 1000 }) {
+export function createConversationStateStore({ db, legacyDb = db, getState, now = () => Date.now(), ttlMs = 2 * 60 * 60 * 1000 }) {
   if (!Number.isSafeInteger(ttlMs) || ttlMs < 1000 || ttlMs > 24 * 60 * 60 * 1000) throw new TypeError('会话状态有效期无效。');
   db.exec(`CREATE TABLE IF NOT EXISTS dialogue_states (
     actual_qq TEXT NOT NULL,group_id TEXT NOT NULL,topic TEXT NOT NULL,pending_topics TEXT NOT NULL,
@@ -101,7 +106,7 @@ export function createConversationStateStore({ db, getState, now = () => Date.no
   // Upgraded profiles may only have the original, incoming-only messages table.
   // Do not trust a supplied legacy object without matching its stored account,
   // group, sender and mode. A read never migrates it into confirmed memory.
-  const hasLegacyMessages = () => hasTable('messages');
+  const hasLegacyMessages = () => Boolean(legacyDb.prepare("SELECT 1 FROM sqlite_master WHERE type='table' AND name='messages'").get());
   const filterHistory = ({ actualQQ, groupId, messages } = {}) => {
     const key = scope({ actualQQ, groupId });
     if (!Array.isArray(messages)) return [];
@@ -112,20 +117,19 @@ export function createConversationStateStore({ db, getState, now = () => Date.no
       AND (role='user' OR (role='assistant' AND delivery='sent'))
       AND NOT EXISTS (SELECT 1 FROM dialogue_cleared_sources AS c WHERE c.actual_qq=m.actual_qq
         AND c.group_id=m.group_id AND c.message_id=m.message_id)`);
-    const legacy = hasLegacyMessages() ? db.prepare(`SELECT account_id AS actualQQ,group_id AS groupId,message_id AS messageId,
+    const legacy = hasLegacyMessages() ? legacyDb.prepare(`SELECT account_id AS actualQQ,group_id AS groupId,message_id AS messageId,
       user_id AS userId,'user' AS role,text,time,mode FROM messages AS m
-      WHERE account_id=? AND group_id=? AND message_id=? AND mode=? AND time>? AND time<=?
-      AND NOT EXISTS (SELECT 1 FROM dialogue_cleared_sources AS c WHERE c.actual_qq=m.account_id
-        AND c.group_id=m.group_id AND c.message_id=m.message_id)`) : null;
+      WHERE account_id=? AND group_id=? AND message_id=? AND mode=? AND time>? AND time<=?`) : null;
+    const cleared = db.prepare('SELECT 1 FROM dialogue_cleared_sources WHERE actual_qq=? AND group_id=? AND message_id=?');
     return messages.filter(source => {
       if (!source || typeof source !== 'object' || typeof source.messageId !== 'string'
         || source.isNotice || source.kind === 'notice'
         || (source.actualQQ !== undefined && source.actualQQ !== key.actualQQ)
         || (source.accountId !== undefined && source.accountId !== key.actualQQ)
         || (source.groupId !== undefined && source.groupId !== key.groupId)) return false;
-      const cutoff = Math.floor((now() - HISTORY_MS) / 1000), upper = Math.floor(now() / 1000) + 60;
+      const cutoff = Math.floor((now() - RETRIEVAL_HISTORY_MS) / 1000), upper = Math.floor(now() / 1000) + 60;
       const row = canonical.get(key.actualQQ, key.groupId, source.messageId, cutoff, upper)
-        || (legacy && ['social', 'work'].includes(source.mode) && (source.role === undefined || source.role === 'user')
+        || (legacy && !cleared.get(key.actualQQ, key.groupId, source.messageId) && ['social', 'work'].includes(source.mode) && (source.role === undefined || source.role === 'user')
           ? legacy.get(key.actualQQ, key.groupId, source.messageId, source.mode, cutoff, upper) : null);
       return Boolean(row && validId(row.userId)
         && (row.role === 'assistant' ? row.userId === key.actualQQ : row.userId !== key.actualQQ)
@@ -228,11 +232,14 @@ export function createConversationStateStore({ db, getState, now = () => Date.no
           WHERE actual_qq=? AND group_id=? AND time>=? AND time<=?`).run(now() + ttlMs, HISTORY_MS,
           now() + HISTORY_MS, key.actualQQ, key.groupId, Math.floor((now() - HISTORY_MS) / 1000), Math.floor(now() / 1000) + 60);
         if (hasLegacyMessages()) {
-          db.prepare(`INSERT OR IGNORE INTO dialogue_cleared_sources
-            SELECT account_id,group_id,message_id,max(?,min(time*1000+?,?)) FROM messages
+          // Legacy notification history stays in the main database. Copy only
+          // scoped clear tombstones into memory, never config or task records.
+          const cleared = db.prepare('INSERT OR IGNORE INTO dialogue_cleared_sources VALUES (?,?,?,?)');
+          for (const row of legacyDb.prepare(`SELECT message_id,time FROM messages
             WHERE account_id=? AND group_id=? AND mode IN ('social','work') AND time>=? AND time<=?`)
-            .run(now() + ttlMs, HISTORY_MS, now() + HISTORY_MS, key.actualQQ, key.groupId,
-              Math.floor((now() - HISTORY_MS) / 1000), Math.floor(now() / 1000) + 60);
+            .all(key.actualQQ, key.groupId, Math.floor((now() - HISTORY_MS) / 1000), Math.floor(now() / 1000) + 60)) {
+            cleared.run(key.actualQQ, key.groupId, row.message_id, Math.max(now() + ttlMs, Math.min(row.time * 1000 + HISTORY_MS, now() + HISTORY_MS)));
+          }
         }
         clearExperienceRefs(key);
         const result = save(key, current, empty(key), new Date(now() + ttlMs).toISOString(), clearedRowid);

@@ -71,6 +71,55 @@ test('控制结果严格解析，silent不允许意外正文被发往QQ', () => 
   assert.equal(parseSocialDecision('{"action":"reply","text":"好呀"}').memoryCandidates.length, 0);
 });
 
+test('分条仅作为可选提示保留，完整正文仍是唯一回复来源', () => {
+  const parsed = parseSocialDecision(reply({
+    text: '确实有意思。\n\n我也想了解后续。', messages: [' 确实有意思。 ', '我也想了解后续。'], replyMode: 'chat',
+  }));
+  assert.equal(parsed.text, '确实有意思。\n\n我也想了解后续。');
+  assert.deepEqual(parsed.messages, ['确实有意思。', '我也想了解后续。']);
+  assert.equal(parsed.replyMode, 'chat');
+  assert.equal(parseSocialDecision(reply({ replyMode: 'complete' })).replyMode, 'complete');
+  assert.equal(parseSocialDecision(reply({ replyMode: 'auto' })).replyMode, 'auto');
+  // Hint agreement belongs to the host planner; parsing never replaces text
+  // with a competing answer or treats bubbles as permission to send them.
+  const differing = parseSocialDecision(reply({ text: '保留这份完整正文', messages: ['另一份回答'] }));
+  assert.equal(differing.text, '保留这份完整正文');
+  assert.throws(() => parseSocialDecision(JSON.stringify({ action: 'reply', messages: ['不能绕过必填正文'] })), { code: 'SOCIAL_DECISION_INVALID' });
+});
+
+test('沉默决策清除所有可发送正文与分条提示，旧结果不添加新控制字段', () => {
+  const silent = parseSocialDecision(JSON.stringify({ action: 'silent', text: '不要发这段', messages: ['也不要发'], replyMode: 'chat' }));
+  assert.deepEqual(silent, { action: 'silent', text: '', reason: '', topic: '', memoryCandidates: [], experienceCandidates: [] });
+  assert.equal(Object.hasOwn(parseSocialDecision(reply()), 'messages'), false);
+  assert.equal(Object.hasOwn(parseSocialDecision(reply()), 'replyMode'), false);
+});
+
+test('分条提示的格式和累计长度有界，不能注入等待时间或额外控制参数', () => {
+  for (const fields of [
+    { messages: null }, { messages: '正文' }, { messages: [] }, { messages: [''] }, { messages: [' \n '] },
+    { messages: ['一条', 2] }, { messages: [{ text: '内部对象', delayMs: 500 }] },
+    { messages: ['一', '二', '三', '四'] }, { messages: ['x'.repeat(6000), 'x'.repeat(6001)] },
+    { replyMode: null }, { replyMode: 'typing' }, { replyMode: { delay: 500 } },
+    { messages: ['正文'], delayMs: 300 }, { messages: ['正文'], send: true },
+  ]) {
+    assert.throws(() => parseSocialDecision(reply(fields)), { code: 'SOCIAL_DECISION_INVALID' });
+  }
+  assert.equal(parseSocialDecision(reply({ text: 'x'.repeat(12000), messages: ['x'.repeat(12000)] })).messages[0].length, 12000);
+});
+
+test('12000字中文正文和一致的三条分段可完整解析，包体仍受独立上限保护', () => {
+  const messages = ['甲'.repeat(4000), '乙'.repeat(3998), '丙'.repeat(3998)];
+  const text = messages.join('\n\n');
+  const source = reply({ text, messages, replyMode: 'chat' });
+  assert.equal(text.length, 12000);
+  assert.ok(Buffer.byteLength(source, 'utf8') > 64 * 1024);
+  const parsed = parseSocialDecision(source);
+  assert.equal(parsed.text, text);
+  assert.deepEqual(parsed.messages, messages);
+  assert.throws(() => parseSocialDecision(`${source}${' '.repeat(128 * 1024)}`), { code: 'SOCIAL_DECISION_INVALID' });
+  assert.throws(() => parseSocialDecision(reply({ text: `${text}甲`, messages })), { code: 'SOCIAL_DECISION_INVALID' });
+});
+
 test('非法或过长模型结果失败关闭，错误中没有原始模型资料', () => {
   const secret = '不该发到QQ的原始内部资料';
   for (const malformed of [
@@ -138,6 +187,20 @@ test('同一提示协议支持工具结果，限定自主只读且不注入待�
   assert.match(prompt, /sourceIds/);
   assert.match(prompt, /只输出一个 JSON 对象/);
   assert.match(prompt, /不是系统指令/);
+});
+
+test('表达提示尊重完整答案和发送节奏边界，避免拆碎结构或重复表情后的文字', () => {
+  const prompt = socialSystemPrompt({ config: config(), actualQQ: '999999', group: { id: '222222' } });
+  assert.match(prompt, /闲聊可以用1至3条/);
+  assert.match(prompt, /认真解答、操作步骤、代码、链接和表格保留完整结构/);
+  assert.match(prompt, /完整发.*一次发完.*不要分条/);
+  assert.match(prompt, /text 始终是唯一的完整正文/);
+  assert.match(prompt, /两个换行连接后必须与text完全一致/);
+  assert.match(prompt, /宿主决定是否采用分条、停顿与中断/);
+  assert.match(prompt, /模型不得增加delay/);
+  assert.match(prompt, /真实发送成功后可以选择 silent，避免重复文字/);
+  assert.match(prompt, /不要虚构自己经历/);
+  assert.match(prompt, /不推断性格、人际关系或隐含身份/);
 });
 
 test('可选经历候选逐条校验，坏札记不拖累有效回复，成员事实仍严格验证', () => {

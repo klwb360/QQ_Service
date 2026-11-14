@@ -1,5 +1,9 @@
 import { createHash } from 'node:crypto';
 import { onebotHosts } from './network-policy.mjs';
+import { importMcpConfig, validateMcpConfig, parseMcpSecretName } from './mcp-config.mjs';
+import { BUILTIN_QQ_TOOL_IDS, listBuiltinQQTools } from './qq-tools.mjs';
+
+const builtinQqReadTools = new Set(listBuiltinQQTools().filter(tool => tool.effect === 'read').map(tool => tool.id));
 
 export const DEFAULT_CHAT_SOCIAL = Object.freeze({
   name: '', aliases: [], interests: '', batchMs: 1500, followUpSeconds: 120, accountCallsPerHour: 30,
@@ -7,23 +11,26 @@ export const DEFAULT_CHAT_SOCIAL = Object.freeze({
 export const DEFAULT_GROUP_SOCIAL = Object.freeze({
   enabled: false, proactive: false, interests: '', style: '', activeStart: '10:00', activeEnd: '22:00',
   decisionCallsPerHour: 12, repliesPerHour: 6, proactiveIntervalMinutes: 10, readTools: [],
+  replyTools: [], replyActionCooldownSeconds: 30, replyActionsPerHour: 6,
+  delivery: Object.freeze({ enabled: true, maxMessages: 3, pauseMs: 800 }),
 });
 
 export const DEFAULT_CONFIG = {
-  schemaVersion: 3, ownerQQ: '', botQQ: '',
+  schemaVersion: 4, ownerQQ: '', botQQ: '',
   permissions: { released: false, privateReplies: false },
   qq: { enabled: false, backend: 'napcat', wsUrl: 'ws://127.0.0.1:3001', webUiUrl: 'http://127.0.0.1:6099', httpUrl: '', connections: {
     napcat: { wsUrl: 'ws://127.0.0.1:3001', webUiUrl: 'http://127.0.0.1:6099' },
     snowluma: { wsUrl: 'ws://127.0.0.1:3001', httpUrl: 'http://127.0.0.1:3000', webUiUrl: 'http://127.0.0.1:5099' },
   } },
   models: {
-    deepseek: { enabled: false, baseUrl: 'https://api.deepseek.com', model: 'deepseek-chat', maxTokens: 1024, temperature: 0.7 },
+    deepseek: { enabled: false, baseUrl: 'https://api.deepseek.com', model: 'deepseek-flash', maxTokens: 1024, temperature: 0.7 },
     apis: []
   },
   chat: { enabled: false, provider: 'deepseek', persona: '你是一个友好、简洁的群聊助手。', contextMessages: 12, social: structuredClone(DEFAULT_CHAT_SOCIAL) },
   groups: [],
   plugins: [],
-  tools: { enabled: false, triggers: ['mention', 'poke', 'name'], aliases: [], prefix: '/工具', skill: '', grants: [] },
+  mcp: { servers: [] },
+  tools: { enabled: false, builtinQQ: false, catalogMode: 'auto', triggers: ['mention', 'poke', 'name'], aliases: [], prefix: '/工具', skill: '', grants: [] },
   summary: { enabled: false, provider: 'deepseek', scheduleEnabled: false, time: '18:00', backgroundAuthorized: false, sendToOwner: false, retentionDays: 7, maxMessages: 200 },
   favorites: { enabled: false, provider: 'deepseek', count: 50 }
 };
@@ -54,7 +61,8 @@ export const pluginSecretName = (id, key) => {
   return name;
 };
 export const isCredentialName = value => value === 'deepseekApiKey' || ['napcatToken', 'snowlumaWsToken', 'snowlumaHttpToken'].includes(value)
-  || Boolean(parsePluginSecretName(value)) || (typeof value === 'string' && value.startsWith('apiKey:') && isApiProviderId(value.slice(7)));
+  || Boolean(parsePluginSecretName(value)) || Boolean(parseMcpSecretName(value))
+  || (typeof value === 'string' && value.startsWith('apiKey:') && isApiProviderId(value.slice(7)));
 export function getModelConfig(config, provider) {
   if (provider === 'deepseek') return config?.models?.deepseek;
   return isApiProviderId(provider) && Array.isArray(config?.models?.apis)
@@ -74,7 +82,7 @@ export function effectiveGroupTriggers(group) {
 // permissions. A new/malformed document must never gain legacy send rights.
 export function migrateConfig(input) {
   if (!input || typeof input !== 'object' || Array.isArray(input)) throw new ConfigError(['配置必须是 JSON 对象']);
-  if (![1, 2, 3].includes(input.schemaVersion)) throw new ConfigError(['配置版本必须为 1、2 或 3']);
+  if (![1, 2, 3, 4].includes(input.schemaVersion)) throw new ConfigError(['配置版本必须为 1、2、3 或 4']);
   if (input.schemaVersion !== 1) return upgradeConnections(retireSubscription(structuredClone(input)));
   const config = structuredClone(input);
   const connected = config.qq?.enabled === true;
@@ -96,7 +104,22 @@ export function migrateConfig(input) {
 }
 
 function upgradeConnections(config) {
-  config.schemaVersion = 3;
+  const legacyMcp = config.schemaVersion < 4;
+  config.schemaVersion = 4;
+  if (legacyMcp && config.mcp !== undefined) {
+    try { config.mcp = { servers: importMcpConfig(config.mcp).servers }; }
+    catch (error) { throw new ConfigError([{ path: 'mcp', message: error.message, action: '请重新导入 MCP 配置；旧配置不会自动启用工具。' }]); }
+  } else if (config.mcp === undefined) config.mcp = { servers: [] };
+  if (legacyMcp) {
+    // Neither MCP nor built-in host-context tools existed before schema 4.
+    // A forged old document cannot inherit new capabilities alongside its
+    // legitimately retained QQ send rights or local-plugin grants.
+    const newTool = tool => typeof tool === 'string' && (tool.trim().startsWith('mcp:') || tool.trim().startsWith('qq:'));
+    if (config.tools === undefined) config.tools = { builtinQQ: false };
+    else if (config.tools !== null && typeof config.tools === 'object' && !Array.isArray(config.tools)) config.tools.builtinQQ = false;
+    if (Array.isArray(config.tools?.grants)) config.tools.grants = config.tools.grants.filter(grant => !newTool(grant?.tool));
+    if (Array.isArray(config.groups)) for (const group of config.groups) if (Array.isArray(group?.social?.readTools)) group.social.readTools = group.social.readTools.filter(tool => !newTool(tool));
+  }
   const previous = config.qq || {};
   if (typeof previous !== 'object' || Array.isArray(previous)) throw new ConfigError(['QQ 连接配置必须是对象']);
   if (previous.connections !== undefined && (!previous.connections || typeof previous.connections !== 'object' || Array.isArray(previous.connections))) throw new ConfigError(['连接端配置必须是对象']);
@@ -131,6 +154,11 @@ export function validateConfig(input, { applying = false, hasSecret = () => fals
   const result = structuredClone(DEFAULT_CONFIG);
   const knownKeys = new Set(Object.keys(result));
   for (const key of Object.keys(input)) if (!knownKeys.has(key)) issue(key, `不支持的配置字段：${key}`, '请通过界面重新保存配置，或移除此字段。');
+  try { result.mcp = validateMcpConfig(input.mcp); }
+  catch (error) { issue('mcp', error.message, '请检查 MCP 服务、连接和工具审批配置。'); }
+  const toolId = value => typeof value === 'string' && (/^[a-z][a-z0-9-]{0,63}\/[a-z][a-z0-9_]{0,47}$/.test(value)
+    || /^mcp:[a-z][a-z0-9-]{0,63}\/[a-f0-9]{24}$/.test(value)
+    || BUILTIN_QQ_TOOL_IDS.includes(value));
   const string = (value, fallback, label, max = 2000, path = 'config') => {
     if (value === undefined) return fallback;
     if (typeof value !== 'string' || value.length > max) { issue(path, `${label}必须是最多 ${max} 字符的文本`, '请缩短此字段，并使用文本格式。'); return fallback; }
@@ -203,8 +231,8 @@ export function validateConfig(input, { applying = false, hasSecret = () => fals
     if (url.protocol !== 'https:' || !['api.deepseek.com'].includes(url.hostname) || url.username || url.password || url.search || url.hash || url.port) throw new Error();
     if (!['', '/', '/v1'].includes(url.pathname)) throw new Error();
   } catch { issue('models.deepseek.baseUrl', 'DeepSeek 官方通道仅支持 https://api.deepseek.com 或其 /v1 地址', '其他厂商或中转服务请添加“兼容 API”通道。'); }
-  result.models.deepseek.model = string(ds.model, 'deepseek-chat', 'DeepSeek 模型', 120, 'models.deepseek.model');
-  if (!/^[\w.:-]{1,120}$/.test(result.models.deepseek.model)) issue('models.deepseek.model', 'DeepSeek 模型名称无效', '请填写 deepseek-chat 或服务商提供的有效模型 ID。');
+  result.models.deepseek.model = string(ds.model, DEFAULT_CONFIG.models.deepseek.model, 'DeepSeek 模型', 120, 'models.deepseek.model');
+  if (!/^[\w.:-]{1,120}$/.test(result.models.deepseek.model)) issue('models.deepseek.model', 'DeepSeek 模型名称无效', '请选择预设模型，或填写服务商提供的有效模型 ID。');
   result.models.deepseek.maxTokens = number(ds.maxTokens, 1024, '输出 token 上限', 128, 8192, true, 'models.deepseek.maxTokens');
   result.models.deepseek.temperature = number(ds.temperature, 0.7, '温度', 0, 2, false, 'models.deepseek.temperature');
   if (models.apis !== undefined && !Array.isArray(models.apis)) issue('models.apis', '兼容 API 列表必须是数组', '请通过“添加 API”创建模型通道。');
@@ -301,6 +329,9 @@ export function validateConfig(input, { applying = false, hasSecret = () => fals
     if (value !== undefined && !object(value)) issue(prefix, '群自由聊天参数必须是对象');
     const social = object(value) ? value : {};
     for (const key of Object.keys(social)) if (!Object.hasOwn(DEFAULT_GROUP_SOCIAL, key)) issue(`${prefix}.${key}`, '不支持的群自由聊天参数');
+    if (social.delivery !== undefined && !object(social.delivery)) issue(`${prefix}.delivery`, '自然分条参数必须是对象');
+    const delivery = object(social.delivery) ? social.delivery : {};
+    for (const key of Object.keys(delivery)) if (!Object.hasOwn(DEFAULT_GROUP_SOCIAL.delivery, key)) issue(`${prefix}.delivery.${key}`, '不支持的自然分条参数');
     const normalized = {
       enabled: bool(social.enabled, false, '自由聊天', `${prefix}.enabled`),
       proactive: bool(social.proactive, false, '自主开话题', `${prefix}.proactive`),
@@ -312,11 +343,25 @@ export function validateConfig(input, { applying = false, hasSecret = () => fals
       repliesPerHour: number(social.repliesPerHour, 6, '群主动发言每小时上限', 0, 100, true, `${prefix}.repliesPerHour`),
       proactiveIntervalMinutes: number(social.proactiveIntervalMinutes, 10, '主动素材检查间隔分钟', 1, 1440, true, `${prefix}.proactiveIntervalMinutes`),
       readTools: [],
+      replyTools: [],
+      replyActionCooldownSeconds: number(social.replyActionCooldownSeconds, 30, '自然互动冷却秒数', 5, 3600, true, `${prefix}.replyActionCooldownSeconds`),
+      replyActionsPerHour: number(social.replyActionsPerHour, 6, '每小时自然互动上限', 0, 60, true, `${prefix}.replyActionsPerHour`),
+      delivery: {
+        enabled: bool(delivery.enabled, true, '自然分条', `${prefix}.delivery.enabled`),
+        maxMessages: number(delivery.maxMessages, 3, '每次回复最多条数', 1, 3, true, `${prefix}.delivery.maxMessages`),
+        pauseMs: number(delivery.pauseMs, 800, '分条间隔毫秒', 0, 1500, true, `${prefix}.delivery.pauseMs`),
+      },
     };
     for (const key of ['activeStart', 'activeEnd']) if (!/^([01]\d|2[0-3]):[0-5]\d$/.test(normalized[key])) issue(`${prefix}.${key}`, '主动活动时间须为 HH:MM');
     if (social.readTools !== undefined) {
-      if (!Array.isArray(social.readTools) || social.readTools.length > 20 || social.readTools.some(tool => typeof tool !== 'string' || !/^[a-z][a-z0-9-]{0,63}\/[a-z][a-z0-9_]{0,47}$/.test(tool))) issue(`${prefix}.readTools`, '主动素材只读工具须为最多 20 项的有效工具标识');
+      if (!Array.isArray(social.readTools) || social.readTools.length > 50 || social.readTools.some(tool => !toolId(tool)
+        || tool.startsWith('qq:') && !builtinQqReadTools.has(tool))) issue(`${prefix}.readTools`, '主动素材只读工具须为最多 50 项的有效只读工具标识');
       else normalized.readTools = [...new Set(social.readTools)];
+    }
+    if (social.replyTools !== undefined) {
+      const allowedReplies = ['qq:send_sticker', 'qq:send_image', 'qq:send_message', 'qq:react_message', 'qq:poke_member'];
+      if (!Array.isArray(social.replyTools) || social.replyTools.length > 5 || social.replyTools.some(tool => !allowedReplies.includes(tool))) issue(`${prefix}.replyTools`, '自然回复动作只能选择受控 QQ 互动，不包含文件、撤回或外部应用写入');
+      else normalized.replyTools = [...new Set(social.replyTools)];
     }
     return normalized;
   };
@@ -351,8 +396,11 @@ export function validateConfig(input, { applying = false, hasSecret = () => fals
   result.favorites.provider = provider(favorites.provider, 'deepseek', '收藏整理模型通道', 'favorites.provider');
   result.favorites.count = number(favorites.count, 50, '收藏列表条数', 1, 100, true, 'favorites.count');
   const tools = section('tools');
-  for (const key of Object.keys(tools)) if (!['enabled', 'triggers', 'aliases', 'prefix', 'skill', 'grants'].includes(key)) issue(`tools.${key}`, '不支持的工具配置字段');
+  for (const key of Object.keys(tools)) if (!['enabled', 'builtinQQ', 'catalogMode', 'triggers', 'aliases', 'prefix', 'skill', 'grants'].includes(key)) issue(`tools.${key}`, '不支持的工具配置字段');
   result.tools.enabled = bool(tools.enabled, false, '群友工具调用', 'tools.enabled');
+  result.tools.builtinQQ = bool(tools.builtinQQ, false, '内置 QQ MCP 工具', 'tools.builtinQQ');
+  if (tools.catalogMode !== undefined && !['auto', 'all'].includes(tools.catalogMode)) issue('tools.catalogMode', '工具发现方式仅支持 auto 或 all');
+  result.tools.catalogMode = tools.catalogMode === 'all' ? 'all' : 'auto';
   result.tools.prefix = string(tools.prefix, '/工具', '工具指令前缀', 30, 'tools.prefix');
   if (!result.tools.prefix) issue('tools.prefix', '工具前缀不能为空');
   result.tools.skill = string(tools.skill, '', '工具 Skill', 8000, 'tools.skill');
@@ -365,7 +413,7 @@ export function validateConfig(input, { applying = false, hasSecret = () => fals
     else result.tools.aliases = [...new Set(tools.aliases.map(value => value.trim()))];
   }
   if (tools.grants !== undefined) {
-    if (!Array.isArray(tools.grants) || tools.grants.length > 20) issue('tools.grants', '每个账号最多授权 20 个工具');
+    if (!Array.isArray(tools.grants) || tools.grants.length > 100) issue('tools.grants', '每个账号最多授权 100 个工具');
     else {
       const seen = new Set();
       result.tools.grants = tools.grants.map((grant, index) => {
@@ -373,7 +421,7 @@ export function validateConfig(input, { applying = false, hasSecret = () => fals
         if (!object(grant)) { issue(prefix, '工具授权必须是对象'); grant = {}; }
         for (const key of Object.keys(grant)) if (!['tool', 'groupIds', 'userIds', 'allowWrite'].includes(key)) issue(`${prefix}.${key}`, '不支持的工具授权字段');
         const tool = string(grant.tool, '', '工具标识', 113, `${prefix}.tool`);
-        if (!/^[a-z][a-z0-9-]{0,63}\/[a-z][a-z0-9_]{0,47}$/.test(tool) || seen.has(tool)) issue(`${prefix}.tool`, '工具标识无效或重复');
+        if (!toolId(tool) || seen.has(tool)) issue(`${prefix}.tool`, '工具标识无效或重复');
         seen.add(tool);
         const ids = (key, label) => {
           if (!Array.isArray(grant[key]) || grant[key].length > 100) { issue(`${prefix}.${key}`, `${label}须为最多 100 项的号码数组`); return []; }
@@ -386,7 +434,10 @@ export function validateConfig(input, { applying = false, hasSecret = () => fals
   if (applying) {
     if (result.qq.enabled && !result.botQQ) issue('botQQ', '启用 QQ 连接前请填写控制的 QQ 号', '先在账号配置中填写准备登录 NapCat 的 QQ 号码。');
     if (result.qq.enabled && result.qq.backend === 'napcat' && !hasSecret('napcatToken')) issue('secrets.napcatToken', '请先安装 NapCat 或填写其 OneBot Token', '先在 NapCat 登录此 QQ、启用正向 WebSocket，再填写同一个 OneBot Token 并测试连接。');
-    if (result.qq.enabled && result.qq.backend === 'snowluma') issue('qq.backend', 'SnowLuma 的 Windows 隔离运行安全检查尚未完成，实验接入暂未开放。', '请继续使用 NapCat Shell；审核报告可在项目文档中查看。');
+    if (result.qq.enabled && result.qq.backend === 'snowluma') {
+      if (!hasSecret('snowlumaWsToken')) issue('secrets.snowlumaWsToken', '请填写外部 SnowLuma 的 WebSocket Token', '自行运行固定版本，核对当前 QQ 的 WS 监听地址与独立 Token 后保存。');
+      if (!hasSecret('snowlumaHttpToken')) issue('secrets.snowlumaHttpToken', '请填写外部 SnowLuma 的 HTTP Token', 'HTTP 与 WebSocket Token 分别填写；不能使用 WebUI 密码或模型 API Key。');
+    }
     if (result.models.deepseek.enabled && !hasSecret('deepseekApiKey')) issue('models.deepseek.apiKey', '启用 DeepSeek 前请填写 API Key', '在模型配置中填写 DeepSeek 开放平台的 API Key，保存后再测试。');
     for (const [i, api] of result.models.apis.entries()) if (api.enabled && isApiProviderId(api.id) && !hasSecret(apiSecretName(api.id))) issue(`models.apis.${i}.apiKey`, `${api.label}尚未填写 API Key`, '在此 API 通道的密钥栏填写服务商 API Key，保存后再测试。');
     if (result.summary.enabled && !getModelConfig(result, result.summary.provider)?.enabled) issue('summary.provider', '汇总选用的模型通道尚未启用', '请启用所选模型，或为通知汇总选择另一个已启用的模型。');

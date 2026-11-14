@@ -1,0 +1,623 @@
+{
+  "schemaVersion": 1,
+  "reviewDate": "2026-11-13",
+  "purpose": "Personal non-commercial public-source build validation; metadata only, no vendor binaries",
+  "adapter": {
+    "state": "external_protocol_adapter",
+    "available": true,
+    "verified": false,
+    "externalRuntime": true,
+    "runtimeManaged": false,
+    "windowsDynamic": "pending",
+    "liveQQ": "pending"
+  },
+  "source": {
+    "repository": "TomyJan/SnowLuma",
+    "tag": "v2.4.2",
+    "commit": "f2ea3354f8bbe8672cbb4ae6a2b4e1fbeff44faf",
+    "tree": "4a6e4331f2e69538ab29c9430cc512809792e4d9",
+    "lockSha256": "8eda72cd63748e155dd8a3d3e3c8d46f25c53dd137a15ebdee8e935636832bc4",
+    "checkedTrackedFiles": 1367,
+    "changedTrackedFiles": []
+  },
+  "upstreamAssets": {
+    "windowsLiteSha256": "14c6f137196d5f556e6c601a880ee8aa238ffaf4227696848a146209f96d0f31",
+    "windowsFullSha256": "0912926c5e73260f35b000278a8658493fc9452f36782c32fa86f0e825bad81a"
+  },
+  "requirements": {
+    "nodeRange": "^24.22.1 || >=26.12.1",
+    "pnpmVersion": "11.25.0",
+    "qqServiceWindowsNodeReusable": false,
+    "protocolHandshake": {
+      "app_name": "SnowLuma",
+      "app_version": "2.4.2-node",
+      "protocol_version": "v11"
+    }
+  },
+  "dependencyPreparation": {
+    "nodeVersion": "24.22.1",
+    "pnpmVersion": "11.25.0",
+    "frozenLockfile": true,
+    "lifecycleScriptsExecuted": false,
+    "registry": "https://registry.npmjs.org",
+    "verifiedLockEntries": 589,
+    "installedPackages": 488,
+    "manualAuditOfAllDependencies": false
+  },
+  "buildEnvironment": {
+    "imageId": "sha256:bcbe1ddf06af71a388968bf42418cda14f3cc1573238f1c1ca2aa1eca9e21cbe",
+    "nodeVersion": "24.22.2",
+    "uid": 1000,
+    "network": "none",
+    "readOnlyRoot": true,
+    "capabilitiesDropped": "ALL",
+    "noNewPrivileges": true,
+    "cpuLimit": 2,
+    "memoryLimitBytes": 2147483648,
+    "credentialsMounted": false,
+    "applicationVaultMounted": false
+  },
+  "buildRuns": [
+    {
+      "node": "v24.22.2",
+      "platform": "linux",
+      "target": "win32-x64",
+      "network": "none",
+      "tasks": [
+        {
+          "label": "Proton build",
+          "cwd": "packages/proton",
+          "entry": "node_modules/tsup/dist/cli-default.js",
+          "args": [
+            "src/index.ts",
+            "--format",
+            "esm",
+            "--out-dir",
+            "dist",
+            "--target",
+            "node24",
+            "--external",
+            "typescript",
+            "--external",
+            "vite"
+          ],
+          "startedAt": "2026-11-13T08:35:39.384Z",
+          "finishedAt": "2026-11-13T08:35:39.797Z",
+          "code": 0,
+          "signal": null
+        },
+        {
+          "label": "Core build",
+          "cwd": "packages/core",
+          "entry": "node_modules/vite/bin/vite.js",
+          "args": [
+            "build"
+          ],
+          "startedAt": "2026-11-13T08:35:39.797Z",
+          "finishedAt": "2026-11-13T08:35:46.519Z",
+          "code": 0,
+          "signal": null
+        },
+        {
+          "label": "WebUI typecheck",
+          "cwd": "packages/webui",
+          "entry": "node_modules/typescript/bin/tsc",
+          "args": [
+            "-b"
+          ],
+          "startedAt": "2026-11-13T08:35:46.520Z",
+          "finishedAt": "2026-11-13T08:35:56.824Z",
+          "code": 0,
+          "signal": null
+        },
+        {
+          "label": "WebUI build",
+          "cwd": "packages/webui",
+          "entry": "node_modules/vite/bin/vite.js",
+          "args": [
+            "build"
+          ],
+          "startedAt": "2026-11-13T08:35:56.824Z",
+          "finishedAt": "2026-11-13T08:35:58.174Z",
+          "code": 0,
+          "signal": null
+        }
+      ]
+    },
+    {
+      "node": "v24.22.2",
+      "platform": "linux",
+      "target": "win32-x64",
+      "network": "none",
+      "tasks": [
+        {
+          "label": "Proton build",
+          "cwd": "packages/proton",
+          "entry": "node_modules/tsup/dist/cli-default.js",
+          "args": [
+            "src/index.ts",
+            "--format",
+            "esm",
+            "--out-dir",
+            "dist",
+            "--target",
+            "node24",
+            "--external",
+            "typescript",
+            "--external",
+            "vite"
+          ],
+          "startedAt": "2026-11-13T08:38:15.774Z",
+          "finishedAt": "2026-11-13T08:38:16.451Z",
+          "code": 0,
+          "signal": null
+        },
+        {
+          "label": "Core build",
+          "cwd": "packages/core",
+          "entry": "node_modules/vite/bin/vite.js",
+          "args": [
+            "build"
+          ],
+          "startedAt": "2026-11-13T08:38:16.452Z",
+          "finishedAt": "2026-11-13T08:38:23.181Z",
+          "code": 0,
+          "signal": null
+        },
+        {
+          "label": "WebUI typecheck",
+          "cwd": "packages/webui",
+          "entry": "node_modules/typescript/bin/tsc",
+          "args": [
+            "-b"
+          ],
+          "startedAt": "2026-11-13T08:38:23.181Z",
+          "finishedAt": "2026-11-13T08:38:33.285Z",
+          "code": 0,
+          "signal": null
+        },
+        {
+          "label": "WebUI build",
+          "cwd": "packages/webui",
+          "entry": "node_modules/vite/bin/vite.js",
+          "args": [
+            "build"
+          ],
+          "startedAt": "2026-11-13T08:38:33.285Z",
+          "finishedAt": "2026-11-13T08:38:34.622Z",
+          "code": 0,
+          "signal": null
+        }
+      ]
+    },
+    {
+      "node": "v24.22.2",
+      "platform": "linux",
+      "target": "win32-x64",
+      "network": "none",
+      "tasks": [
+        {
+          "label": "Proton build",
+          "cwd": "packages/proton",
+          "entry": "node_modules/tsup/dist/cli-default.js",
+          "args": [
+            "src/index.ts",
+            "--format",
+            "esm",
+            "--out-dir",
+            "dist",
+            "--target",
+            "node24",
+            "--external",
+            "typescript",
+            "--external",
+            "vite"
+          ],
+          "startedAt": "2026-11-13T08:40:46.308Z",
+          "finishedAt": "2026-11-13T08:40:46.920Z",
+          "code": 0,
+          "signal": null
+        },
+        {
+          "label": "Core build",
+          "cwd": "packages/core",
+          "entry": "node_modules/vite/bin/vite.js",
+          "args": [
+            "build"
+          ],
+          "startedAt": "2026-11-13T08:40:46.920Z",
+          "finishedAt": "2026-11-13T08:40:55.539Z",
+          "code": 0,
+          "signal": null
+        },
+        {
+          "label": "WebUI typecheck",
+          "cwd": "packages/webui",
+          "entry": "node_modules/typescript/bin/tsc",
+          "args": [
+            "-b"
+          ],
+          "startedAt": "2026-11-13T08:40:55.540Z",
+          "finishedAt": "2026-11-13T08:41:04.845Z",
+          "code": 0,
+          "signal": null
+        },
+        {
+          "label": "WebUI build",
+          "cwd": "packages/webui",
+          "entry": "node_modules/vite/bin/vite.js",
+          "args": [
+            "build"
+          ],
+          "startedAt": "2026-11-13T08:41:04.845Z",
+          "finishedAt": "2026-11-13T08:41:06.388Z",
+          "code": 0,
+          "signal": null
+        }
+      ]
+    }
+  ],
+  "output": {
+    "target": "win32-x64",
+    "fileCount": 71,
+    "totalBytes": 25150426,
+    "files": {
+      "EULA.md": {
+        "sha256": "373c4f7c5d87da116fa4444ce45b3f41a0cf238ec4ee3f993a2123bfc945a5b6",
+        "bytes": 12290
+      },
+      "PRIVACY.md": {
+        "sha256": "d36474445ce510e27e64fbe76609cc088c75b1dfa3dfb6c257241598749f08fd",
+        "bytes": 10510
+      },
+      "check-node-version.cjs": {
+        "sha256": "b8e520b7c3a7876b68fd195f38aceee5745f160461fb4de1fbfd07b7fec4f539",
+        "bytes": 858
+      },
+      "client/apple-touch-icon.png": {
+        "sha256": "847929c238c886a2e8fe3231d1fc435ebd8b148f0dd50995f8670b1a2200af8c",
+        "bytes": 40280
+      },
+      "client/assets/AppStateContext-IgyIWHQL.js": {
+        "sha256": "aa0fb8b8ab63fed1571ab689a8906950abf708bc21344578b0911b17b13eb150",
+        "bytes": 371
+      },
+      "client/assets/DebugTaskContext-DXrltKBV.js": {
+        "sha256": "294d91048c77206c3ef9cfddadb33474f15ce54dbdf21d6ed1c13e18a1f313f4",
+        "bytes": 1940
+      },
+      "client/assets/Jersey20-OFL-BxUDuBBp.txt": {
+        "sha256": "0b700740d19d2817b5db90f0451d6f19a6cc9dd94a251b53abb52fefced4a97f",
+        "bytes": 4394
+      },
+      "client/assets/Jersey20-Regular-Px6a9qzy.ttf": {
+        "sha256": "76670d7e8826860e3d2f2846b88bc1652135b8d54b6adfa5a87649b9fa4bd3b4",
+        "bytes": 128576
+      },
+      "client/assets/LayoutContext-D4-NFqCh.js": {
+        "sha256": "1b1044f4078528731a18c75927ccc8f9ef79fb5672d6ceac78985fb46b59e95b",
+        "bytes": 32076
+      },
+      "client/assets/api-CBg-YqKK.js": {
+        "sha256": "11da665114a20a3015800d7afa4cb23e47cd10744c0a995d262a4ac0df9b2f8b",
+        "bytes": 197548
+      },
+      "client/assets/avatar-BnqDkPr3.js": {
+        "sha256": "69f9b31026ae43c834b5b2223405d80f4d0c91a431dcbaf81b770808307c71d2",
+        "bytes": 812
+      },
+      "client/assets/badge-m1rlpxeg.js": {
+        "sha256": "a8f6f714d4a1c94ee00092261521425903306a93164cd9a23637c517d5c163e4",
+        "bytes": 745
+      },
+      "client/assets/book-open-B-NnAFOl.js": {
+        "sha256": "8d833086e07e49d2747b9f0607034aa6db850ff77921194096c05883735057aa",
+        "bytes": 266
+      },
+      "client/assets/card-BbpwmCwn.js": {
+        "sha256": "8db837ecb90766bc4fbb0a23f4a183367b071839a0e255b5c54e0c687fc7466c",
+        "bytes": 1075
+      },
+      "client/assets/circle-x-C4mCbOz8.js": {
+        "sha256": "a4a351ee3da813902b73187ec4cbca6681c86392178fde06450691b9c4bc0b96",
+        "bytes": 305
+      },
+      "client/assets/config-page-B0emcOKR.js": {
+        "sha256": "93c53c6a6f1c0b592e73d256fc65694f1f9078271aeb303b09f456c3f0dc5bc8",
+        "bytes": 501552
+      },
+      "client/assets/confirm-dialog-BP8bUW-Q.js": {
+        "sha256": "6b07a7ea146f957a403b8f42d525852f4eee69e05e1949ab773b84858fcc396f",
+        "bytes": 1208
+      },
+      "client/assets/copy-vuzvEhXK.js": {
+        "sha256": "94ac75051675d248c378caac74371cc671166d64a9c5d6a1dbec4b50a96664a6",
+        "bytes": 224
+      },
+      "client/assets/cpu-DujCnSc4.js": {
+        "sha256": "43b85aed3422903a94593ad41e29f0caeca523d56d9fedba9054da996cb0d7bb",
+        "bytes": 484
+      },
+      "client/assets/debug-page-C2P6AqIZ.js": {
+        "sha256": "c40856cd9d5b4d55fe1a9192663c59efe4440f54b7af6bcafcda95cbdfedd8e2",
+        "bytes": 71868
+      },
+      "client/assets/download-B_e-5XRk.js": {
+        "sha256": "a5556c9792687deac69f3551f3b23a36a9b799c976f9a6b93ca73266ca968d6f",
+        "bytes": 250
+      },
+      "client/assets/dropdown-CWfqh2Ex.js": {
+        "sha256": "dc1d52427fd971aa2f7eaa936eb6ebf4b18005ab947a88a8eb2eca48d359a142",
+        "bytes": 6744
+      },
+      "client/assets/dropdown-select-LVPpK8iQ.js": {
+        "sha256": "04172f332c8eb81ac0ddec6473aff98e701f98b7dc1451abd0a3c2cb43b499a5",
+        "bytes": 1403
+      },
+      "client/assets/eye-HTNuPgCn.js": {
+        "sha256": "0c86aab3e33608b971bbccc91398e82f988b44d1a67c4c53dee15e3bf744561a",
+        "bytes": 620
+      },
+      "client/assets/grip-vertical-BcpcjVQZ.js": {
+        "sha256": "d81a769e829e41d9b6cb03c1dcd99d7766e230149cfce6c2db4ea5832398d81a",
+        "bytes": 358
+      },
+      "client/assets/index-BUsbfIlC.css": {
+        "sha256": "b06da161705ed7c4cfa61c30fc7b0f273e4c16dc1a28717499be60ea67971bd0",
+        "bytes": 141610
+      },
+      "client/assets/index-DolPqBYW.js": {
+        "sha256": "db97bccc41401b0f020f16bf282eb88ece10ea514c86e197df6cb879ac6f9deb",
+        "bytes": 265352
+      },
+      "client/assets/input-kdYdAHob.js": {
+        "sha256": "c3d7244acd13ab93baafb3f378c591d0cec1a73a8d6b95341d15fbe12d59db7c",
+        "bytes": 784
+      },
+      "client/assets/link-2-PuQHTB6-.js": {
+        "sha256": "9ec260f72b3da28a1b4a827b2745c7c1035c6196912024e1e956ade63b5f97fd",
+        "bytes": 229
+      },
+      "client/assets/loader-circle-B9g7xYNA.js": {
+        "sha256": "4eb5e3ede32f606ed2389dded2e0cbdc54baa2f645fc51aa3bfcdbd5ad0bb961",
+        "bytes": 131
+      },
+      "client/assets/logs-page-2b4xekyU.js": {
+        "sha256": "35fbcb7d1a3e43290d12c50338f9e1327f50cb7f92c1e7707547891d5e3d54bc",
+        "bytes": 46859
+      },
+      "client/assets/maibot-C5a-fekP.js": {
+        "sha256": "b4fc4932d05ef401d5a42dbcf7a4c8b7327104ffde07d281c298ebf5cc927569",
+        "bytes": 6316
+      },
+      "client/assets/overview-page-Bm3ks5zC.css": {
+        "sha256": "5d13d3a8878b65920b86eefdbd264589ba71d6947ba7165eeb2b4c4d1d56e6d0",
+        "bytes": 3773
+      },
+      "client/assets/overview-page-CNwOieN2.js": {
+        "sha256": "59172818114ac7b69e0fc60cd173bc9aa22e1ee2662ea7affb2ac027be545910",
+        "bytes": 132959
+      },
+      "client/assets/pause-DfK8Hg7t.js": {
+        "sha256": "3cbbad18526fc8c339c87787bafd86d31826d4f2d36d8025fd62107ad906ddf1",
+        "bytes": 199
+      },
+      "client/assets/plus-CTSXUVka.js": {
+        "sha256": "b309d7410b5d3217cd9807bfe6c9c417ab8c5cffb3764b1dfff33dbf7d4e20e7",
+        "bytes": 141
+      },
+      "client/assets/polling-RND_n1Ls.js": {
+        "sha256": "b85a4fe97f5a63013fb60e0ad354ea905017b001e17dec8c681a8dd0231b6d73",
+        "bytes": 29636
+      },
+      "client/assets/processes-page-DTL34wKX.js": {
+        "sha256": "c5d1f54f4b1a21fc6137fa48a8df7ecaca60d27c3b5d37ea15517f27b96ab349",
+        "bytes": 7887
+      },
+      "client/assets/progress-QwgY9PC8.js": {
+        "sha256": "aa6fe44585605d616867e4474ea5401722c0522e97faa967ce9a08e6cd88d6f3",
+        "bytes": 1993
+      },
+      "client/assets/rolldown-runtime-CNC7AqOf.js": {
+        "sha256": "d4a36920c7bab6ec97d0bdc5d1233622f28fe010198ca32bcdd80c8cb6b64aae",
+        "bytes": 879
+      },
+      "client/assets/router-_TYMdJui.js": {
+        "sha256": "2024ef8681327b219c6ef47ce2d7c33fa3023d60bb47dd05110e306194574643",
+        "bytes": 149790
+      },
+      "client/assets/scroll-area-0DdgGh_w.js": {
+        "sha256": "7678c7131c9f7219658249ec00c6e2b4fc92ef784365a72394033079ef9aa4af",
+        "bytes": 22982
+      },
+      "client/assets/search-DSpy67CF.js": {
+        "sha256": "c0cb220cafc18077113706e26a5dad3fad6d158b7a4e4c282f32d2f0a75bb73f",
+        "bytes": 160
+      },
+      "client/assets/send-EgJStDrh.js": {
+        "sha256": "2c8efef4ebc7ccc86227930cfcc50268ba4ae505622eeb9ebb086f7d4fab977b",
+        "bytes": 432
+      },
+      "client/assets/server-DFem42zm.js": {
+        "sha256": "05dfd9894091ca769418e3f2b67cd8c75991633350a9a6517196e374e6fb4e0c",
+        "bytes": 549
+      },
+      "client/assets/settings-page-C7mrOgzU.js": {
+        "sha256": "b4de1b385f6cc2aba7b32cdacb7690ee7e6740e56304ba6c679b3eef544eefd0",
+        "bytes": 146141
+      },
+      "client/assets/shield-check-DF9FCf-4.js": {
+        "sha256": "8ec571319b46552ae59dc946b7524e5d0d44465102287995f2924b57fbff9a5b",
+        "bytes": 1126
+      },
+      "client/assets/sliders-horizontal-UZmbaCJF.js": {
+        "sha256": "92bbdfdc962a35385bcde715f26a2f30186857233588cb0aaaedb89f864e50aa",
+        "bytes": 572
+      },
+      "client/assets/tabs-KhabODdY.js": {
+        "sha256": "776fb55e3ea72e79ac5c02fc268dc2055413ca52a4096077a2d2774e3e952f74",
+        "bytes": 3909
+      },
+      "client/assets/textarea-BhBA_MKr.js": {
+        "sha256": "a5714d983dfc602c1481a53459e94312d73eda578b81d52d584d5ff32abd85a4",
+        "bytes": 1013
+      },
+      "client/assets/toggle-switch-QakSxM15.js": {
+        "sha256": "3ebb9ca06d25235d36de3bed6f05a0ee5647ab3c6179f7c83d3a8b6e2d08b8d5",
+        "bytes": 775
+      },
+      "client/assets/tooltip-CglEiQH8.js": {
+        "sha256": "fe12796c39ff8fcfd7af5c213b87317e413aa1d683d7ac47d20cb41b249325c1",
+        "bytes": 34782
+      },
+      "client/assets/transport-security-DKW9lkmR.js": {
+        "sha256": "2525a71832a10d4415cc1160da8ab3a189bdd77ce6c219476b7886a3e615785c",
+        "bytes": 464
+      },
+      "client/assets/trash-2-BMI6hCiP.js": {
+        "sha256": "39318282933b07f72742cff345730fe46d51c1c98787fff3b0148198ea27f137",
+        "bytes": 345
+      },
+      "client/assets/triangle-alert-D0vDOw75.js": {
+        "sha256": "c87115fe2a778f4ed2d10f19786d07f4907c15ae2d6d626d6c980084befc52f5",
+        "bytes": 252
+      },
+      "client/assets/x-0vogV3e_.js": {
+        "sha256": "0736deb601969644a90dcfca9539f63b69cd15968a51959213142ec878f5e161",
+        "bytes": 142
+      },
+      "client/favicon.png": {
+        "sha256": "d576c33478fabff7f6a1137ddb4abd0cd555ab6310a522903c7717c7d9e14089",
+        "bytes": 6830
+      },
+      "client/icons.svg": {
+        "sha256": "b45fa506195cfcdef406ba9f0c77b36ddc1a7c224040926ec70abc2fdea7b93a",
+        "bytes": 5031
+      },
+      "client/index.html": {
+        "sha256": "2795283216a14b261bd18a21bcb355a032da51fb32f91747d108052ffc95eb10",
+        "bytes": 6210
+      },
+      "client/logo.png": {
+        "sha256": "896d5de07bd2d276148b3ed83909b36e28af21201ab38f1ff6752f8ec6069a0e",
+        "bytes": 275467
+      },
+      "index.mjs": {
+        "sha256": "cfb69ef2f7dba8fad798ada448ed01f5e5297ccd787ad3233e26f4b2613997cb",
+        "bytes": 12446342
+      },
+      "launcher.bat": {
+        "sha256": "019eaecf89f172b723ded4cf999736adfafd64562a9e6acb4155e213c85dea21",
+        "bytes": 100
+      },
+      "native/ffmpeg/ffmpegAddon.win32.x64.node": {
+        "sha256": "80a4dfbb170f093f4a64fe241b8583fb630c58219100cad7a3cad798f71864db",
+        "bytes": 6812160
+      },
+      "native/snowluma-win32-x64.dll": {
+        "sha256": "61de2ef3c147f34c3c9115f6f912f5fd1c73c2cc56c86fad786809b2b7742371",
+        "bytes": 494592
+      },
+      "native/snowluma-win32-x64.node": {
+        "sha256": "8ebc683922c93f6377834886624bc2fa127c74a342eb78a4503b684da8a0c22e",
+        "bytes": 359424
+      },
+      "native/sqlite/LICENSE.sqlite3": {
+        "sha256": "eca845f784916bf30b4566708b07aa44c43e51761c800bb53fcc63a54b5ee03a",
+        "bytes": 2523
+      },
+      "native/sqlite/manifest.json": {
+        "sha256": "b3d268f2cddcf79bb927fb0597bfa047031175ca94a02c28b4d8e885c5209de3",
+        "bytes": 177
+      },
+      "native/sqlite/prebuilds/win32-x64/@appthreat+sqlite3.node": {
+        "sha256": "e8898fd92aebbecdc946c14e2a9f9c481946de3cbde1ebc3c647c02892640598",
+        "bytes": 2558464
+      },
+      "native/websocket-win32-x64.node": {
+        "sha256": "6e71a14b1d28a6259bc1fb52dea2bdf13f100b326c04b14132f7a53b64fe9383",
+        "bytes": 163328
+      },
+      "package.json": {
+        "sha256": "ab8bf6b6e1a7476b470e9acf3cf3d82a4604aea393a0a88e55d9b2d90fc33794",
+        "bytes": 602
+      },
+      "release.json": {
+        "sha256": "0485ec4f31056b5f281349f586824ed64a64bd20d65c42e2e58e9d740aced5a5",
+        "bytes": 237
+      }
+    }
+  },
+  "repeatedBuild": {
+    "buildCount": 3,
+    "allCompileTasksSucceeded": true,
+    "byteForByteReproducible": false,
+    "differingFiles": [
+      "index.mjs"
+    ],
+    "other70FilesIdentical": true,
+    "indexSha256ByBuild": [
+      "0c81b774fe828b2fed465dd51d84e94f013ccab2c71672c17a84041e3c88cbd7",
+      "3907e2f3aaa2417d425114cba9f451235fa1a94710bb20a7e622aa69524b2edc",
+      "cfb69ef2f7dba8fad798ada448ed01f5e5297ccd787ad3233e26f4b2613997cb"
+    ],
+    "staticAstComparisonRuns": [
+      2,
+      3
+    ],
+    "staticAstComparison": {
+      "parseOnly": true,
+      "executedBundle": false,
+      "a": {
+        "bytes": 12446342,
+        "sha256": "3907e2f3aaa2417d425114cba9f451235fa1a94710bb20a7e622aa69524b2edc",
+        "functionCount": 5904,
+        "duplicateNames": 0,
+        "sortedFunctionsHash": "2be97cd977c2cae7f62d705884e6e60770c4281614049668bdc38ca37c831261",
+        "otherStatementCount": 2946,
+        "otherStatementsHash": "9607e44d6b98fe9c3ea9f94325ba5e347a322fe9951be3861715bd8af3e1dd99"
+      },
+      "b": {
+        "bytes": 12446342,
+        "sha256": "cfb69ef2f7dba8fad798ada448ed01f5e5297ccd787ad3233e26f4b2613997cb",
+        "functionCount": 5904,
+        "duplicateNames": 0,
+        "sortedFunctionsHash": "2be97cd977c2cae7f62d705884e6e60770c4281614049668bdc38ca37c831261",
+        "otherStatementCount": 2946,
+        "otherStatementsHash": "9607e44d6b98fe9c3ea9f94325ba5e347a322fe9951be3861715bd8af3e1dd99"
+      },
+      "sameBytes": false,
+      "sameTopLevelFunctionDefinitions": true,
+      "sameOtherStatements": true,
+      "functionPositionsChanged": 554
+    }
+  },
+  "native": {
+    "completePublicSourceRebuild": false,
+    "reviewedPrecompiledInputs": true,
+    "protectedRuntimeNativeLoadAttempts": 0,
+    "observedBuildToolNativeLoads": 15,
+    "guardCoverage": "normal Node process.dlopen in compiler children; not an OS-level complete native-loading proof"
+  },
+  "validation": {
+    "staticReleaseLayout": "passed",
+    "generatedJavaScriptSyntax": "passed",
+    "daemonStarted": false,
+    "qqNativeRuntimeStarted": false,
+    "qqLoginPerformed": false,
+    "windowsDynamicPerformed": false,
+    "existingDataVolumesPreserved": 5,
+    "vendorArtifactUploaded": false
+  },
+  "license": {
+    "upstreamIsMit": false,
+    "nativeComponentsProprietary": true,
+    "thirdPartyInstallerDockerAutomaticDeploymentRequiresWrittenAuthorization": true,
+    "rootLicenseCopiedByCoreBuild": false
+  },
+  "sources": {
+    "repository": "https://github.com/TomyJan/SnowLuma/tree/f2ea3354f8bbe8672cbb4ae6a2b4e1fbeff44faf",
+    "license": "https://github.com/TomyJan/SnowLuma/blob/f2ea3354f8bbe8672cbb4ae6a2b4e1fbeff44faf/LICENSE",
+    "eula": "https://github.com/TomyJan/SnowLuma/blob/f2ea3354f8bbe8672cbb4ae6a2b4e1fbeff44faf/EULA.md"
+  }
+}

@@ -18,6 +18,7 @@ contextBridge.exposeInMainWorld('qqBridgeDesktop', Object.freeze({
   updateSettings: settings => ipcRenderer.invoke('qqbridge:desktop-settings-update', settings),
   chooseNapcatExecutable: () => ipcRenderer.invoke('qqbridge:napcat-choose-executable'),
   choosePluginDirectory: () => ipcRenderer.invoke('qqbridge:plugin-choose-directory'),
+  chooseMemoryDirectory: () => ipcRenderer.invoke('qqbridge:memory-choose-directory'),
   getWindowState: () => ipcRenderer.invoke('qqbridge:window-state'),
   onWindowState: callback => {
     if (typeof callback !== 'function') throw new TypeError('窗口状态回调必须是函数。');

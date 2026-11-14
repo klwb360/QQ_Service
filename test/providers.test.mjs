@@ -11,6 +11,21 @@ test('模型提供者只暴露 DeepSeek 与兼容 API，不再提供订阅 CLI �
   assert.equal(providers.codex, undefined);
 });
 
+test('official Kimi K3 presets use the fixed service temperature without altering preferences for custom endpoints', async () => {
+  const requests = [];
+  const providers = createProviders({ fetchImpl: async (url, options) => {
+    requests.push({ url: String(url), body: JSON.parse(options.body) });
+    return Response.json({ choices: [{ message: { content: 'fixture reply' }, finish_reason: 'stop' }] });
+  } });
+  for (const host of ['api.moonshot.cn', 'api.moonshot.ai']) for (const model of ['kimi-k3', 'kimi-k3.1-pro', 'kimi-k3.1-pro-highspeed']) {
+    await providers.compatible({ messages, config: { ...config, id: 'api_kimi', baseUrl: `https://${host}/v1`, model, temperature: 0.7 }, apiKey: 'fixture-key' });
+    assert.equal(Object.hasOwn(requests.at(-1).body, 'temperature'), false);
+    assert.equal(requests.at(-1).body.model, model);
+  }
+  await providers.compatible({ messages, config: { ...config, id: 'api_custom', baseUrl: 'https://models.example/v1', model: 'kimi-k3', temperature: 0.7 }, apiKey: 'fixture-key' });
+  assert.equal(requests.at(-1).body.temperature, 0.7);
+});
+
 test('取消 API 请求会终止本次调用，不重试也不换模型通道', async () => {
   const controller = new AbortController();
   let begin;

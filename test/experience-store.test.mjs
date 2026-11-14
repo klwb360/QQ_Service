@@ -15,7 +15,7 @@ function fixture() {
   config.chat.enabled = true;
   config.groups = [{ id: groupId, name: '测试群', mode: 'social', read: true, send: false, social: { enabled: true } }];
   store.saveDraft(config); store.commitDraft();
-  const db = new DatabaseSync(path.join(directory, 'history.sqlite'));
+  const db = new DatabaseSync(store.memoryPath);
   const experiences = createExperienceStore({ db, getState: store.getState });
   return { db, store, experiences, directory, close() { db.close(); store.close(); fs.rmSync(directory, { recursive: true, force: true }); } };
 }
@@ -117,20 +117,31 @@ test('编辑与历史回退使用单调版本，旧版本和其他群不能覆�
   } finally { f.close(); }
 });
 
-test('40条活跃经历以外的旧项归档可查，并保留来源和回退历史', () => {
+test('440条活跃经历以外的旧项归档可查，并保留来源和回退历史', () => {
   const f = fixture();
   try {
     const first = f.experiences.mutate({ actualQQ, groupId, action: 'create', text: '最早的经历' });
-    for (let i = 0; i < 40; i++) f.experiences.mutate({ actualQQ, groupId, action: 'create', text: `新的经历 ${i}` });
-    assert.equal(f.experiences.list({ actualQQ, groupId }).length, 40);
-    assert.equal(f.experiences.list({ actualQQ, groupId, status: 'all' }).length, 41);
+    for (let i = 0; i < 440; i++) f.experiences.mutate({ actualQQ, groupId, action: 'create', text: `新的经历 ${i}` });
+    assert.equal(f.experiences.list({ actualQQ, groupId , limit: 1000 }).length, 440);
+    assert.equal(f.experiences.list({ actualQQ, groupId, status: 'all', limit: 1000 }).length, 441);
     const [archived] = f.experiences.list({ actualQQ, groupId, status: 'archived' });
     assert.equal(archived.id, first.id);
     assert.equal(archived.version, 2);
     const restored = f.experiences.mutate({ actualQQ, groupId, action: 'restore', id: archived.id, version: archived.version });
     assert.equal(restored.status, 'active');
-    assert.equal(f.experiences.list({ actualQQ, groupId }).length, 40);
+    assert.equal(f.experiences.list({ actualQQ, groupId , limit: 1000 }).length, 440);
     assert.equal(f.experiences.history({ actualQQ, groupId, id: first.id }).length, 3);
+  } finally { f.close(); }
+});
+
+test('更大的经历保存池仍能召回40条候选之外的旧相关项，返回预算不变', () => {
+  const f = fixture();
+  try {
+    const old = f.experiences.mutate({ actualQQ, groupId, action: 'create', text: '一起讨论了天文学和流星雨。' });
+    for (let index = 0; index < 60; index++) f.experiences.mutate({ actualQQ, groupId, action: 'create', text: `今天聊了别的话题 ${index}` });
+    const matches = f.experiences.relevant({ actualQQ, groupId, query: '我们之前聊过流星雨吗？', limit: 100 });
+    assert.equal(matches[0].id, old.id);
+    assert.equal(matches.length, 8);
   } finally { f.close(); }
 });
 
@@ -175,7 +186,7 @@ test('重启和原会话清理后保留经历的证据、版本与暂停设置�
     reopened = createStore(f.directory);
     // Reopen through the same profile-local file, independent from the store's
     // public wiring so the persistence contract is exercised directly.
-    const db = new DatabaseSync(path.join(f.directory, 'history.sqlite'));
+    const db = new DatabaseSync(reopened.memoryPath);
     try {
       const experiences = createExperienceStore({ db, getState: reopened.getState });
       assert.equal(experiences.list({ actualQQ, groupId })[0].sources[0].text, source().text);

@@ -9,6 +9,9 @@ import { createAccountService } from './account-service.mjs';
 import { createNapcatSettings } from './napcat-settings.mjs';
 import { createPluginManager } from './plugins.mjs';
 import { isContainer, publicOrigins } from './network-policy.mjs';
+import { createMemoryStorageSettings } from './memory-storage.mjs';
+import { listMcpPresets } from './mcp-presets.mjs';
+import { listBuiltinQQTools } from './qq-tools.mjs';
 
 const projectDir = fileURLToPath(new URL('../', import.meta.url));
 const fail = (message, statusCode = 409) => Object.assign(new Error(message), { statusCode });
@@ -18,10 +21,14 @@ export function defaultDataDir() {
     : path.join(os.homedir(), '.local', 'share', 'qq-bridge-dashboard'));
 }
 
-export function createDashboard({ dataDir = defaultDataDir(), installerFactory, runtimeFactory } = {}) {
+export function createDashboard({ dataDir = defaultDataDir(), installerFactory, runtimeFactory, mcpManagerFactory } = {}) {
   const configuredOrigins = publicOrigins();
   const csrfToken = randomBytes(32).toString('hex');
   const catalog = createAccountCatalog(dataDir);
+  const memoryStorage = createMemoryStorageSettings({ dataDir, profiles: [
+    ...catalog.list().map(account => ({ id: account.id, directory: catalog.directory(account.id) })),
+    ...(!catalog.list().some(account => account.id === 'legacy') ? [{ id: 'legacy', directory: dataDir }] : []),
+  ] });
   const plugins = createPluginManager({ dataDir });
   const napcatSettings = createNapcatSettings({ dataDir, accountDirectories: catalog.list().map(account => catalog.directory(account.id)) });
   const services = new Map();
@@ -64,7 +71,9 @@ export function createDashboard({ dataDir = defaultDataDir(), installerFactory, 
   };
   const buildService = account => {
     if (services.has(account.id)) return services.get(account.id);
-    const service = createAccountService({ account, dataDir: catalog.directory(account.id), csrfToken, installerFactory, runtimeFactory, pluginManager: plugins, ensurePluginReady, getNapcatSettings: napcatSettings.get, redactAll, checkConflicts, reserveConfig });
+    const service = createAccountService({ account, dataDir: catalog.directory(account.id),
+      memoryDirectory: memoryStorage.profileDirectory(account.id, catalog.directory(account.id)),
+      csrfToken, installerFactory, runtimeFactory, mcpManagerFactory, pluginManager: plugins, ensurePluginReady, getNapcatSettings: napcatSettings.get, redactAll, checkConflicts, reserveConfig });
     services.set(account.id, service);
     return service;
   };
@@ -85,15 +94,15 @@ export function createDashboard({ dataDir = defaultDataDir(), installerFactory, 
     Object.assign(services.get('legacy').account, account);
     return services.get('legacy');
   };
-  const directory = () => ({ csrfToken, accounts: catalog.list().map(account => resolve(account.id).summary()), platforms: PLATFORMS, napcatSettings: napcatSettings.get(), plugins: plugins.list() });
+  const directory = () => ({ csrfToken, accounts: catalog.list().map(account => resolve(account.id).summary()), platforms: PLATFORMS, napcatSettings: napcatSettings.get(), plugins: plugins.list(), qqToolCatalog: listBuiltinQQTools() });
   const json = (response, value, code = 200) => {
     response.writeHead(code, { 'Content-Type': 'application/json; charset=utf-8', 'Cache-Control': 'no-store' });
     response.end(JSON.stringify(value));
   };
-  const readBody = async request => {
+  const readBody = async (request, maxBytes = 1024 * 1024) => {
     if (!(request.headers['content-type'] || '').toLowerCase().startsWith('application/json')) throw fail('请求须为 application/json。', 415);
     const chunks = []; let size = 0;
-    for await (const chunk of request) { size += chunk.length; if (size > 128 * 1024) throw fail('配置体积过大。', 413); chunks.push(chunk); }
+    for await (const chunk of request) { size += chunk.length; if (size > maxBytes) throw fail('请求体积过大。', 413); chunks.push(chunk); }
     let body;
     try { body = JSON.parse(Buffer.concat(chunks).toString('utf8') || '{}'); } catch { throw fail('JSON 格式无效。', 400); }
     // Reading a request body yields to shutdown. Recheck before any catalog,
@@ -124,7 +133,10 @@ export function createDashboard({ dataDir = defaultDataDir(), installerFactory, 
       checkLocal(request);
       if (closing && request.method !== 'GET' && request.method !== 'HEAD') throw fail('应用正在退出，请重新启动后操作。', 503);
       const url = new URL(request.url, `http://${request.headers.host}`), route = url.pathname;
+      if (request.method === 'GET' && route === '/api/memory-storage') return json(response, memoryStorage.get());
+      if (request.method === 'POST' && route === '/api/memory-storage') return json(response, memoryStorage.stage(await readBody(request)));
       if (request.method === 'GET' && route === '/api/accounts') return json(response, directory());
+      if (request.method === 'GET' && route === '/api/mcp/presets') return json(response, { presets: listMcpPresets({ container: isContainer() }) });
       if (request.method === 'GET' && route === '/api/plugins') return json(response, { plugins: plugins.list() });
       const pluginUninstall = route.match(/^\/api\/plugins\/([a-z][a-z0-9-]{0,63})\/uninstall$/);
       if (request.method === 'POST' && (route === '/api/plugins/install' || pluginUninstall)) {
@@ -183,6 +195,14 @@ export function createDashboard({ dataDir = defaultDataDir(), installerFactory, 
         if (request.method === 'GET') {
           if (action === '/state') return json(response, await service.state());
           if (action === '/setup/status') return json(response, service.setupStatus());
+          if (action === '/mcp') return json(response, service.mcpRead());
+          if (action === '/qq/assets') return json(response, service.assetsRead(Object.fromEntries(url.searchParams)));
+          if (action === '/qq/actions') return json(response, { actions: service.actionLog.list(Object.fromEntries(url.searchParams)) });
+          if (action === '/qq/assets/preview') {
+            const asset = await service.assetPreview(Object.fromEntries(url.searchParams));
+            response.writeHead(200, { 'Content-Type': asset.mimeType, 'Content-Length': asset.bytes.length, 'Cache-Control': 'no-store', 'Content-Disposition': 'inline' });
+            return response.end(asset.bytes);
+          }
           if (action === '/memory') return json(response, service.memoryRead(Object.fromEntries(url.searchParams)));
           if (action === '/memory/tree') return json(response, service.memoryTree());
           if (action === '/persona/history') return json(response, service.personaHistory(Object.fromEntries(url.searchParams)));
@@ -191,7 +211,9 @@ export function createDashboard({ dataDir = defaultDataDir(), installerFactory, 
           if (action === '/conversation/state') return json(response, service.conversationRead(Object.fromEntries(url.searchParams)));
           if (action === '/tools') {
             const settings = service.store.getConfig().tools || {};
-            return json(response, { tools: service.runtime.listTools?.() || [], enabled: settings.enabled === true, triggers: settings.triggers || ['mention', 'poke', 'name'], prefix: settings.prefix || '/工具' });
+            return json(response, { tools: service.runtime.listTools?.() || [], enabled: settings.enabled === true,
+              builtinQQ: settings.builtinQQ === true, catalogMode: settings.catalogMode || 'auto',
+              triggers: settings.triggers || ['mention', 'poke', 'name'], prefix: settings.prefix || '/工具' });
           }
           if (action === '/config/export') {
             response.setHeader('Content-Disposition', 'attachment; filename="qq-service-config.json"');
@@ -201,7 +223,7 @@ export function createDashboard({ dataDir = defaultDataDir(), installerFactory, 
           if (action === '/qq/groups') return json(response, { groups: await service.runtime.listGroups() });
         }
         if (request.method === 'POST') {
-          const body = await readBody(request);
+          const body = await readBody(request, action === '/qq/assets/import' ? 29 * 1024 * 1024 : 1024 * 1024);
           if (action === '/profile') {
             const account = catalog.rename(service.account.id, body.name);
             Object.assign(service.account, account);
@@ -212,7 +234,7 @@ export function createDashboard({ dataDir = defaultDataDir(), installerFactory, 
         }
         throw fail('接口不存在。', 404);
       }
-      const files = { '/': ['index.html', 'text/html'], '/index.html': ['index.html', 'text/html'], '/styles.css': ['styles.css', 'text/css'], '/app.js': ['app.js', 'text/javascript'], '/memory-ui.js': ['memory-ui.js', 'text/javascript'], '/persona-ui.js': ['persona-ui.js', 'text/javascript'] };
+      const files = { '/': ['index.html', 'text/html'], '/index.html': ['index.html', 'text/html'], '/styles.css': ['styles.css', 'text/css'], '/app.js': ['app.js', 'text/javascript'], '/memory-ui.js': ['memory-ui.js', 'text/javascript'], '/memory-storage-ui.js': ['memory-storage-ui.js', 'text/javascript'], '/qq-assets-ui.js': ['qq-assets-ui.js', 'text/javascript'], '/mcp-presets-ui.js': ['mcp-presets-ui.js', 'text/javascript'], '/persona-ui.js': ['persona-ui.js', 'text/javascript'] };
       if (request.method === 'GET' && files[route]) {
         const [file, type] = files[route];
         response.writeHead(200, { 'Content-Type': `${type}; charset=utf-8`, 'Cache-Control': 'no-cache' });

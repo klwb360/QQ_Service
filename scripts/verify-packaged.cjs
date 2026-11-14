@@ -3,6 +3,7 @@ const fs = require('node:fs/promises');
 const path = require('node:path');
 const { execFile } = require('node:child_process');
 const { promisify } = require('node:util');
+const { requiredBackendResources, verifyBackendResources } = require('./backend-resources.cjs');
 
 const run = promisify(execFile);
 
@@ -20,23 +21,7 @@ async function verifyWindowsPackage(appOutDir, expectedVersion) {
   const required = [
     path.join(resources, 'app.asar'),
     path.join(resources, 'runtime', 'node.exe'), npmCli,
-    path.join(backend, 'src', 'server.mjs'),
-    path.join(backend, 'src', 'account-service.mjs'),
-    path.join(backend, 'src', 'installer.mjs'),
-    path.join(backend, 'src', 'napcat-settings.mjs'),
-    path.join(backend, 'src', 'napcat-native.mjs'),
-    path.join(backend, 'src', 'group-events.mjs'),
-    path.join(backend, 'src', 'plugins.mjs'),
-    path.join(backend, 'src', 'plugin-worker.mjs'),
-    path.join(backend, 'src', 'tool-schema.mjs'),
-    path.join(backend, 'src', 'tool-router.mjs'),
-    path.join(backend, 'src', 'social-runtime.mjs'),
-    path.join(backend, 'src', 'social-chat.mjs'),
-    path.join(backend, 'src', 'memory-store.mjs'),
-    path.join(backend, 'public', 'index.html'),
-    path.join(backend, 'public', 'app.js'),
-    path.join(backend, 'public', 'memory-ui.js'),
-    path.join(backend, 'public', 'styles.css'),
+    ...requiredBackendResources.map(file => path.join(backend, ...file.split('/'))),
     path.join(backend, 'node_modules', 'ws', 'package.json')
   ];
   for (const file of required) {
@@ -54,6 +39,27 @@ async function verifyWindowsPackage(appOutDir, expectedVersion) {
   assert.equal(manifest.appName, 'QQ_Service');
   assert.equal(manifest.desktopExecutable, 'QQ_Service.exe');
   assert.equal(manifest.dependencies.ws, ws.version);
+  assert.deepEqual(manifest.dependencies, metadata.dependencies, 'Packaged production dependencies differ from the build manifest');
+  const packages = JSON.parse(await fs.readFile(path.join(backend, 'production-packages.json'), 'utf8'));
+  assert(Array.isArray(packages) && packages.length > 0, 'Production package closure manifest is missing');
+  assert.deepEqual(packages, manifest.productionPackages, 'Backend production package closure differs from runtime manifest');
+  const paths = new Set();
+  for (const entry of packages) {
+    assert(typeof entry.path === 'string' && entry.path.startsWith('node_modules/') && !entry.path.includes('\\'), 'Invalid production package path');
+    const directory = path.resolve(backend, ...entry.path.split('/'));
+    const relative = path.relative(backend, directory);
+    assert(!relative.startsWith('..') && !path.isAbsolute(relative), 'Production package path escapes backend');
+    assert(!paths.has(entry.path), `Duplicate production package: ${entry.path}`);
+    paths.add(entry.path);
+    const installed = JSON.parse(await fs.readFile(path.join(directory, 'package.json'), 'utf8'));
+    assert.equal(installed.version, entry.version, `Packaged dependency version differs: ${entry.path}`);
+    assert.equal(installed.name, entry.name, `Packaged dependency name differs: ${entry.path}`);
+  }
+  for (const name of Object.keys(metadata.dependencies)) assert(paths.has(`node_modules/${name}`), `Missing direct production dependency ${name}`);
+  const sdk = JSON.parse(await fs.readFile(path.join(backend, 'node_modules', '@modelcontextprotocol', 'sdk', 'package.json'), 'utf8'));
+  const ajv = JSON.parse(await fs.readFile(path.join(backend, 'node_modules', 'ajv', 'package.json'), 'utf8'));
+  assert.equal(sdk.version, metadata.dependencies['@modelcontextprotocol/sdk'], 'Packaged MCP SDK version differs');
+  assert.equal(ajv.version, metadata.dependencies.ajv, 'Packaged Ajv version differs');
   assert.equal(windowsMachine(await fs.readFile(path.join(resources, 'runtime', 'node.exe'))), 0x8664, 'Packaged Node executable is not Windows x64');
   assert.equal(windowsMachine(await fs.readFile(path.join(appOutDir, 'QQ_Service.exe'))), 0x8664, 'Packaged desktop executable is not Windows x64');
   const asar = await import('@electron/asar');
@@ -67,11 +73,15 @@ async function verifyWindowsPackage(appOutDir, expectedVersion) {
     const leftover = await fs.stat(path.join(backend, file)).catch(error => { if (error.code === 'ENOENT') return null; throw error; });
     assert(!leftover, `Retired editor resource is still in the backend package: ${file}`);
   }
-  const privateFile = /(?:^|\/)(?:auth\.json|config(?:\.(?:v\d+|pre-api-only)\.backup)?\.json|secrets\.json|vault\.(?:json|key)|accounts\.json|module-state\.json|napcat-settings\.json|ui-design\.json|\.env(?:\.[^/]*)?|[^/]+\.sqlite(?:-wal|-shm)?|codex-home|accounts|data)(?:\/|$)/i;
+  const privateFile = /(?:^|\/)(?:auth\.json|config(?:\.(?:v\d+|pre-api-only)\.backup)?\.json|secrets\.json|vault\.(?:json|key)|accounts\.json|module-state\.json|napcat-settings\.json|memory-storage-(?:settings|owner)\.json|qq-actions\.json|ui-design\.json|\.env(?:\.[^/]*)?|[^/]+\.(?:pfx|p12|pem|key)|[^/]+\.sqlite(?:-wal|-shm)?|qq-assets|codex-home|accounts|data)(?:\/|$)/i;
   assert(!files.some(file => privateFile.test(file)), 'Desktop archive contains unexpected account data');
   async function scan(directory) {
     for (const entry of await fs.readdir(directory, { withFileTypes: true })) {
       const file = path.join(directory, entry.name);
+      // Registry packages may legitimately contain fixtures called data or
+      // config.json. Their locked closure is checked above; account files must
+      // never be copied into the application's own source/resources.
+      if (directory === backend && entry.name === 'node_modules') continue;
       assert(!privateFile.test(path.relative(backend, file).split(path.sep).join('/')), 'Backend contains unexpected account data');
       if (entry.isDirectory()) await scan(file);
     }
@@ -84,7 +94,10 @@ async function verifyWindowsPackage(appOutDir, expectedVersion) {
     env: { ...process.env, NPM_CONFIG_UPDATE_NOTIFIER: 'false' }
   });
   assert(/^\d+\.\d+\.\d+\s*$/.test(npm.stdout), 'Packaged npm version check did not complete successfully');
-  const result = { appVersion: metadata.version, nodeVersion: manifest.nodeVersion, npmVersion: npm.stdout.trim(), wsVersion: ws.version, asarEntries: files.length };
+  const backendChecks = await verifyBackendResources(backend);
+  assert.deepEqual(backendChecks, manifest.backendChecks, 'Packaged backend resources differ from the verified stage');
+  const result = { appVersion: metadata.version, nodeVersion: manifest.nodeVersion, npmVersion: npm.stdout.trim(), wsVersion: ws.version,
+    mcpSdkVersion: sdk.version, ajvVersion: ajv.version, productionPackages: packages.length, asarEntries: files.length, backendChecks };
   console.log(`Verified packaged Windows resources: ${JSON.stringify(result)}`);
   return result;
 }

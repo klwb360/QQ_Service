@@ -15,6 +15,12 @@
   };
   let accounts = [];
   let pluginCatalog = [];
+  let qqToolCatalog = [];
+  const mcpCatalogues = new Map();
+  const mcpApprovalDrafts = new Map();
+  const mcpTests = new Set();
+  const mcpChangedConnections = new Map();
+  let mcpRenderSignature = '', mcpRenderAccount = '', mcpEditing = null, mcpImportAccount = '', mcpImportPending = false;
   const pluginRunViews = new Map();
   const toolGrantDrafts = new Map();
   let pluginRenderSignature = '';
@@ -55,6 +61,15 @@
     { id: 'siliconflow', label: '硅基流动', url: 'https://api.siliconflow.cn/v1', hosts: ['api.siliconflow.cn'] },
     { id: 'custom', label: '自定义兼容 API', url: 'https://api.example.com/v1', hosts: [] }
   ];
+  const modelPresets = {
+    deepseek: ['deepseek-flash', 'deepseek-v4-pro'],
+    openai: ['gpt-4.1', 'gpt-4.1-mini', 'gpt-4o', 'gpt-4o-mini'],
+    dashscope: ['qwen-plus', 'qwen-turbo', 'qwen-max'],
+    zhipu: ['glm-5.3', 'glm-5.3-flash', 'glm-4.7'],
+    kimi: ['kimi-k3.1-pro', 'kimi-k3.1-pro-highspeed', 'kimi-k3'],
+    siliconflow: ['deepseek-ai/DeepSeek-V3.2', 'Pro/deepseek-ai/DeepSeek-V3.2', 'Qwen/Qwen3.6-27B'],
+    custom: []
+  };
   const accountSetupSteps = new Map();
   const accountFlowVersions = new Map();
   const accountSkippedStages = new Map();
@@ -64,6 +79,110 @@
   let customApiStructure = '';
   let activeGroupTriggerPicker = null;
   let groupTriggerPointerState = null;
+  let activeModelPicker = null;
+  let modelPickerSequence = 0;
+
+  function modelVendor(input) {
+    if (input.dataset.config === 'models.deepseek.model') return 'deepseek';
+    const index = /^models\.apis\.(\d+)\.model$/.exec(input.dataset.config || '')?.[1];
+    return index === undefined ? 'custom' : vendorForApi(draft?.models?.apis?.[Number(index)]);
+  }
+  function prepareModelComboboxes() {
+    $$('input[data-config="models.deepseek.model"], input[data-config^="models.apis."][data-config$=".model"]').forEach(input => {
+      let wrapper = input.closest('.model-combobox');
+      if (!wrapper) {
+        wrapper = document.createElement('div'); wrapper.className = 'model-combobox';
+        input.before(wrapper); wrapper.append(input);
+        const panelId = `model-presets-${++modelPickerSequence}`;
+        const button = document.createElement('button');
+        button.type = 'button'; button.className = 'model-combobox-toggle';
+        button.dataset.modelToggle = ''; button.setAttribute('aria-label', '展开模型预设');
+        button.setAttribute('aria-controls', panelId); button.setAttribute('aria-expanded', 'false');
+        button.innerHTML = '<svg viewBox="0 0 16 16" aria-hidden="true"><path d="m4 6 4 4 4-4"/></svg>';
+        const panel = document.createElement('div'); panel.id = panelId;
+        panel.className = 'model-picker-panel'; panel.setAttribute('popover', 'manual');
+        panel.setAttribute('role', 'listbox'); panel.setAttribute('aria-label', '模型名称预设');
+        wrapper.append(button, panel);
+        input.setAttribute('role', 'combobox'); input.setAttribute('aria-autocomplete', 'list');
+        input.setAttribute('aria-label', '模型名称'); input.setAttribute('aria-haspopup', 'listbox');
+        input.setAttribute('aria-controls', panelId); input.setAttribute('aria-expanded', 'false');
+        input.autocomplete = 'off';
+        const note = document.createElement('small'); note.className = 'model-presets-note';
+        note.textContent = '可选择预设，也可直接填写模型 ID；实际可用模型以厂商控制台为准。';
+        wrapper.after(note);
+      }
+      const vendor = modelVendor(input);
+      if (activeModelPicker?.input === input && (activeModelPicker.vendor !== vendor || !input.getClientRects().length)) closeModelPicker();
+      wrapper.dataset.modelVendor = vendor;
+      $('.model-combobox-toggle', wrapper).disabled = input.disabled;
+      const note = wrapper.nextElementSibling;
+      if (note?.classList.contains('model-presets-note')) note.textContent = '可选择预设，也可直接填写模型 ID；实际可用模型以厂商控制台为准。'
+        + (vendor === 'kimi' && /^kimi-k3(?:[.-]|$)/.test(input.value) ? '此系列温度由服务固定，填写值不会影响当前模型。' : '');
+    });
+    if (activeModelPicker && !activeModelPicker.input.isConnected) closeModelPicker();
+  }
+  function closeModelPicker({ restoreFocus = false } = {}) {
+    const previous = activeModelPicker;
+    if (!previous) return;
+    activeModelPicker = null;
+    if (previous.panel.matches(':popover-open')) previous.panel.hidePopover();
+    previous.input.setAttribute('aria-expanded', 'false');
+    previous.input.removeAttribute('aria-activedescendant');
+    previous.button.setAttribute('aria-expanded', 'false');
+    if (restoreFocus && previous.input.isConnected) previous.input.focus({ preventScroll: true });
+  }
+  function highlightModelOption(index) {
+    const active = activeModelPicker;
+    if (!active) return;
+    active.index = index;
+    $$('[data-model-option]', active.panel).forEach((option, position) => {
+      option.classList.toggle('highlighted', position === index);
+      option.setAttribute('aria-selected', String(option.dataset.modelOption === active.input.value));
+    });
+    const highlighted = $$('[data-model-option]', active.panel)[index];
+    if (highlighted) {
+      active.input.setAttribute('aria-activedescendant', highlighted.id);
+      if (highlighted.offsetTop < active.panel.scrollTop) active.panel.scrollTop = highlighted.offsetTop;
+      else if (highlighted.offsetTop + highlighted.offsetHeight > active.panel.scrollTop + active.panel.clientHeight) active.panel.scrollTop = highlighted.offsetTop + highlighted.offsetHeight - active.panel.clientHeight;
+    } else active.input.removeAttribute('aria-activedescendant');
+  }
+  function positionModelPicker() {
+    const active = activeModelPicker;
+    if (!active) return;
+    const anchor = active.wrapper.getBoundingClientRect(), margin = 10, gap = 5;
+    const width = document.documentElement.clientWidth, height = window.innerHeight;
+    if (!active.input.isConnected || !anchor.width || !anchor.height || anchor.bottom <= 0 || anchor.top >= height) return closeModelPicker();
+    active.panel.style.width = `${Math.min(Math.max(anchor.width, 260), width - margin * 2)}px`;
+    active.panel.style.maxHeight = `${Math.min(340, height - margin * 2)}px`;
+    const below = height - anchor.bottom - gap - margin, above = anchor.top - gap - margin;
+    const down = below >= active.panel.offsetHeight || below >= above;
+    active.panel.style.maxHeight = `${Math.max(0, Math.min(340, down ? below : above))}px`;
+    active.panel.style.left = `${Math.max(margin, Math.min(anchor.left, width - active.panel.offsetWidth - margin))}px`;
+    active.panel.style.top = `${Math.max(margin, down ? anchor.bottom + gap : anchor.top - gap - active.panel.offsetHeight)}px`;
+    active.anchor = { left: anchor.left, top: anchor.top };
+  }
+  function openModelPicker(wrapper, { last = false } = {}) {
+    closeModelPicker(); closeGroupTriggerPicker();
+    const input = $('input[data-config]', wrapper), button = $('.model-combobox-toggle', wrapper), panel = $('.model-picker-panel', wrapper);
+    if (!draft || input.disabled) return;
+    const vendor = modelVendor(input), choices = modelPresets[vendor] || [];
+    panel.innerHTML = choices.length ? choices.map((model, index) => `<button type="button" role="option" tabindex="-1" id="${panel.id}-option-${index}" data-model-option="${escapeHTML(model)}" aria-selected="${model === input.value}">${escapeHTML(model)}</button>`).join('') : '<p class="model-picker-empty">这个接口没有内置预设，可直接在输入框填写服务商提供的模型 ID。</p>';
+    activeModelPicker = { wrapper, input, button, panel, vendor, choices, index: -1, accountId: selectedAccountId };
+    input.setAttribute('aria-expanded', 'true'); button.setAttribute('aria-expanded', 'true');
+    panel.showPopover(); positionModelPicker();
+    const selected = choices.indexOf(input.value);
+    highlightModelOption(selected >= 0 ? selected : last ? choices.length - 1 : choices.length ? 0 : -1);
+    input.focus({ preventScroll: true });
+  }
+  function chooseModelOption(value) {
+    const active = activeModelPicker;
+    if (!active || active.accountId !== selectedAccountId || !active.input.isConnected || !active.choices.includes(value)) return closeModelPicker();
+    const input = active.input;
+    closeModelPicker({ restoreFocus: true });
+    input.value = value;
+    input.dispatchEvent(new Event('input', { bubbles: true }));
+    input.dispatchEvent(new Event('change', { bubbles: true }));
+  }
 
   function getPath(object, path) { return path.split('.').reduce((value, key) => value?.[key], object); }
   function setPath(object, path, value) {
@@ -76,6 +195,8 @@
     parent[keys.at(-1)] = value;
   }
   function connectionBackend(config = draft) { return config?.qq?.backend === 'snowluma' ? 'snowluma' : 'napcat'; }
+  const snowlumaReferenceUrl = 'https://github.com/TomyJan/SnowLuma/releases/tag/v2.4.2';
+  function connectionName(config = draft) { return connectionBackend(config) === 'snowluma' ? 'SnowLuma' : 'NapCat'; }
   function connectionChanged(editor) {
     if (!editor) return false;
     const before = editor.state?.applied?.qq ?? {};
@@ -93,22 +214,26 @@
     const backend = connectionBackend();
     const snow = backend === 'snowluma';
     const available = state?.connectors?.snowluma?.available === true;
-    const reason = state?.connectors?.snowluma?.reason || '正在补全 Windows 隔离运行验证，暂未开放接入。';
+    const reason = state?.connectors?.snowluma?.reason || (available ? '连接你自行运行的固定 SnowLuma 实例；Windows 及真实 QQ 验收范围请查看审查记录。' : '正在补全 Windows 隔离运行验证，暂未开放接入。');
     const option = $('#qq-backend option[value="snowluma"]');
     option.disabled = !available;
-    option.textContent = available ? 'SnowLuma · 实验接入' : 'SnowLuma · 实验功能待验证';
+    option.textContent = available ? 'SnowLuma · 外部实验接入' : 'SnowLuma · 实验功能待验证';
     $('#qq-backend').value = backend;
     $('#connector-availability').textContent = available ? '每个账号独立选择；切换后保持只读，需要重新确认登录 QQ 和发送范围。' : `SnowLuma：${reason}`;
-    $('#snowluma-security-note').textContent = reason;
-    $('#snowluma-security-note').classList.toggle('hidden', !snow || available);
+    $('#snowluma-security-note').textContent = available ? `参考版本 v${state?.connectors?.snowluma?.review?.version || '2.4.2'}。${reason}` : reason;
+    $('#snowluma-security-note').classList.toggle('hidden', !snow);
     $('#napcat-token-field').classList.toggle('hidden', snow);
     $('#snowluma-ws-token-field').classList.toggle('hidden', !snow);
     $('#snowluma-http-fields').classList.toggle('hidden', !snow);
     $$('[data-open-napcat-program]', $('#napcat-connect-toolbar')).forEach(button => button.classList.toggle('hidden', snow));
     $('.napcat-mode-meta', $('#napcat-connect-toolbar')).classList.toggle('hidden', snow);
+    $('#snowluma-release-link').classList.toggle('hidden', !snow);
+    $('#open-napcat').textContent = snow ? '打开 SnowLuma 管理页 ↗' : '打开登录页 ↗';
+    $('[data-connector-napcat-links]').classList.toggle('hidden', snow);
+    if (snow) $('#napcat-login-token').classList.add('hidden');
     $('#connector-webui-label').textContent = snow ? 'SnowLuma 管理页面' : 'NapCat 管理页面';
-    $('#connector-help-text').textContent = snow ? '自行启动已验证的 SnowLuma 并登录此 QQ。分别填写这个 QQ 的 WS、HTTP 地址和 Token，再测试连接。' : 'NapCat 登录的 QQ 应与当前账号一致。启用正向 WebSocket，再将连接地址和 OneBot Token 填到上方。';
-    if (snow) $('#connection-napcat-hint').textContent = available ? '先自行打开 SnowLuma 并登录此 QQ，再打开登录页、测试连接。' : reason;
+    $('#connector-help-text').textContent = snow ? '在独立目录自行启动固定版本 SnowLuma，满足其 Node 版本要求并登录此 QQ。分别填写此实例的 WS、HTTP 地址及两个 Token；管理页密码不能代替它们。QQ_Service 只连接外部实例，不自动安装或运行 SnowLuma 原生组件。' : 'NapCat 登录的 QQ 应与当前账号一致。启用正向 WebSocket，再将连接地址和 OneBot Token 填到上方。';
+    if (snow) $('#connection-napcat-hint').textContent = available ? '先在外部运行 SnowLuma 并登录此 QQ，再打开管理页、连接并验证；切换后需要重新授权。' : reason;
     if (state?.container === true && !snow) {
       $$('[data-open-napcat-program]', $('#napcat-connect-toolbar')).forEach(button => button.classList.add('hidden'));
       $('.napcat-mode-meta', $('#napcat-connect-toolbar')).classList.add('hidden');
@@ -244,6 +369,7 @@
     // A late save response must not erase edits made after that save was submitted.
     const mayReplace = expectedEditVersion === undefined || (editor.editVersion ?? 0) === expectedEditVersion;
     editor.state = next;
+    if (Array.isArray(next.mcp?.servers)) rememberMCPCatalogue(accountId, next.mcp.servers);
     if (Array.isArray(next.plugins)) pluginCatalog = next.plugins;
     if (!editor.draft || (!editor.dirty && !Object.keys(editor.secretUpdates ?? {}).length) || (replaceDraft && mayReplace)) {
       editor.draft = clone(next.draft);
@@ -275,6 +401,7 @@
     if (!Array.isArray(directory.accounts) || !directory.csrfToken) throw new Error('后台账号目录不完整。');
     accounts = directory.accounts;
     if (Array.isArray(directory.plugins)) pluginCatalog = directory.plugins;
+    if (Array.isArray(directory.qqToolCatalog)) qqToolCatalog = directory.qqToolCatalog;
     platforms = directory.platforms ?? [];
     directoryToken = directory.csrfToken;
     acceptNapcatSettings(directory.napcatSettings ?? await api('/api/napcat/settings', undefined, 'GET'));
@@ -286,6 +413,7 @@
   }
   async function selectAccount(id) {
     if (id === selectedAccountId && state) return;
+    closeModelPicker();
     closeGroupTriggerPicker();
     rememberEditor();
     selectedAccountId = id;
@@ -321,6 +449,7 @@
   }
   function navigate(page) {
     if (!Object.hasOwn(pageInfo, page)) page = 'overview';
+    closeModelPicker();
     closeGroupTriggerPicker();
     currentPage = page;
     const [caption, eyebrow, title, description] = pageInfo[page];
@@ -376,6 +505,7 @@
     aliases.disabled = !draft;
     renderProviderOptions();
     renderGroups();
+    prepareModelComboboxes();
   }
   function accountOnlineState(account) {
     const editor = editors.get(account.id);
@@ -561,6 +691,10 @@
     return runtime.connectionState ?? runtime.state ?? runtime.status ?? (runtime.connected === false ? 'disconnected' : 'unknown');
   }
   function renderEnvironment() {
+    if (connectionBackend() === 'snowluma') {
+      $('#environment-checks').innerHTML = '<p class="field-note"><strong>SnowLuma 外部运行要求</strong><br>固定协议：SnowLuma 2.4.2-node／OneBot v11。外部 Node.js 使用24.x且至少24.22.1，或26.12.1及以上；请按该发行版要求自行核对。</p><p class="field-note">WS事件与HTTP动作的QQ身份、在线状态及连接版本在本账号的连接检查中验证。本应用内置的Node.js版本不代表外部实例已满足运行要求。</p>';
+      return;
+    }
     const environment = state?.environment;
     let checks = [];
     if (Array.isArray(environment)) checks = environment;
@@ -617,16 +751,40 @@
   function effectiveTriggers(group) {
     return Array.isArray(group.triggers) ? group.triggers : [group.trigger || 'mention'];
   }
-  const groupSocialDefaults = { enabled: false, proactive: false, interests: '', style: '', activeStart: '10:00', activeEnd: '22:00', decisionCallsPerHour: 12, repliesPerHour: 6, proactiveIntervalMinutes: 10, readTools: [] };
+  const groupSocialDefaults = { enabled: false, proactive: false, interests: '', style: '', activeStart: '10:00', activeEnd: '22:00', decisionCallsPerHour: 12, repliesPerHour: 6, proactiveIntervalMinutes: 10, readTools: [], replyTools: [], replyActionCooldownSeconds: 30, replyActionsPerHour: 6, delivery: { enabled: true, maxMessages: 3, pauseMs: 800 } };
+  const qqToolLabels = {
+    current_group_recent: '最近群消息', current_group_search: '搜索群消息', current_group_members: '查找本群成员',
+    current_group_member: '查看群友资料', poke_member: '戳一戳群友', send_message: '发送 @ 或引用回复', react_message: '消息表情回应',
+    current_group_info: '当前群资料', connection_status: 'QQ 连接状态', list_assets: '查找已批准素材', describe_asset: '查看图片与表情描述',
+    send_image: '发送图片', send_sticker: '发送表情包', send_file: '发送文件', forward_messages: '合并转发本群消息',
+    recall_own_message: '撤回自己的消息', group_notices: '读取群公告', group_files: '查看群文件'
+  };
+  function qqContextToolSource() {
+    return { id: 'qq', name: 'QQ MCP', source: 'qq', enabled: draft?.tools?.builtinQQ === true,
+      tools: draft?.tools?.builtinQQ === true ? qqToolCatalog.map(tool => ({ ...tool, name: qqToolLabels[tool.remoteName] || tool.remoteName })) : [] };
+  }
+  function renderQQReplyTools(group, social) {
+    const allowed = ['send_sticker', 'send_image', 'send_message', 'react_message', 'poke_member'];
+    return `<section class="qq-reply-options"><p class="field-note">允许 AI 按语境使用的 QQ 回复动作</p><div class="group-social-tool-options">${allowed.map(name => `<label><input type="checkbox" data-group-qq-reply="qq:${name}" ${(social.replyTools || []).includes('qq:' + name) ? 'checked' : ''}><span>${escapeHTML(qqToolLabels[name])}</span></label>`).join('')}</div><div class="form-grid"><label class="field">互动冷却（秒）<input type="number" min="5" max="3600" data-group-social="replyActionCooldownSeconds" value="${social.replyActionCooldownSeconds}"></label><label class="field">每小时互动上限<input type="number" min="0" max="60" data-group-social="replyActionsPerHour" value="${social.replyActionsPerHour}"></label></div><p class="field-note">需开启自由聊天和内置 QQ MCP，允许本群读取、发送并启动账号。只使用你批准给本群的素材；不包含文件发送、撤回和外部应用写入。先上传表情包并补充标签，再按需使用视觉模型识别。</p></section>`;
+  }
   function socialReadTools() {
-    return pluginCatalog.flatMap(plugin => (plugin.tools || []).filter(tool => tool.effect === 'read').map(tool => ({ id: `${plugin.id}/${tool.name}`, label: `${plugin.name || plugin.id} · ${tool.name}`, enabled: draft?.plugins?.some(entry => entry.id === plugin.id && entry.enabled) === true })));
+    return pluginCatalog.flatMap(plugin => (plugin.tools || []).filter(tool => tool.effect === 'read').map(tool => ({ id: `${plugin.id}/${tool.name}`, label: `${plugin.name || plugin.id} · ${tool.name}`, enabled: draft?.plugins?.some(entry => entry.id === plugin.id && entry.enabled) === true })))
+      .concat(mcpToolSources().flatMap(source => source.tools.filter(tool => tool.effect === 'read').map(tool => ({ id: tool.id, label: `MCP · ${source.name} · ${tool.name}`, enabled: source.enabled }))))
+      .concat(qqContextToolSource().tools.filter(tool => tool.effect === 'read').map(tool => ({ id: tool.id, label: `QQ MCP · ${tool.name}`, enabled: true })));
+  }
+  function groupSocialSettings(group) {
+    return { ...groupSocialDefaults, ...group.social, delivery: { ...groupSocialDefaults.delivery, ...group.social?.delivery } };
+  }
+  function renderGroupDelivery(social) {
+    const delivery = social.delivery;
+    return `<section class="group-delivery-options"><p class="field-note">回复节奏</p><label class="check-field"><input type="checkbox" data-group-delivery="enabled" ${delivery.enabled ? 'checked' : ''}><span>闲聊自然分条</span></label><div class="form-grid"><label class="field">每次回复最多条数<input type="number" data-group-delivery="maxMessages" min="1" max="3" value="${escapeHTML(delivery.maxMessages)}"></label><label class="field">分条间隔（毫秒）<input type="number" data-group-delivery="pauseMs" min="0" max="1500" step="100" value="${escapeHTML(delivery.pauseMs)}"></label></div><p class="field-note">首条立即发送；模型等待较久时减少停顿，不额外调用模型。完整回答、代码及步骤说明保留整段；关闭后每次整段发送。有人补充或要求暂停时，会停止尚未发出的部分。</p></section>`;
   }
   function renderGroupSocial(group, index) {
-    const social = { ...groupSocialDefaults, ...group.social };
+    const social = groupSocialSettings(group);
     const tools = socialReadTools();
     const readTools = Array.isArray(social.readTools) ? social.readTools : [];
     const missing = readTools.filter(id => !tools.some(tool => tool.id === id));
-    return `<tr class="group-social-row" data-group-index="${index}"><td colspan="6"><details class="group-social-settings" data-record-id="social:${escapeHTML(group.id || index)}"><summary><span>自由聊天与主动话题</span><span class="group-social-state ${social.enabled ? 'enabled' : ''}" data-group-social-status>${social.enabled ? social.proactive ? '自由聊天 · 可主动分享' : '自由聊天已开启' : '未开启'}</span></summary><div class="group-social-content"><div class="group-social-options"><label class="check-field"><input type="checkbox" data-group-social="enabled" ${social.enabled ? 'checked' : ''}><span>自由聊天</span></label><label class="check-field"><input type="checkbox" data-group-social="proactive" ${social.proactive ? 'checked' : ''}><span>允许主动开话题与分享</span></label></div><div class="form-grid"><label class="field">这个群感兴趣的内容<textarea data-group-social="interests" rows="2" maxlength="2000" placeholder="留空沿用账号兴趣；例如：独立游戏、科普、搞笑视频。">${escapeHTML(social.interests)}</textarea></label><label class="field">在这个群的说话风格<textarea data-group-social="style" rows="2" maxlength="2000" placeholder="留空沿用账号人设">${escapeHTML(social.style)}</textarea></label></div><p class="field-note">AI 根据话题和新鲜内容决定接话或保持安静。有值得分享的内容时再开启话题；仍需允许读取、发送并启动账号。</p><details class="group-social-advanced" data-record-id="social-advanced:${escapeHTML(group.id || index)}"><summary>活动时段、调用预算与素材工具</summary><div class="form-grid"><label class="field">主动参与开始时间<input type="time" data-group-social="activeStart" value="${escapeHTML(social.activeStart)}"></label><label class="field">主动参与结束时间<input type="time" data-group-social="activeEnd" value="${escapeHTML(social.activeEnd)}"><small>按本机当地时间；开始和结束相同表示全天。直接提问不受此时段限制。</small></label><label class="field">每小时主动模型调用<input type="number" data-group-social="decisionCallsPerHour" min="0" max="1000" value="${escapeHTML(social.decisionCallsPerHour)}"><small>每轮调用都计入预算；0 暂停自主判断，正常回答和连续追问单独处理。</small></label><label class="field">每小时主动发言上限<input type="number" data-group-social="repliesPerHour" min="0" max="100" value="${escapeHTML(social.repliesPerHour)}"></label><label class="field">素材检查间隔（分钟）<input type="number" data-group-social="proactiveIntervalMinutes" min="1" max="1440" value="${escapeHTML(social.proactiveIntervalMinutes)}"><small>只是检查机会，不会按时间固定发言。</small></label></div><p class="field-note">主动话题可用的只读工具</p><div class="group-social-tool-options">${tools.map(tool => `<label class="${tool.enabled ? '' : 'group-social-unavailable'}"><input type="checkbox" data-group-social-tool="${escapeHTML(tool.id)}" ${readTools.includes(tool.id) ? 'checked' : ''}><span>${escapeHTML(tool.label)}${tool.enabled ? '' : '（需先启用插件）'}</span></label>`).join('') || '<p class="field-note">还没有只读工具。可先在模块中导入并启用插件；不选工具也可以围绕群内话题聊天。</p>'}${missing.map(id => `<label class="group-social-unavailable"><input type="checkbox" data-group-social-tool="${escapeHTML(id)}" checked><span>${escapeHTML(id)}（暂不可用，可取消）</span></label>`).join('')}</div><p class="field-note">这里单独授权背景读取，不继承群友工具权限；不会主动调用评论等写入工具。群友记忆在「设置 → 群友记忆」逐群启用和确认。</p></details></div></details></td></tr>`;
+    return `<tr class="group-social-row" data-group-index="${index}"><td colspan="6"><details class="group-social-settings" data-record-id="social:${escapeHTML(group.id || index)}"><summary><span>自由聊天与主动话题</span><span class="group-social-state ${social.enabled ? 'enabled' : ''}" data-group-social-status>${social.enabled ? social.proactive ? '自由聊天 · 可主动分享' : '自由聊天已开启' : '未开启'}</span></summary><div class="group-social-content"><div class="group-social-options"><label class="check-field"><input type="checkbox" data-group-social="enabled" ${social.enabled ? 'checked' : ''}><span>自由聊天</span></label><label class="check-field"><input type="checkbox" data-group-social="proactive" ${social.proactive ? 'checked' : ''}><span>允许主动开话题与分享</span></label></div><div class="form-grid"><label class="field">这个群感兴趣的内容<textarea data-group-social="interests" rows="2" maxlength="2000" placeholder="留空沿用账号兴趣；例如：独立游戏、科普、搞笑视频。">${escapeHTML(social.interests)}</textarea></label><label class="field">在这个群的说话风格<textarea data-group-social="style" rows="2" maxlength="2000" placeholder="留空沿用账号人设">${escapeHTML(social.style)}</textarea></label></div><p class="field-note">AI 根据话题和新鲜内容决定接话或保持安静。有值得分享的内容时再开启话题；仍需允许读取、发送并启动账号。</p><details class="group-social-advanced" data-record-id="social-advanced:${escapeHTML(group.id || index)}"><summary>回复节奏、活动时段与素材工具</summary>${renderGroupDelivery(social)}<div class="form-grid"><label class="field">主动参与开始时间<input type="time" data-group-social="activeStart" value="${escapeHTML(social.activeStart)}"></label><label class="field">主动参与结束时间<input type="time" data-group-social="activeEnd" value="${escapeHTML(social.activeEnd)}"><small>按本机当地时间；开始和结束相同表示全天。直接提问不受此时段限制。</small></label><label class="field">每小时主动模型调用<input type="number" data-group-social="decisionCallsPerHour" min="0" max="1000" value="${escapeHTML(social.decisionCallsPerHour)}"><small>每轮调用都计入预算；0 暂停自主判断，正常回答和连续追问单独处理。</small></label><label class="field">每小时主动发言上限<input type="number" data-group-social="repliesPerHour" min="0" max="100" value="${escapeHTML(social.repliesPerHour)}"></label><label class="field">素材检查间隔（分钟）<input type="number" data-group-social="proactiveIntervalMinutes" min="1" max="1440" value="${escapeHTML(social.proactiveIntervalMinutes)}"><small>只是检查机会，不会按时间固定发言。</small></label></div><p class="field-note">主动话题可用的只读工具</p><div class="group-social-tool-options">${tools.map(tool => `<label class="${tool.enabled ? '' : 'group-social-unavailable'}"><input type="checkbox" data-group-social-tool="${escapeHTML(tool.id)}" ${readTools.includes(tool.id) ? 'checked' : ''}><span>${escapeHTML(tool.label)}${tool.enabled ? '' : '（需先启用插件）'}</span></label>`).join('') || '<p class="field-note">还没有只读工具。可先在模块中导入并启用插件；不选工具也可以围绕群内话题聊天。</p>'}${missing.map(id => `<label class="group-social-unavailable"><input type="checkbox" data-group-social-tool="${escapeHTML(id)}" checked><span>${escapeHTML(id)}（暂不可用，可取消）</span></label>`).join('')}</div><p class="field-note">这里单独授权背景读取，不继承群友工具权限；不会主动调用评论等写入工具。群友记忆在「设置 → 群友记忆」逐群启用和确认。</p>${renderQQReplyTools(group, social)}</details></div></details></td></tr>`;
   }
   function renderGroups() {
     const groups = draft?.groups ?? [];
@@ -685,6 +843,7 @@
     active.anchorPosition = { left: anchor.left, top: anchor.top };
   }
   function openGroupTriggerPicker(picker, { focusSelector = null, scrollTop = 0 } = {}) {
+    closeModelPicker();
     closeGroupTriggerPicker();
     const summary = $('summary', picker);
     const panel = $('.group-trigger-panel', picker);
@@ -738,10 +897,10 @@
     const active = napcatSettings();
     const activeNative = active.mode !== 'docker';
     $('#connection-napcat-mode').textContent = activeNative ? '本地安装' : 'Docker';
-    $('#connection-napcat-hint').textContent = activeNative && !active.executablePath
+    if (connectionBackend() === 'napcat') $('#connection-napcat-hint').textContent = activeNative && !active.executablePath
       ? '先在设置中选择启动文件，再打开 NapCat、扫码登录并连接。'
       : '先打开 NapCat，再到登录页扫码登录 QQ，最后连接。';
-    $('#napcat-login-token').classList.toggle('hidden', activeNative);
+    $('#napcat-login-token').classList.toggle('hidden', activeNative || connectionBackend() === 'snowluma');
     $$('[data-napcat-install-link]').forEach(link => {
       const mode = link.closest('#page-settings') ? settings.mode : active.mode;
       link.textContent = mode === 'docker' ? 'Docker 安装说明 ↗' : '本地安装说明 ↗';
@@ -778,7 +937,7 @@
   }
   async function openNapcatProgram() {
     const id = requireAccount();
-    if (connectionBackend() !== 'napcat') throw new Error('请自行启动已验证的 SnowLuma，再打开登录页和测试连接。');
+    if (connectionBackend() !== 'napcat') throw new Error('请在外部启动固定版本 SnowLuma，再打开管理页和测试连接。');
     if (!savedNapcatSettings || pendingNapcatSettings) throw new Error('请等待 NapCat 全局设置加载或保存完成。');
     const settings = napcatSettings();
     if (settings.mode === 'native' && !settings.executablePath) {
@@ -800,10 +959,13 @@
   function renderModules() {
     const modules = getModules();
     const container = state?.container === true;
+    const snow = connectionBackend() === 'snowluma';
+    $('#module-connector-note').textContent = `${snow ? 'SnowLuma 外部实例' : 'NapCat'} 负责连接 QQ；AI 使用账号控制中配置的 API，无需另外安装模型登录组件。`;
     const settings = napcatSettings();
     const native = settings.mode !== 'docker';
     const known = [
-      { id: 'napcat', name: 'NapCat · QQ 连接组件', kind: 'external', description: container ? '当前服务在容器中运行。请从宿主机或独立容器启动 NapCat，再填写 OneBot 连接地址。' : native ? '按官方说明安装，选择启动文件后即可直接打开。' : '通过 Docker 安装和管理此账号的 NapCat 容器。', icon: '⇄' },
+      snow ? { id: 'snowluma', name: 'SnowLuma · 外部 QQ 连接组件', kind: 'external', description: '在外部自行运行固定版本，分别配置 WS 事件和 HTTP 动作地址／Token。本应用不安装、启动或更新该组件；连接后仍需确认 QQ 与群权限。', icon: '⇄' }
+        : { id: 'napcat', name: 'NapCat · QQ 连接组件', kind: 'external', description: container ? '当前服务在容器中运行。请从宿主机或独立容器启动 NapCat，再填写 OneBot 连接地址。' : native ? '按官方说明安装，选择启动文件后即可直接打开。' : '通过 Docker 安装和管理此账号的 NapCat 容器。', icon: '⇄' },
       { id: 'deepseek', name: 'DeepSeek 接入', kind: 'builtin', description: '此账号独立 API Key。配置模型不等于启用社交回复或释放消息权限。', path: 'models.deepseek.enabled', icon: '◈' },
       { id: 'summary', name: '通知汇总', kind: 'builtin', description: '此账号独立通知参数和任务模型；默认保存在本地，可另外授权指定私聊目标。', path: 'summary.enabled', icon: '▤' },
       { id: 'favorites', name: 'QQ 收藏读取', kind: 'builtin', description: '读取此账号的收藏列表与摘要，使用独立收藏模型进行本地整理。', path: 'favorites.enabled', icon: '☆' }
@@ -815,15 +977,20 @@
       const actualStatus = module ? module.state ?? module.status ?? (module.installed ? 'installed' : 'missing') : 'unknown';
       let actions;
       if (builtin) actions = `<button class="button button-secondary button-small" data-go="${definition.id === 'deepseek' ? 'connections' : 'scenarios'}">${enabled ? '查看当前账号参数' : '为当前账号配置'} →</button>`;
+      else if (definition.id === 'snowluma') actions = `<a class="button button-secondary button-small" href="${snowlumaReferenceUrl}" target="_blank" rel="noopener noreferrer">固定版本与说明 ↗</a><button class="button button-quiet button-small" data-open-connector-login>打开管理页 ↗</button><button class="button button-quiet button-small" data-go="connections">配置连接 →</button>`;
       else if (definition.id === 'napcat') actions = container ? '<button class="button button-secondary button-small" data-go="connections">配置外部连接 →</button>' : native
         ? '<button class="button button-secondary button-small" data-open-napcat-program>打开 NapCat</button><a class="module-help-link" href="#settings">选择启动文件 →</a>'
         : '<button class="button button-secondary button-small" data-module-action="install" data-module="napcat">安装 / 检查</button><button class="button button-quiet button-small" data-open-napcat-program>打开 NapCat</button><button class="button button-quiet button-small" data-module-action="stop" data-module="napcat">停止</button>';
       const napcat = definition.id === 'napcat';
+      const snowluma = definition.id === 'snowluma';
+      const snowConnected = snowluma && state?.runtime?.backend === 'snowluma' && state.runtime.connected === true;
+      const snowVersion = snowConnected && state.runtime.connectorVersion?.appVersion;
       const status = napcat && native ? module?.kind === 'native' ? actualStatus : settings.executablePath ? 'configured' : 'not_configured' : actualStatus;
-      const version = napcat && native ? settings.executablePath || '在设置中选择 NapCat 启动文件' : builtin ? '启用功能仍受账号与消息权限约束' : module ? `版本 ${module.version || '未提供'} · ${module.installed ? '已安装' : '未确认安装'}` : '等待此账号的模块检查结果';
-      return `<article class="module-card ${builtin ? 'builtin' : 'external'}" data-module-card="${definition.id}"><div class="module-main"><div class="module-top"><span class="module-icon">${definition.icon}</span>${builtin ? `<span class="pill ${enabled ? 'pill-green' : 'pill-neutral'}">${enabled ? '此账号配置已启用' : '内置 · 尚未启用'}</span>` : pill(status)}</div><h2>${escapeHTML(definition.name)}</h2>${napcat ? `<span class="module-napcat-mode">${native ? '本地安装' : 'Docker'}</span>` : ''}<p>${escapeHTML(definition.description)}</p><div class="module-version ${napcat && native ? 'native-path' : ''}">${escapeHTML(version)}</div>${napcat ? `<div class="napcat-help-links"><a href="${napcatInstallUrl(settings.mode)}" target="_blank" rel="noopener noreferrer">${native ? '本地' : 'Docker'}安装说明 ↗</a><a href="#settings">更改方式</a></div>` : ''}</div><div class="module-actions">${actions}</div></article>`;
+      const version = snowluma ? `${snowVersion ? `已连接协议版本 ${snowVersion} · ` : ''}参考版本 v${state?.connectors?.snowluma?.review?.version || '2.4.2'} · 实际安装及登录状态由外部实例提供` : napcat && native ? settings.executablePath || '在设置中选择 NapCat 启动文件' : builtin ? '启用功能仍受账号与消息权限约束' : module ? `版本 ${module.version || '未提供'} · ${module.installed ? '已安装' : '未确认安装'}` : '等待此账号的模块检查结果';
+      return `<article class="module-card ${builtin ? 'builtin' : 'external'}" data-module-card="${definition.id}"><div class="module-main"><div class="module-top"><span class="module-icon">${definition.icon}</span>${builtin ? `<span class="pill ${enabled ? 'pill-green' : 'pill-neutral'}">${enabled ? '此账号配置已启用' : '内置 · 尚未启用'}</span>` : snowluma ? `<span class="pill ${snowConnected ? 'pill-green' : 'pill-neutral'}">${snowConnected ? '已连接' : '外部运行 · 未连接'}</span>` : pill(status)}</div><h2>${escapeHTML(definition.name)}</h2>${napcat ? `<span class="module-napcat-mode">${native ? '本地安装' : 'Docker'}</span>` : ''}<p>${escapeHTML(definition.description)}</p><div class="module-version ${napcat && native ? 'native-path' : ''}">${escapeHTML(version)}</div>${napcat ? `<div class="napcat-help-links"><a href="${napcatInstallUrl(settings.mode)}" target="_blank" rel="noopener noreferrer">${native ? '本地' : 'Docker'}安装说明 ↗</a><a href="#settings">更改方式</a></div>` : ''}</div><div class="module-actions">${actions}</div></article>`;
     }).join('');
     renderCustomPlugins();
+    renderMCP();
   }
   function pluginRunView(pluginId, accountId = selectedAccountId) {
     const key = `${accountId}:${pluginId}`;
@@ -854,6 +1021,317 @@
     }
     return grant;
   }
+  function mcpServers(config = draft) { return config?.mcp?.servers || []; }
+  function rememberMCPCatalogue(accountId, records) {
+    const known = mcpCatalogues.get(accountId) || new Map();
+    for (const record of records || []) {
+      const id = record.serverId || record.id;
+      if (!id) continue;
+      const previous = known.get(id);
+      const updatedAt = record.testedAt || record.checkedAt || '';
+      const previousAt = previous?.testedAt || previous?.checkedAt || '';
+      if (!previous || !previousAt || updatedAt >= previousAt) known.set(id, record);
+    }
+    mcpCatalogues.set(accountId, known);
+  }
+  function mcpConnectionSnapshot(server, editor) {
+    // Local stale-response check only; backend HMAC remains the authority.
+    return JSON.stringify([server.transport, server.command || '', server.args || [], server.url || '', [...(server.envKeys || [])].sort(), [...(server.headerKeys || [])].sort(),
+      Object.entries(editor?.secretUpdates || {}).filter(([key]) => key.startsWith(`mcpSecret:${server.id}:`)).sort(([left], [right]) => left.localeCompare(right))]);
+  }
+  function mcpCatalogue(serverId, accountId = selectedAccountId) {
+    const record = mcpCatalogues.get(accountId)?.get(serverId) || {};
+    const key = `${accountId}:${serverId}`, change = mcpChangedConnections.get(key), editor = editors.get(accountId);
+    if (!change) return record;
+    const server = mcpServers(editor?.draft).find(item => item.id === serverId);
+    if (!server || mcpConnectionSnapshot(server, editor) === change.previousSnapshot) { mcpChangedConnections.delete(key); return record; }
+    return { ...record, connectionHash: '', status: 'disconnected', requiresTest: true, lastError: '连接参数或密钥已修改，请重新测试并确认工具定义。' };
+  }
+  function mcpToolSources() {
+    return mcpServers().map(server => {
+      const catalogue = mcpCatalogue(server.id);
+      const tools = (catalogue.tools || []).flatMap(tool => {
+        const policy = server.tools?.find(item => item.name === tool.name);
+        if (!tool.id || !tool.supported || !policy?.enabled || policy.definitionHash !== tool.definitionHash || !catalogue.connectionHash || policy.connectionHash !== catalogue.connectionHash) return [];
+        return [{ ...tool, effect: policy.effect === 'read' ? 'read' : 'write' }];
+      });
+      return { id: `mcp:${server.id}`, name: server.label || server.id, source: 'mcp', enabled: server.enabled === true, tools };
+    });
+  }
+  function mcpError(message, selector) {
+    const element = $(selector);
+    element.textContent = errorMessage(message); element.classList.remove('hidden');
+  }
+  function mcpSecretKey(serverId, type, key) { return `mcpSecret:${serverId}:${type}:${type === 'header' ? key.toLowerCase() : key}`; }
+  function mcpStatus(server, catalogue, liveStatus) {
+    const labels = { connected: ['已连接', 'green'], connecting: ['连接中', 'orange'], tested: ['已测试', 'green'], disconnected: ['未连接', 'neutral'], disabled: ['已停用', 'neutral'], error: ['连接失败', 'red'] };
+    if (catalogue.requiresTest) return ['待重新测试', 'orange'];
+    const applied = state?.applied?.mcp?.servers?.find(item => item.id === server.id);
+    const live = liveStatus?.status || liveStatus?.state;
+    const matched = liveStatus?.connectionHash && catalogue.connectionHash && liveStatus.connectionHash === catalogue.connectionHash;
+    if (applied?.enabled && liveStatus && (matched || !liveStatus.connectionHash && ['error', 'connecting', 'disconnected'].includes(live))) {
+      const status = labels[live] || ['状态待确认', 'orange'];
+      if (!server.enabled && status[1] !== 'red') return [`${status[0]} · 待停用`, 'orange'];
+      return status;
+    }
+    if ((catalogue.status || catalogue.state) === 'error') return ['测试失败', 'red'];
+    if (catalogue.testedAt || catalogue.checkedAt) return server.enabled ? ['已测试 · 待应用', 'orange'] : ['已测试 · 未启用', 'neutral'];
+    return server.enabled ? ['尚未测试', 'orange'] : ['已停用', 'neutral'];
+  }
+  function mcpLiveStatus(serverId) { return state?.mcp?.status?.find(item => (item.serverId || item.id) === serverId); }
+  function mcpDisplayError(catalogue, liveStatus) {
+    return liveStatus && (!liveStatus.connectionHash || liveStatus.connectionHash === catalogue.connectionHash) ? liveStatus.lastError || catalogue.lastError : catalogue.lastError;
+  }
+  function mcpToolApproval(server, catalogue, tool) {
+    const policy = server.tools?.find(item => item.name === tool.name);
+    const valid = Boolean(tool.supported && catalogue.connectionHash && policy?.definitionHash === tool.definitionHash && policy.connectionHash === catalogue.connectionHash);
+    const key = `${selectedAccountId}:${server.id}:${tool.name}`;
+    let pending = mcpApprovalDrafts.get(key);
+    if (!pending || pending.definitionHash !== tool.definitionHash || pending.connectionHash !== catalogue.connectionHash) {
+      pending = { enabled: valid && policy?.enabled === true, effect: valid && policy?.effect === 'read' ? 'read' : 'write', definitionHash: tool.definitionHash, connectionHash: catalogue.connectionHash };
+      mcpApprovalDrafts.set(key, pending);
+    }
+    return `<article class="mcp-discovered-tool" data-mcp-tool="${escapeHTML(tool.name)}"><div class="mcp-tool-heading"><strong>${escapeHTML(tool.title || tool.name)}</strong><span class="pill ${valid && policy?.enabled ? 'pill-green' : 'pill-neutral'}">${!tool.supported ? '暂不支持' : valid && policy?.enabled ? '已确认' : policy && !valid ? '需重新确认' : '未启用'}</span></div><code class="mcp-remote-name">${escapeHTML(tool.name)}</code><p>${escapeHTML(tool.description || '服务未提供说明')}</p>${tool.readOnlyHint !== undefined ? `<p class="field-note">服务建议：${tool.readOnlyHint ? '只读' : '可能修改数据'}。仅供参考，下面由你决定。</p>` : ''}${!tool.supported ? `<p class="mcp-unsupported">${escapeHTML(tool.unsupportedReason || '这个工具的输入格式暂不受支持。')}</p>` : ''}<div class="mcp-tool-policy"><label class="check-field"><input type="checkbox" data-mcp-approval-field="enabled" ${pending.enabled ? 'checked' : ''} ${!tool.supported ? 'disabled' : ''}>启用此工具</label><label class="field">操作类型<select data-mcp-approval-field="effect" ${!tool.supported ? 'disabled' : ''}><option value="write" ${pending.effect === 'write' ? 'selected' : ''}>可修改数据</option><option value="read" ${pending.effect === 'read' ? 'selected' : ''}>只读查询</option></select></label><button type="button" class="button button-secondary button-small" data-mcp-confirm-tool ${!tool.supported || !catalogue.connectionHash ? 'disabled' : ''}>确认工具定义</button></div><details class="mcp-tool-schema"><summary>查看输入格式与定义版本</summary><p class="field-note">定义 ${escapeHTML(String(tool.definitionHash || '').slice(0, 16))} · 连接 ${escapeHTML(String(catalogue.connectionHash || '').slice(0, 16))}</p><pre>${escapeHTML(JSON.stringify(tool.inputSchema || {}, null, 2).slice(0, 16000))}</pre></details></article>`;
+  }
+  function renderMCP({ force = false } = {}) {
+    const container = $('#mcp-service-cards');
+    if (!container) return;
+    const servers = mcpServers();
+    $('#mcp-account-note').textContent = state ? `当前账号：${accountName()} · 服务、密钥和工具范围独立保存。` : '请先选择一个账号，再接入 MCP 服务。';
+    $('#mcp-server-count').textContent = `${servers.length} 个服务`;
+    $$('#mcp-add, #mcp-import, #mcp-refresh, #mcp-example-notes, #mcp-example-bilibili').forEach(button => { button.disabled = !state; });
+    // Keep live faults visible while preserving focused, unsaved grant inputs.
+    for (const card of $$('[data-mcp-server]', container)) {
+      const server = servers.find(item => item.id === card.dataset.mcpServer);
+      if (!server) continue;
+      const catalogue = mcpCatalogue(server.id), liveStatus = mcpLiveStatus(server.id), status = mcpStatus(server, catalogue, liveStatus);
+      const badge = $('.custom-plugin-heading>.pill', card);
+      if (badge) { badge.textContent = status[0]; badge.className = `pill pill-${status[1]}`; }
+      const issue = $('[data-mcp-issue]', card), message = mcpDisplayError(catalogue, liveStatus);
+      if (issue) { issue.textContent = message || ''; issue.classList.toggle('hidden', !message); }
+    }
+    const signature = JSON.stringify([selectedAccountId, servers, [...(mcpCatalogues.get(selectedAccountId)?.values() || [])], state?.mcp?.status, draft?.tools?.grants, [...mcpTests], Object.keys(secretUpdates)]);
+    const sameAccount = mcpRenderAccount === selectedAccountId;
+    if (!force && sameAccount && container.contains(document.activeElement)) return;
+    if (!force && sameAccount && signature === mcpRenderSignature) return;
+    mcpRenderSignature = signature; mcpRenderAccount = selectedAccountId;
+    const opened = new Set($$('details[open][data-mcp-details]', container).map(item => item.dataset.mcpDetails));
+    if (!servers.length) { container.innerHTML = '<div class="empty-state"><strong>还没有 MCP 服务</strong>导入 mcpServers JSON，或手动填写已经安装的服务。</div>'; return; }
+    const sources = mcpToolSources();
+    container.innerHTML = servers.map(server => {
+      const catalogue = mcpCatalogue(server.id);
+      const source = sources.find(item => item.id === `mcp:${server.id}`);
+      const testing = mcpTests.has(`${selectedAccountId}:${server.id}`);
+      const detailsKey = `mcp:${server.id}`;
+      const liveStatus = mcpLiveStatus(server.id);
+      const status = mcpStatus(server, catalogue, liveStatus);
+      const canDisconnect = liveStatus?.connected === true || ['connected', 'connecting'].includes(liveStatus?.status || liveStatus?.state);
+      const lastError = mcpDisplayError(catalogue, liveStatus);
+      return `<article class="mcp-service-card" data-mcp-server="${escapeHTML(server.id)}" data-plugin-id="mcp:${escapeHTML(server.id)}"><div class="custom-plugin-heading"><div><h3>${escapeHTML(server.label || server.id)}</h3><span class="plugin-meta">${server.transport === 'stdio' ? '本地程序 · stdio' : server.transport === 'sse' ? '远程 SSE' : '远程 HTTP'} · ${escapeHTML(server.id)}</span></div><span class="pill pill-${status[1]}">${status[0]}</span></div><p class="mcp-service-endpoint">${escapeHTML(server.transport === 'stdio' ? server.command : server.url)}</p><label class="check-field"><input type="checkbox" data-mcp-server-enabled ${server.enabled ? 'checked' : ''}>为当前账号启用服务</label><div class="mcp-service-actions"><button type="button" class="button button-secondary button-small" data-mcp-action="test" ${testing ? 'disabled' : ''}>${testing ? '测试中…' : '测试连接 · 发现工具'}</button><button type="button" class="button button-quiet button-small" data-mcp-action="edit">编辑</button><button type="button" class="button button-quiet button-small" data-mcp-action="disconnect" ${!canDisconnect ? 'disabled' : ''}>断开连接</button><button type="button" class="button button-quiet button-small" data-mcp-action="delete">移除</button></div><p class="mcp-unsupported ${lastError ? '' : 'hidden'}" data-mcp-issue>${escapeHTML(lastError || '')}</p><p class="field-note">${catalogue.testedAt || catalogue.checkedAt ? `最近发现：${escapeHTML(formatTime(catalogue.testedAt || catalogue.checkedAt))} · ` : ''}测试不会应用账号参数或授予工具权限。</p><details class="mcp-tool-definitions" data-mcp-details="${escapeHTML(detailsKey)}" ${opened.has(detailsKey) ? 'open' : ''}><summary>发现的工具 · ${(catalogue.tools || []).length} 项</summary>${catalogue.tools?.length ? catalogue.tools.map(tool => mcpToolApproval(server, catalogue, tool)).join('') : '<p class="field-note">先明确测试连接，再检查工具描述与输入格式。</p>'}</details>${source?.tools.length ? renderPluginTools(source) : ''}</article>`;
+    }).join('');
+  }
+  function stageMCPChanges(accountId = selectedAccountId) {
+    const editor = editors.get(accountId);
+    if (!editor) throw new Error('原账号配置已关闭，请重新选择账号。');
+    if (accountId === selectedAccountId) {
+      draft = editor.draft; secretUpdates = editor.secretUpdates || {};
+      markDirty(); renderMCP({ force: true });
+    } else { editor.dirty = true; editor.editVersion = (editor.editVersion || 0) + 1; renderAccountDirectory(); }
+  }
+  function addMCPSecretRow(type, key = '', pendingValue = '', saved = false) {
+    const row = document.createElement('div'); row.className = 'mcp-secret-row'; row.dataset.mcpSecretType = type;
+    row.innerHTML = `<label class="field"><span class="sr-only">${type === 'env' ? '变量名' : '请求头名称'}</span><input data-mcp-secret-key placeholder="${type === 'env' ? 'API_KEY' : 'authorization'}" spellcheck="false" maxlength="128" value="${escapeHTML(key)}"></label><label class="field"><span class="sr-only">值</span><input type="password" data-mcp-secret-value autocomplete="new-password" spellcheck="false" placeholder="${saved ? '已保存，留空保留' : '填写变量或请求头的值'}"></label><button type="button" class="button button-quiet button-small" data-mcp-remove-secret>移除</button>`;
+    $('[data-mcp-secret-value]', row).value = pendingValue;
+    $(`#mcp-${type === 'env' ? 'env' : 'header'}-rows`).append(row);
+  }
+  function renderMCPTransportFields() {
+    const local = $('#mcp-service-transport').value === 'stdio';
+    $('#mcp-stdio-fields').classList.toggle('hidden', !local);
+    $('#mcp-remote-fields').classList.toggle('hidden', local);
+    $('#mcp-env-section').classList.toggle('hidden', !local);
+    $('#mcp-header-section').classList.toggle('hidden', local);
+    $('#mcp-service-command').required = local;
+    $('#mcp-service-url').required = !local;
+  }
+  function editMCPService(serverId = '') {
+    const id = requireAccount();
+    const existing = serverId ? mcpServers().find(entry => entry.id === serverId) : null;
+    if (serverId && !existing) throw new Error('这个服务已不在账号配置中，请刷新后重试。');
+    const server = existing || { id: `mcp-${crypto.randomUUID().slice(0, 8)}`, label: '', enabled: false, transport: 'stdio', command: '', args: [], url: '', envKeys: [], headerKeys: [], timeoutSeconds: 30, tools: [] };
+    mcpEditing = { accountId: id, entry: clone(server), existing: Boolean(existing), editVersion, revision: state.revision, secretSnapshot: clone(secretUpdates) };
+    $('#mcp-service-form').reset();
+    $('#mcp-service-error').classList.add('hidden');
+    $('#mcp-service-title').textContent = existing ? '编辑 MCP 服务' : '添加 MCP 服务';
+    $('#mcp-service-account').textContent = `「${accountName(id)}」 · ${server.id} · 只写入本账号待保存参数`;
+    $('#mcp-service-label').value = server.label || '';
+    $('#mcp-service-transport').value = server.transport || 'stdio';
+    $('#mcp-service-command').value = server.command || '';
+    $('#mcp-service-args').value = JSON.stringify(server.args || [], null, 2);
+    $('#mcp-service-url').value = server.url || '';
+    $('#mcp-service-timeout').value = server.timeoutSeconds || 30;
+    $('#mcp-env-rows').replaceChildren(); $('#mcp-header-rows').replaceChildren();
+    for (const type of ['env', 'header']) for (const key of server[type === 'env' ? 'envKeys' : 'headerKeys'] || []) {
+      const name = mcpSecretKey(server.id, type, key);
+      addMCPSecretRow(type, key, secretUpdates[name] || '', state?.secrets?.[name] === true || Boolean(secretUpdates[name]));
+    }
+    renderMCPTransportFields(); $('#mcp-service-dialog').showModal(); $('#mcp-service-label').focus();
+  }
+  window.addEventListener('qq-service-mcp-preset', event => {
+    const detail = event.detail || {}, server = detail.server;
+    if (!server || detail.accountId !== selectedAccountId) return;
+    try {
+      editMCPService();
+      mcpEditing.entry = { ...clone(server), id: mcpEditing.entry.id, enabled: false, tools: [] };
+      $('#mcp-service-label').value = server.label || '';
+      $('#mcp-service-transport').value = server.transport;
+      $('#mcp-service-command').value = server.command || '';
+      $('#mcp-service-args').value = JSON.stringify(server.args || [], null, 2);
+      $('#mcp-service-url').value = server.url || '';
+      $('#mcp-service-timeout').value = server.timeoutSeconds || 30;
+      $('#mcp-env-rows').replaceChildren(); $('#mcp-header-rows').replaceChildren();
+      for (const name of detail.requiredEnv || []) addMCPSecretRow('env', name);
+      renderMCPTransportFields();
+    } catch (error) { toast(errorMessage(error), 'error'); }
+  });
+  function prefillMCPExample(kind) {
+    editMCPService();
+    const bilibili = kind === 'bilibili';
+    $('#mcp-service-label').value = bilibili ? 'Bilibili 只读工具' : '计算与临时笔记';
+    $('#mcp-service-command').value = 'node';
+    $('#mcp-service-args').value = JSON.stringify([`{appDir}/examples/mcp/${bilibili ? 'bilibili' : 'local-notes'}.mjs`], null, 2);
+  }
+  function readMCPSecretRows(type, entry, editor) {
+    const keys = [], updates = {};
+    for (const row of $$(`#mcp-${type === 'env' ? 'env' : 'header'}-rows .mcp-secret-row`)) {
+      let key = $('[data-mcp-secret-key]', row).value.trim();
+      const value = $('[data-mcp-secret-value]', row).value;
+      if (!key && !value) continue;
+      if (type === 'header') key = key.toLowerCase();
+      const valid = type === 'env' ? /^[A-Za-z_][A-Za-z0-9_]{0,127}$/.test(key) : /^[!#$%&'*+\-.^_`|~0-9A-Za-z]{1,128}$/.test(key);
+      if (!valid) throw new Error(type === 'env' ? '环境变量名须以字母或下划线开头，只含字母、数字和下划线。' : '请填写有效且不重复的 HTTP 请求头名称。');
+      if (keys.includes(key)) throw new Error(`名称重复：${key}`);
+      const name = mcpSecretKey(entry.id, type, key);
+      if (!value && !editor.state?.secrets?.[name] && !editor.secretUpdates?.[name]) throw new Error(`请填写 ${key} 的值；留空仅用于保留已保存的值。`);
+      keys.push(key); if (value) updates[name] = value;
+    }
+    return { keys, updates };
+  }
+  function saveMCPService() {
+    const editing = mcpEditing;
+    if (!editing || !$('#mcp-service-form').reportValidity()) return;
+    const editor = editors.get(editing.accountId);
+    if (!editor || editor.editVersion !== editing.editVersion || editor.state.revision !== editing.revision) throw new Error('编辑期间这个账号的参数已变化，请重新打开服务配置。');
+    const entry = clone(editing.entry), local = $('#mcp-service-transport').value === 'stdio';
+    let args = [];
+    if (local) { try { args = JSON.parse($('#mcp-service-args').value || '[]'); } catch { throw new Error('参数须为 JSON 字符串数组，例如 ["/path/server.mjs"]。'); } }
+    if (!Array.isArray(args) || args.some(arg => typeof arg !== 'string')) throw new Error('每个启动参数都须是字符串。');
+    const variables = readMCPSecretRows(local ? 'env' : 'header', entry, editor);
+    const updates = variables.updates;
+    const next = { ...entry, label: $('#mcp-service-label').value.trim(), transport: $('#mcp-service-transport').value,
+      command: local ? $('#mcp-service-command').value.trim() : '', args, url: local ? '' : $('#mcp-service-url').value.trim(),
+      envKeys: local ? variables.keys : [], headerKeys: local ? [] : variables.keys,
+      timeoutSeconds: Number($('#mcp-service-timeout').value), tools: entry.tools || [] };
+    if (!next.label || local && !next.command) throw new Error('请填写服务名称和有效的程序或命令。');
+    const connectionFields = server => [server.transport, server.command || '', server.args || [], server.url || '', [...(server.envKeys || [])].sort(), [...(server.headerKeys || [])].sort()];
+    const changed = editing.existing && (JSON.stringify(connectionFields(entry)) !== JSON.stringify(connectionFields(next))
+      || Object.entries(updates).some(([key, value]) => value !== editing.secretSnapshot[key]));
+    if (changed) { next.enabled = false; next.tools = next.tools.map(tool => ({ ...tool, enabled: false })); }
+    editor.draft.mcp ??= { servers: [] };
+    const index = editor.draft.mcp.servers.findIndex(server => server.id === entry.id);
+    if (editing.existing && index < 0) throw new Error('这个服务已被移除，请刷新后重试。');
+    if (index < 0) editor.draft.mcp.servers.push(next); else editor.draft.mcp.servers[index] = next;
+    editor.secretUpdates ??= {};
+    for (const type of ['env', 'header']) for (const key of entry[type === 'env' ? 'envKeys' : 'headerKeys'] || []) {
+      if (!(next[type === 'env' ? 'envKeys' : 'headerKeys'] || []).includes(key)) delete editor.secretUpdates[mcpSecretKey(entry.id, type, key)];
+    }
+    Object.assign(editor.secretUpdates, updates);
+    if (changed) {
+      const key = `${editing.accountId}:${entry.id}`;
+      mcpChangedConnections.set(key, { previousSnapshot: mcpChangedConnections.get(key)?.previousSnapshot || mcpConnectionSnapshot(entry, { secretUpdates: editing.secretSnapshot }) });
+    }
+    stageMCPChanges(editing.accountId); $('#mcp-service-dialog').close();
+    toast(changed ? '连接参数已修改，服务已停用；请重新测试、确认工具，再保存应用。' : 'MCP 服务已放入本账号配置，保存应用后生效。', 'info');
+  }
+  async function testMCPService(serverId) {
+    const id = requireAccount(), editor = editors.get(id), server = mcpServers(editor.draft).find(item => item.id === serverId);
+    if (!server) throw new Error('服务配置不存在，请刷新后重试。');
+    const confirmed = { config: clone(editor.draft), secretUpdates: clone(editor.secretUpdates || {}), revision: editor.state.revision, editVersion: editor.editVersion };
+    const confirmedConnection = mcpConnectionSnapshot(server, editor);
+    const local = server.transport === 'stdio';
+    if (!await openDialog(local ? '启动本地 MCP 程序并测试？' : '连接远程 MCP 服务并测试？', `<p>本次将${local ? '启动你配置的本地程序' : '连接你配置的远程地址'}，读取服务提供的工具定义，然后关闭测试连接。</p><pre class="mcp-test-target">${escapeHTML(local ? `${server.command}\n${JSON.stringify(server.args || [])}` : server.url)}</pre>${local ? '<p>应用不会单独安装依赖；所选启动器可能下载并运行第三方代码，请确认来源和版本。</p>' : ''}<p>本次不执行发现的工具，不应用账号参数或授予权限。</p>`, '确认测试连接')) return;
+    const currentEditor = editors.get(id), confirmedServer = mcpServers(currentEditor?.draft).find(item => item.id === serverId);
+    if (!currentEditor || !confirmedServer || currentEditor.state.revision !== confirmed.revision || currentEditor.editVersion !== confirmed.editVersion || mcpConnectionSnapshot(confirmedServer, currentEditor) !== confirmedConnection) throw new Error('确认期间服务或账号参数已变化，未运行程序；请重新检查并测试。');
+    const key = `${id}:${serverId}`; mcpTests.add(key); renderMCP({ force: true });
+    try {
+      const testedSnapshot = confirmedConnection;
+      const result = await accountApi('/mcp/test', { serverId, config: confirmed.config, secretUpdates: confirmed.secretUpdates, revision: confirmed.revision }, 'POST', id);
+      if (result.server) rememberMCPCatalogue(id, [result.server]);
+      const current = mcpServers(editors.get(id)?.draft).find(item => item.id === serverId);
+      const unchanged = current && mcpConnectionSnapshot(current, editors.get(id)) === testedSnapshot;
+      if (unchanged) mcpChangedConnections.delete(key);
+      if (id === selectedAccountId) renderMCP({ force: true });
+      if (id === selectedAccountId) $$('[data-mcp-server]').find(card => card.dataset.mcpServer === serverId)?.querySelector('.mcp-tool-definitions')?.setAttribute('open', '');
+      toast(unchanged ? `「${accountName(id)}」MCP 测试完成；请检查并确认工具定义。` : '测试期间服务参数已变化，请按当前配置重新测试。', 'info');
+    } catch (error) {
+      const previous = mcpCatalogues.get(id)?.get(serverId) || {};
+      rememberMCPCatalogue(id, [{ ...previous, serverId, status: 'error', lastError: errorMessage(error) }]);
+      throw error;
+    } finally { mcpTests.delete(key); if (id === selectedAccountId) renderMCP({ force: true }); }
+  }
+  async function importMCPConfiguration() {
+    const id = requireAccount(mcpImportAccount), editor = editors.get(id);
+    let document;
+    try { document = JSON.parse($('#mcp-import-json').value); } catch { throw new Error('配置不是有效 JSON，请检查引号、逗号和括号。'); }
+    const sentVersion = editor.editVersion;
+    mcpImportPending = true;
+    $$('#mcp-import-close, #mcp-import-cancel, #mcp-import-file').forEach(button => { button.disabled = true; });
+    $('#mcp-import-json').readOnly = true;
+    try {
+      const result = await accountApi('/mcp/import', { document, config: clone(editor.draft), secretUpdates: clone(editor.secretUpdates || {}), revision: editor.state.revision }, 'POST', id);
+      acceptState(result, { accountId: id, replaceDraft: true, expectedEditVersion: sentVersion });
+      $('#mcp-import-dialog').close(); if (id === selectedAccountId) renderMCP({ force: true });
+      toast(`「${accountName(id)}」已导入停用的 MCP 配置，未启动任何服务。`, 'info');
+    } finally {
+      mcpImportPending = false; $('#mcp-import-json').readOnly = false;
+      $$('#mcp-import-close, #mcp-import-cancel, #mcp-import-file').forEach(button => { button.disabled = false; });
+    }
+  }
+  async function removeMCPService(serverId) {
+    const id = requireAccount(), editor = editors.get(id), server = mcpServers(editor.draft).find(item => item.id === serverId);
+    if (!server) return;
+    const version = editor.editVersion, revision = editor.state.revision;
+    if (!await openDialog('移除 MCP 服务？', `<p>从「${escapeHTML(accountName(id))}」的待保存配置中移除 ${escapeHTML(server.label || server.id)}，同时移除它的工具调用和主动素材授权。</p><p>其他服务与账号不受影响。保存并应用后，后台停止使用这个服务。</p>`, '移除服务')) return;
+    if (editors.get(id)?.editVersion !== version || editors.get(id)?.state.revision !== revision) throw new Error('确认期间此账号参数已变化，请重新检查后移除。');
+    editor.draft.mcp.servers = editor.draft.mcp.servers.filter(item => item.id !== serverId);
+    const prefix = `mcp:${serverId}/`;
+    if (editor.draft.tools?.grants) editor.draft.tools.grants = editor.draft.tools.grants.filter(grant => !grant.tool.startsWith(prefix));
+    for (const group of editor.draft.groups || []) if (Array.isArray(group.social?.readTools)) group.social.readTools = group.social.readTools.filter(tool => !tool.startsWith(prefix));
+    for (const key of Object.keys(editor.secretUpdates || {})) if (key.startsWith(`mcpSecret:${serverId}:`)) delete editor.secretUpdates[key];
+    stageMCPChanges(id); toast('服务与相关授权已从本账号待保存配置中移除，保存应用后生效。', 'info');
+  }
+  async function refreshMCPState() {
+    const id = requireAccount();
+    const result = await accountApi('/mcp', undefined, 'GET', id);
+    const editor = editors.get(id);
+    if (editor?.state) editor.state.mcp = result;
+    if (id === selectedAccountId) state = editor.state;
+    rememberMCPCatalogue(id, result.servers || []);
+    if (id === selectedAccountId) renderMCP({ force: true });
+    toast('MCP 状态已刷新，未启动新的服务。', 'info');
+  }
+  function confirmMCPTool(serverId, name) {
+    const server = mcpServers().find(item => item.id === serverId), catalogue = mcpCatalogue(serverId);
+    const tool = catalogue.tools?.find(item => item.name === name);
+    if (!server || !tool?.supported || !catalogue.connectionHash) throw new Error('请先测试当前连接，确认工具输入格式受支持。');
+    const pending = mcpApprovalDrafts.get(`${selectedAccountId}:${serverId}:${name}`);
+    if (!pending || pending.definitionHash !== tool.definitionHash || pending.connectionHash !== catalogue.connectionHash) throw new Error('工具或连接定义已变化，请重新检查。');
+    server.tools ??= [];
+    const approval = { name: tool.name, enabled: pending.enabled === true, effect: pending.effect === 'read' ? 'read' : 'write', definitionHash: tool.definitionHash, connectionHash: catalogue.connectionHash };
+    const index = server.tools.findIndex(item => item.name === name);
+    if (index < 0) server.tools.push(approval); else server.tools[index] = approval;
+    stageMCPChanges();
+    toast('工具定义已确认到本账号参数；继续设置调用范围，再保存、应用。', 'info');
+  }
   function renderPluginSecrets(plugin) {
     if (!plugin.secretsSchema?.length) return '';
     return `<section class="plugin-secrets"><h4>插件登录凭据</h4><p>与普通参数分开加密保存在本机，只按声明传给这个插件；不会传入其他插件的参数。</p>${plugin.secretsSchema.map(field => {
@@ -865,12 +1343,12 @@
   }
   function renderPluginTools(plugin) {
     if (!plugin.tools?.length) return '';
-    return `<section class="plugin-tools-list"><h4>可用工具</h4>${plugin.tools.map(tool => {
-      const toolId = `${plugin.id}/${tool.name}`;
+    return `<section class="plugin-tools-list"><h4>${['mcp', 'qq'].includes(plugin.source) ? '当前账号调用范围' : '可用工具'}</h4>${plugin.tools.map(tool => {
+      const toolId = ['mcp', 'qq'].includes(plugin.source) ? tool.id : `${plugin.id}/${tool.name}`;
       const grant = toolGrant(toolId);
       const buffered = grant || toolGrantDrafts.get(`${selectedAccountId}:${toolId}`);
       const write = tool.effect === 'write';
-      return `<div class="plugin-tool" data-plugin-tool="${escapeHTML(toolId)}"><div class="plugin-tool-title"><label class="check-field"><input type="checkbox" data-tool-grant-enable ${grant ? 'checked' : ''} ${!state ? 'disabled' : ''}><span>${escapeHTML(tool.name)}</span></label><span class="pill ${write ? 'pill-orange' : 'pill-neutral'}">${write ? '修改数据' : '只读查询'}</span></div><p>${escapeHTML(tool.description || '')}</p><fieldset class="plugin-tool-grant-fields" ${!state || !grant ? 'disabled' : ''}><legend class="sr-only">${escapeHTML(tool.name)} 调用范围</legend><label class="field">允许的群号<input data-tool-grant-field="groupIds" inputmode="numeric" placeholder="多个群号用逗号分隔" value="${escapeHTML(buffered?.groupIds?.join(', ') || '')}" maxlength="2200"><small>还需在群与消息权限中允许读取和发送。</small></label><label class="field">允许调用的 QQ<input data-tool-grant-field="userIds" inputmode="numeric" placeholder="${write ? '写入工具必须指定调用人' : '留空表示这些群内的成员'}" value="${escapeHTML(buffered?.userIds?.join(', ') || '')}" maxlength="2200"><small>${write ? '必须指定 QQ，多个号码用逗号分隔。' : '多个 QQ 用逗号分隔；留空表示所选群内的成员。'}</small></label>${write ? `<label class="check-field tool-write-grant"><input type="checkbox" data-tool-grant-write ${buffered?.allowWrite ? 'checked' : ''}><span>允许修改外部应用数据</span></label>` : ''}</fieldset></div>`;
+      return `<div class="plugin-tool" data-plugin-tool="${escapeHTML(toolId)}"><div class="plugin-tool-title"><label class="check-field"><input type="checkbox" data-tool-grant-enable ${grant ? 'checked' : ''} ${!state ? 'disabled' : ''}><span>${escapeHTML(tool.name)}</span></label><span class="pill ${write ? 'pill-orange' : 'pill-neutral'}">${write ? (plugin.source === 'qq' ? 'QQ 互动' : '修改数据') : '只读查询'}</span></div><p>${escapeHTML(tool.description || '')}</p><fieldset class="plugin-tool-grant-fields" ${!state || !grant ? 'disabled' : ''}><legend class="sr-only">${escapeHTML(tool.name)} 调用范围</legend><label class="field">允许的群号<input data-tool-grant-field="groupIds" inputmode="numeric" placeholder="多个群号用逗号分隔" value="${escapeHTML(buffered?.groupIds?.join(', ') || '')}" maxlength="2200"><small>还需在群与消息权限中允许读取和发送。</small></label><label class="field">允许调用的 QQ<input data-tool-grant-field="userIds" inputmode="numeric" placeholder="${write ? '写入工具必须指定调用人' : '留空表示这些群内的成员'}" value="${escapeHTML(buffered?.userIds?.join(', ') || '')}" maxlength="2200"><small>${write ? '必须指定 QQ，多个号码用逗号分隔。' : '多个 QQ 用逗号分隔；留空表示所选群内的成员。'}</small></label>${write ? `<label class="check-field tool-write-grant"><input type="checkbox" data-tool-grant-write ${buffered?.allowWrite ? 'checked' : ''}><span>${plugin.source === 'qq' ? '允许执行此 QQ 互动' : '允许修改外部应用数据'}</span></label>` : ''}</fieldset></div>`;
     }).join('')}</section>`;
   }
   function renderAccountTools() {
@@ -879,6 +1357,16 @@
     const prefix = $('#tool-call-prefix');
     const skill = $('#tool-call-skill');
     const aliases = $('#tool-call-aliases');
+    const builtinQQ = $('#qq-context-tools-enabled'), catalogMode = $('#tool-catalog-mode');
+    if (document.activeElement !== builtinQQ) builtinQQ.checked = draft?.tools?.builtinQQ === true;
+    if (document.activeElement !== catalogMode) catalogMode.value = draft?.tools?.catalogMode === 'all' ? 'all' : 'auto';
+    const qqContainer = $('#qq-context-tool-list'), qqSource = qqContextToolSource();
+    qqContainer.classList.toggle('hidden', !qqSource.enabled);
+    const qqSignature = JSON.stringify([selectedAccountId, qqSource.enabled, qqSource.tools.map(tool => tool.id), draft?.tools?.grants?.filter(grant => grant.tool.startsWith('qq:')), Boolean(state)]);
+    if ((qqContainer.dataset.accountId !== selectedAccountId || !qqContainer.contains(document.activeElement)) && qqContainer.dataset.signature !== qqSignature) {
+      qqContainer.innerHTML = qqSource.enabled ? renderPluginTools(qqSource) : '';
+      qqContainer.dataset.signature = qqSignature; qqContainer.dataset.accountId = selectedAccountId;
+    }
     const triggers = draft?.tools?.triggers ?? ['mention', 'poke', 'name'];
     if (document.activeElement !== toggle) toggle.checked = draft?.tools?.enabled === true;
     if (document.activeElement !== prefix) prefix.value = draft?.tools?.prefix ?? '/工具';
@@ -1039,6 +1527,10 @@
     element.textContent = logs.length ? logs.map((entry) => typeof entry === 'string' ? entry : `${formatTime(entry.time ?? entry.timestamp ?? entry.createdAt)}  [${entry.level ?? 'info'}] ${entry.message ?? entry.text ?? JSON.stringify(entry)}`).join('\n') : '尚无后台运行日志。';
     if (atBottom) element.scrollTop = element.scrollHeight;
   }
+  function accountSetupCompleted() {
+    return Boolean(state && draft?.botQQ && draft.botQQ === state.draft?.botQQ
+      && (state.setup?.completed ?? state.applied?.permissions?.released === true));
+  }
   function renderPageContext() {
     const isAccountPage = currentPage === 'connections' || currentPage === 'settings';
     const context = $('.account-context');
@@ -1049,13 +1541,28 @@
     $('.account-context').classList.toggle('hidden', isAccountPage || currentPage === 'overview');
     const configBar = $('.config-bar');
     const saveFooter = $('#account-save-footer');
+    const completed = accountSetupCompleted();
+    const showEditorActions = currentPage === 'connections' && expandedAccountId === selectedAccountId && state && completed;
+    const authorizationRow = $('[data-flow-stage="verification"] .setup-stage-actions');
+    const startButton = $('[data-setup-start]');
+    // Keep the explicit authorization action in the same final editing bar.
+    // Put it back before moving configuration controls to another page.
+    if (!showEditorActions && startButton.parentElement !== authorizationRow) authorizationRow.append(startButton);
     // Account actions live directly at the end of its menu, without a separate card.
     const source = currentPage === 'connections' ? configBar : saveFooter;
     const destination = currentPage === 'connections' ? saveFooter : configBar;
     while (source.firstChild) destination.append(source.firstChild);
     $('#reset-account-defaults').classList.toggle('hidden', currentPage !== 'modules');
     configBar.classList.toggle('hidden', isAccountPage || currentPage === 'records' || currentPage === 'overview');
-    saveFooter.classList.toggle('hidden', currentPage !== 'connections' || !expandedAccountId || !state || (!dirty && !state.pendingChanges && !state.secretsPendingChanges));
+    saveFooter.classList.toggle('hidden', !showEditorActions);
+    if (showEditorActions) {
+      const actions = $('.config-actions', saveFooter);
+      if (startButton.parentElement !== actions) actions.append(startButton);
+      startButton.classList.remove('setup-continue-button');
+      startButton.classList.toggle('hidden', state.applied?.permissions?.released === true);
+      startButton.disabled = false; startButton.inert = false;
+      startButton.removeAttribute('aria-hidden'); delete startButton.dataset.continueActive;
+    }
     $('#no-accounts').classList.toggle('hidden', accounts.length !== 0 || isAccountPage);
     $('#runtime-badge').classList.toggle('hidden', currentPage === 'settings');
   }
@@ -1181,12 +1688,13 @@
     const active = configuredProviders().length === 1 ? configuredProviders()[0].id : '';
     const structure = `${selectedAccountId}:${entries.map((entry) => entry.id).join(',')}`;
     if (customApiStructure !== structure) {
+      closeModelPicker();
       customApiStructure = structure;
       $('#custom-api-cards').innerHTML = entries.map((entry, index) => `<section class="account-model-form custom-api-card hidden" data-api-card="${escapeHTML(entry.id)}" data-api-id="${escapeHTML(entry.id)}">
         <div class="form-grid"><label class="field field-wide">API Key <small class="api-secret-note"></small><input type="password" data-secret="apiKey:${escapeHTML(entry.id)}" autocomplete="new-password" value="${escapeHTML(secretUpdates[`apiKey:${entry.id}`] || '')}" placeholder="粘贴 API Key"></label><label class="field field-wide">模型名称<input data-config="models.apis.${index}.model" value="${escapeHTML(entry.model)}" spellcheck="false" placeholder="填写服务商提供的模型 ID"></label></div>
         <div class="account-model-tools"><button class="button button-secondary button-small" data-setup-model-test="${escapeHTML(entry.id)}">测试连接</button><div class="api-vendor-guide" data-api-guide></div></div>
         <p class="field-note openai-api-project-note ${vendorForApi(entry) === 'openai' ? '' : 'hidden'}" data-openai-api-note>建议为机器人创建独立项目和 API Key。符合条件的 Pro 额度需先在官方 Billing 激活。<a href="https://platform.openai.com/settings/organization/projects" target="_blank" rel="noopener noreferrer">项目与密钥 ↗</a> · <a href="https://developers.openai.com/api/docs/guides/chatgpt-api-credits" target="_blank" rel="noopener noreferrer">领取 API 额度 ↗</a></p>
-        <details class="account-advanced" ${vendorForApi(entry) === 'custom' ? 'open' : ''}><summary>接口与高级设置</summary><div class="form-grid"><label class="field field-wide">API 地址<input data-config="models.apis.${index}.baseUrl" value="${escapeHTML(entry.baseUrl)}" placeholder="https://api.example.com/v1" spellcheck="false"></label><label class="field field-wide">接口名称<input data-config="models.apis.${index}.label" value="${escapeHTML(entry.label)}" maxlength="80"></label><label class="field">最大输出 Token<input type="number" min="128" max="131072" data-config="models.apis.${index}.maxTokens" value="${escapeHTML(entry.maxTokens ?? 1024)}"></label><label class="field">Temperature<input type="number" min="0" max="2" step="0.1" data-config="models.apis.${index}.temperature" value="${escapeHTML(entry.temperature ?? .7)}"></label></div></details>
+        <details class="account-advanced" ${vendorForApi(entry) === 'custom' ? 'open' : ''}><summary>接口与高级设置</summary><div class="form-grid"><label class="field field-wide">API 地址<input data-config="models.apis.${index}.baseUrl" value="${escapeHTML(entry.baseUrl)}" placeholder="https://api.example.com/v1" spellcheck="false"></label><label class="field field-wide">接口名称<input data-config="models.apis.${index}.label" value="${escapeHTML(entry.label)}" maxlength="80"></label><label class="field">最大输出 Token<input type="number" min="128" max="131072" data-config="models.apis.${index}.maxTokens" value="${escapeHTML(entry.maxTokens ?? 1024)}"></label><label class="field">回答随机性（温度）<input type="number" min="0" max="2" step="0.1" data-config="models.apis.${index}.temperature" value="${escapeHTML(entry.temperature ?? .7)}"><small>较低更稳定，较高更多样；可用范围以模型说明为准。部分推理模型会忽略此项。</small></label></div></details>
       </section>`).join('');
     }
     $$('[data-api-card]').forEach((card) => {
@@ -1194,6 +1702,7 @@
       const entry = entries.find(item => item.id === card.dataset.apiCard);
       $('[data-openai-api-note]', card)?.classList.toggle('hidden', vendorForApi(entry) !== 'openai');
     });
+    prepareModelComboboxes();
   }
   async function saveAccountProfile() {
     const id = requireAccount();
@@ -1240,6 +1749,7 @@
   function renderContinueButtons(highest, animate, force = false) {
     const activeStage = setupSteps[highest]?.[0];
     const skipped = accountSkippedStages.get(selectedAccountId);
+    const completed = accountSetupCompleted();
     $$('[data-flow-stage]').forEach((section) => {
       const stage = section.dataset.flowStage;
       const row = $('.setup-stage-actions', section);
@@ -1247,7 +1757,7 @@
       row.dataset.flowActions = stage;
       for (const button of $$(':scope > button', row)) {
         const consumed = button.hasAttribute('data-setup-skip') && skipped?.has(stage);
-        const show = stage === activeStage && !consumed;
+        const show = !completed && stage === activeStage && !consumed;
         const primary = button.matches('[data-setup-save], [data-setup-apply], [data-setup-connect], [data-setup-start], [data-setup-step]:not(.button-quiet)');
         button.classList.toggle('setup-continue-button', primary);
         button.dataset.continueActive = String(show);
@@ -1258,7 +1768,7 @@
         // removed even when the user returns to this stage later in the session.
         button.classList.toggle('hidden', Boolean(consumed));
       }
-      setFlowDisclosure(row, stage === activeStage, { animate, force, duration: 230 });
+      setFlowDisclosure(row, !completed && stage === activeStage, { animate, force, duration: 230 });
     });
   }
   function renderSetupGuide({ animate = false } = {}) {
@@ -1283,9 +1793,17 @@
       const last = released ? 'verification' : hasTask || (draft.groups ?? []).length ? 'permissions' : verified ? 'scenarios' : draft.qq?.enabled || applied.qq?.enabled ? 'connection' : providers.length ? 'models' : 'identity';
       accountSetupSteps.set(selectedAccountId, normalizeSetupStep(last));
     }
+    // Completed profiles are edited as one expanded menu. The initial wizard
+    // remains available for incomplete identities, without a duplicate footer.
+    if (accountSetupCompleted()) accountSetupSteps.set(selectedAccountId, 'verification');
     const highest = setupSteps.findIndex(([id]) => id === accountSetupSteps.get(selectedAccountId));
     const sameAccount = renderedFlowAccount === selectedAccountId;
     $('#account-workspace').dataset.flowActive = setupSteps[highest][0];
+    if (!accountSetupCompleted()) {
+      const row = $('[data-flow-stage="verification"] .setup-stage-actions');
+      const start = $('[data-setup-start]');
+      if (start.parentElement !== row) row.append(start);
+    }
     // Reveal the next action before measuring its expanding section.
     renderContinueButtons(highest, animate && sameAccount, !sameAccount);
     $$('[data-flow-stage]').forEach((wrapper, index) => {
@@ -1302,7 +1820,7 @@
     }
     $('#deepseek-model-card').classList.toggle('hidden', selectedProvider?.id !== 'deepseek');
     const issue = connection?.issue ?? runtime.issue;
-    $('#setup-connection-result').innerHTML = verified ? `<p class="account-connection-ok">✓ QQ ${escapeHTML(actualQQ)} 已连接</p>` : `<p class="account-connection-pending">${escapeHTML(issue?.message ?? runtime.lastError ?? '在 NapCat 登录后，点击「连接并继续」。')}</p>`;
+    $('#setup-connection-result').innerHTML = verified ? `<p class="account-connection-ok">✓ QQ ${escapeHTML(actualQQ)} 已连接</p>` : `<p class="account-connection-pending">${escapeHTML(issue?.message ?? runtime.lastError ?? `在 ${connectionName()} 登录后，点击「连接并继续」。`)}</p>`;
     if (issue?.action && !verified) $('#setup-connection-result').insertAdjacentHTML('beforeend', `<p class="connection-fix">下一步：${escapeHTML(issue.action)}</p>`);
     const selectedTasks = [['chat','聊天回复'],['summary','通知汇总'],['favorites','收藏整理']].filter(([id]) => draft[id]?.enabled).map(([,label]) => label);
     $('#setup-task-summary').textContent = selectedTasks.join('、') || '聊天回复、通知汇总、收藏整理';
@@ -1322,7 +1840,7 @@
     const modelRow = $$('#setup-verification-checks .check-row')[1];
     modelRow.insertBefore(modelAction, $('.pill', modelRow));
     const writable = (applied.groups ?? []).find((group) => group.read && group.send);
-    const testText = !verified ? '当前应先完成 QQ 连接：确认 NapCat 已扫码并启用正向 WebSocket 服务，再验证实际 QQ 身份。' : !hasTask ? 'QQ 已连接。请先启用一个功能：聊天、通知汇总或收藏整理，并保存应用。' : !released ? '任务已配置。下一步在“选定群与消息权限”选择群、设定读取 / 发送，再确认“启动此账号”。' : applied.chat?.enabled && writable ? `现在可在群 ${writable.name || writable.id} 中，用其他群成员账号${effectiveTriggers(writable).includes('prefix') ? `发送“${writable.prefix || '/ai'} 你好”` : effectiveTriggers(writable).includes('casual') && !effectiveTriggers(writable).includes('mention') ? '发一条普通消息（概率参与可能不会立即回复，首次验证推荐改为 @ 触发）' : `@ QQ ${actualQQ} 并发送“你好”`}。查看下方接收、模型和发送计数，再核对群中回复。` : applied.summary?.enabled ? '现在可在“账号功能参数”中，选择已应用的可读工作群并运行一次通知汇总。需先在群中产生可读消息。未授权私聊发送时，结果在任务与记录中查看。' : applied.favorites?.enabled ? '现在可在“账号功能参数”中点击“读取此账号收藏”，然后整理已读取收藏。结果可在任务与记录中核对。' : '此账号已启动。请按已授权的触发条件发送测试消息，并查看任务与记录。';
+    const testText = !verified ? connectionBackend() === 'snowluma' ? '当前应先完成 QQ 连接：在外部运行 SnowLuma、登录此 QQ，并配置独立 WS／HTTP 地址和 Token，再验证同一身份与在线状态。' : '当前应先完成 QQ 连接：确认 NapCat 已扫码并启用正向 WebSocket 服务，再验证实际 QQ 身份。' : !hasTask ? 'QQ 已连接。请先启用一个功能：聊天、通知汇总或收藏整理，并保存应用。' : !released ? '任务已配置。下一步在“选定群与消息权限”选择群、设定读取 / 发送，再确认“启动此账号”。' : applied.chat?.enabled && writable ? `现在可在群 ${writable.name || writable.id} 中，用其他群成员账号${effectiveTriggers(writable).includes('prefix') ? `发送“${writable.prefix || '/ai'} 你好”` : effectiveTriggers(writable).includes('casual') && !effectiveTriggers(writable).includes('mention') ? '发一条普通消息（概率参与可能不会立即回复，首次验证推荐改为 @ 触发）' : `@ QQ ${actualQQ} 并发送“你好”`}。查看下方接收、模型和发送计数，再核对群中回复。` : applied.summary?.enabled ? '现在可在“账号功能参数”中，选择已应用的可读工作群并运行一次通知汇总。需先在群中产生可读消息。未授权私聊发送时，结果在任务与记录中查看。' : applied.favorites?.enabled ? '现在可在“账号功能参数”中点击“读取此账号收藏”，然后整理已读取收藏。结果可在任务与记录中核对。' : '此账号已启动。请按已授权的触发条件发送测试消息，并查看任务与记录。';
     $('#setup-test-guide').textContent = testText;
     const metrics = runtime.metrics ?? {};
     $('#setup-live-metrics').innerHTML = [['received','已接收消息'],['selected','命中处理规则'],['modelCalls','模型调用'],['sent','已发送消息']].map(([key,label]) => `<div><strong>${Number(metrics[key] || 0)}</strong><span>${label}</span></div>`).join('');
@@ -1365,12 +1883,12 @@
     const details = Array.isArray(error?.details) && error.details.length ? error.details : [errorMessage(error)];
     const messages = [...new Set(details)];
     const sameRecipient = error.code === 'PRIVATE_RECIPIENT_SAME' || issues.some((issue) => issue.path === 'ownerQQ') && String(draft?.ownerQQ ?? '') === String(draft?.botQQ ?? '');
-    const nextStep = normalizeSetupStep(error.nextStep || (issues.find((issue) => issue.path?.startsWith('qq') || issue.path === 'botQQ' || issue.path === 'napcatToken' || issue.path === 'secrets.napcatToken') ? 'connection' : issues.find((issue) => issue.path?.startsWith('models') || issue.path?.startsWith('apiKey')) ? 'models' : sameRecipient ? 'permissions' : null));
+    const nextStep = normalizeSetupStep(error.nextStep || (issues.find((issue) => issue.path?.startsWith('qq') || issue.path === 'botQQ' || /^(?:secrets\.)?(?:napcatToken|snowlumaWsToken|snowlumaHttpToken)$/.test(issue.path || '')) ? 'connection' : issues.find((issue) => issue.path?.startsWith('models') || issue.path?.startsWith('apiKey')) ? 'models' : sameRecipient ? 'permissions' : null));
     const html = `<strong>${escapeHTML(errorMessage(error))}</strong><ul>${messages.map((message) => `<li>${escapeHTML(message)}</li>`).join('')}</ul>${[...new Set([error.action,...issues.map((issue) => issue.action)].filter(Boolean))].map((action) => `<p>下一步：${escapeHTML(action)}</p>`).join('')}${sameRecipient ? '<p>只想处理群消息或在仪表盘看结果，无需填写另一个 QQ。</p><button class="button button-secondary button-small" data-repair-private>关闭可选私聊投递，仅使用群与本地结果</button>' : ''}${nextStep ? `<button class="button button-quiet button-small" data-error-step="${nextStep}">前往对应配置 →</button>` : ''}`;
     for (const selector of currentPage === 'connections' && !$('#new-account-form').classList.contains('hidden') ? ['#create-account-error'] : ['#setup-error','#scenario-validation-errors']) { $(selector).innerHTML = html; $(selector).classList.remove('hidden'); }
     if (currentPage === 'connections' && $('#new-account-form').classList.contains('hidden') && setupSteps.some(([id]) => id === nextStep)) setSetupStep(nextStep);
     for (const issue of issues) {
-      let secretPath = issue.path === 'secrets.napcatToken' ? 'napcatToken' : issue.path === 'models.deepseek.apiKey' ? 'deepseekApiKey' : issue.path;
+      let secretPath = /^secrets\.(?:napcatToken|snowlumaWsToken|snowlumaHttpToken)$/.test(issue.path || '') ? issue.path.slice(8) : issue.path === 'models.deepseek.apiKey' ? 'deepseekApiKey' : issue.path;
       const customSecret = /^models\.apis\.(\d+)\.apiKey$/.exec(issue.path || '');
       if (customSecret) secretPath = `apiKey:${draft?.models?.apis?.[Number(customSecret[1])]?.id}`;
       const input = $(`[data-config="${CSS.escape(issue.path || '')}"], [data-secret="${CSS.escape(secretPath || '')}"]`);
@@ -1585,6 +2103,7 @@
   }
   async function openNapcatGuide() {
     const id = requireAccount();
+    if (connectionBackend() === 'snowluma') return openNapcatLogin();
     const guide = await accountApi('/napcat/guide', undefined, 'GET', id);
     let url;
     try { url = new URL(guide.url || editors.get(id).draft?.qq?.webUiUrl); } catch { throw new Error('此账号的 NapCat 登录地址无效。'); }
@@ -1659,6 +2178,7 @@
     $$('.record-content').forEach((panel) => panel.classList.toggle('hidden', panel.id !== `record-${tab}`));
   }
   document.addEventListener('pointerdown', (event) => {
+    if (activeModelPicker && !activeModelPicker.wrapper.contains(event.target)) closeModelPicker();
     const summary = event.target.closest('.group-trigger-picker > summary');
     // A summary is not a native popover invoker button: light-dismiss may run
     // before click, so remember whether this pointer was toggling an open one.
@@ -1673,6 +2193,24 @@
     previous.summary.setAttribute('aria-expanded', 'false');
   }, true);
   document.addEventListener('keydown', (event) => {
+    const modelInput = event.target.closest('.model-combobox input[role="combobox"]');
+    if (modelInput) {
+      const wrapper = modelInput.closest('.model-combobox');
+      const active = activeModelPicker?.input === modelInput ? activeModelPicker : null;
+      if (event.key === 'ArrowDown' || event.key === 'ArrowUp') {
+        event.preventDefault();
+        if (!active) openModelPicker(wrapper, { last: event.key === 'ArrowUp' });
+        else if (active.choices.length) highlightModelOption((active.index + (event.key === 'ArrowDown' ? 1 : -1) + active.choices.length) % active.choices.length);
+        return;
+      }
+      if (event.key === 'Enter' && active) {
+        event.preventDefault();
+        if (active.index >= 0) chooseModelOption(active.choices[active.index]); else closeModelPicker({ restoreFocus: true });
+        return;
+      }
+    }
+    if (activeModelPicker && event.key === 'Escape') { event.preventDefault(); closeModelPicker({ restoreFocus: true }); return; }
+    if (activeModelPicker && event.key === 'Tab') closeModelPicker();
     const summary = event.target.closest('.group-trigger-picker > summary');
     if (summary && event.key === 'ArrowDown') {
       event.preventDefault();
@@ -1683,6 +2221,7 @@
     }
   });
   document.addEventListener('focusin', (event) => {
+    if (activeModelPicker && !activeModelPicker.wrapper.contains(event.target)) closeModelPicker();
     if (activeGroupTriggerPicker && !activeGroupTriggerPicker.picker.contains(event.target)) closeGroupTriggerPicker();
   });
   document.addEventListener('scroll', (event) => {
@@ -1697,6 +2236,26 @@
     });
   }, true);
   window.addEventListener('resize', positionGroupTriggerPicker);
+  window.addEventListener('resize', positionModelPicker);
+  document.addEventListener('scroll', event => {
+    const active = activeModelPicker;
+    if (!active || active.panel.contains(event.target)) return;
+    requestAnimationFrame(() => {
+      if (activeModelPicker !== active) return;
+      const anchor = active.wrapper.getBoundingClientRect();
+      if (Math.abs(anchor.left - active.anchor.left) > .5 || Math.abs(anchor.top - active.anchor.top) > .5) closeModelPicker();
+    });
+  }, true);
+  document.addEventListener('change', event => {
+    const input = event.target;
+    if (!input.hasAttribute('data-group-qq-reply') || !draft) return;
+    const group = draft.groups[Number(input.closest('[data-group-index]')?.dataset.groupIndex)];
+    if (!group) return;
+    group.social = groupSocialSettings(group);
+    const choices = new Set(group.social.replyTools || []);
+    if (input.checked) choices.add(input.dataset.groupQqReply); else choices.delete(input.dataset.groupQqReply);
+    group.social.replyTools = [...choices]; markDirty();
+  });
   document.addEventListener('input', (event) => {
     const input = event.target;
     if (input.id === 'account-profile-name') { if (selectedAccountId) { const editor = editors.get(selectedAccountId); if (editor) editor.profileName = input.value; } return; }
@@ -1713,11 +2272,13 @@
       setPath(draft, 'chat.social.aliases', [...new Set(input.value.split(/[,，]+/).map(value => value.trim()).filter(Boolean))]);
       markDirty(input); return;
     }
-    if ((input.dataset.groupSocial || input.hasAttribute('data-group-social-tool')) && draft) {
+    if ((input.dataset.groupSocial || input.hasAttribute('data-group-social-tool') || input.hasAttribute('data-group-delivery')) && draft) {
       const index = Number(input.closest('[data-group-index]').dataset.groupIndex);
       const group = draft.groups[index];
-      group.social = { ...groupSocialDefaults, ...group.social };
-      if (input.hasAttribute('data-group-social-tool')) {
+      group.social = groupSocialSettings(group);
+      if (input.hasAttribute('data-group-delivery')) {
+        group.social.delivery[input.dataset.groupDelivery] = input.type === 'checkbox' ? input.checked : input.value === '' ? null : Number(input.value);
+      } else if (input.hasAttribute('data-group-social-tool')) {
         const tools = new Set(group.social.readTools || []);
         if (input.checked) tools.add(input.dataset.groupSocialTool); else tools.delete(input.dataset.groupSocialTool);
         group.social.readTools = [...tools];
@@ -1730,6 +2291,7 @@
     if (input.dataset.config && draft) {
       const value = input.type === 'checkbox' ? input.checked : input.type === 'number' ? (input.value === '' ? null : Number(input.value)) : input.value;
       setPath(draft, input.dataset.config, value);
+      if (activeModelPicker?.input === input) highlightModelOption(activeModelPicker.choices.indexOf(input.value));
       if (['qq.wsUrl', 'qq.httpUrl', 'qq.webUiUrl'].includes(input.dataset.config)) snapshotConnection();
       if (input.dataset.config.startsWith('chat.persona') || input.dataset.config.startsWith('chat.social')) $('#persona-preview-content').classList.add('hidden');
       markDirty(input);
@@ -1823,6 +2385,7 @@
 
   document.addEventListener('change', (event) => {
     if (event.target.id === 'account-llm-source' && draft) {
+      closeModelPicker();
       chooseSingleLlm(draft, event.target.value); markDirty(event.target); populateForm(); renderLiveState(); return;
     }
     if (['mode', 'trigger'].includes(event.target.dataset.groupField)) renderGroups();
@@ -1830,6 +2393,15 @@
     if (event.target.id === 'summary-group') rememberEditor();
   });
   document.addEventListener('click', (event) => {
+    const modelToggle = event.target.closest('[data-model-toggle]');
+    if (modelToggle) {
+      event.preventDefault();
+      const wrapper = modelToggle.closest('.model-combobox');
+      if (activeModelPicker?.wrapper === wrapper) closeModelPicker({ restoreFocus: true }); else openModelPicker(wrapper);
+      return;
+    }
+    const modelOption = event.target.closest('[data-model-option]');
+    if (modelOption) { event.preventDefault(); chooseModelOption(modelOption.dataset.modelOption); return; }
     const summary = event.target.closest('.group-trigger-picker > summary');
     if (summary) {
       event.preventDefault();
@@ -1887,6 +2459,7 @@
     if (button.hasAttribute('data-setup-refresh')) return withButton(button, () => refreshState({ notify: true }));
     if (button.dataset.setupModelTest) return withButton(button, () => testSetupModel(button.dataset.setupModelTest));
     if (button.hasAttribute('data-open-napcat-program')) return withButton(button, openNapcatProgram);
+    if (button.hasAttribute('data-open-connector-login')) return withButton(button, openNapcatLogin);
     if (button.hasAttribute('data-return-to-setup')) { expandedAccountId = selectedAccountId; navigate('connections'); renderLiveState(); setSetupStep(currentScenarioTab === 'permissions' ? 'permissions' : 'scenarios'); return; }
     if (button.hasAttribute('data-repair-private')) return repairPrivateDelivery();
     if (button.dataset.errorStep) { if (button.dataset.errorStep === 'permissions') { selectScenarioTab('permissions'); navigate('scenarios'); } else { expandedAccountId = selectedAccountId; navigate('connections'); renderLiveState(); setSetupStep(button.dataset.errorStep); } return; }
@@ -1935,6 +2508,69 @@
     });
   });
   $('#install-custom-plugin').addEventListener('click', event => withButton(event.currentTarget, installCustomPlugin));
+  $('#mcp-add').addEventListener('click', event => withButton(event.currentTarget, () => editMCPService()));
+  $('#mcp-example-notes').addEventListener('click', event => withButton(event.currentTarget, () => prefillMCPExample('notes')));
+  $('#mcp-example-bilibili').addEventListener('click', event => withButton(event.currentTarget, () => prefillMCPExample('bilibili')));
+  $('#mcp-refresh').addEventListener('click', event => withButton(event.currentTarget, refreshMCPState));
+  $('#mcp-import').addEventListener('click', event => withButton(event.currentTarget, () => {
+    mcpImportAccount = requireAccount(); $('#mcp-import-form').reset(); $('#mcp-import-error').classList.add('hidden'); $('#mcp-import-dialog').showModal();
+  }));
+  $('#mcp-service-transport').addEventListener('change', renderMCPTransportFields);
+  $('#mcp-service-form').addEventListener('submit', event => {
+    event.preventDefault(); try { saveMCPService(); } catch (error) { mcpError(error, '#mcp-service-error'); }
+  });
+  $('#mcp-service-dialog').addEventListener('close', () => { mcpEditing = null; $('#mcp-service-form').reset(); $('#mcp-env-rows').replaceChildren(); $('#mcp-header-rows').replaceChildren(); });
+  $$('#mcp-service-close, #mcp-service-cancel').forEach(button => button.addEventListener('click', () => $('#mcp-service-dialog').close()));
+  $$('#mcp-import-close, #mcp-import-cancel').forEach(button => button.addEventListener('click', () => $('#mcp-import-dialog').close()));
+  $('#mcp-import-dialog').addEventListener('close', () => { mcpImportAccount = ''; $('#mcp-import-form').reset(); });
+  $('#mcp-import-dialog').addEventListener('cancel', event => { if (mcpImportPending) event.preventDefault(); });
+  $('#mcp-import-form').addEventListener('submit', event => {
+    event.preventDefault(); if (!$('#mcp-import-form').reportValidity()) return;
+    withButton($('#mcp-import-submit'), async () => { try { await importMCPConfiguration(); } catch (error) { mcpError(error, '#mcp-import-error'); } });
+  });
+  $('#mcp-import-file').addEventListener('click', () => $('#mcp-import-file-input').click());
+  $('#mcp-import-file-input').addEventListener('change', event => {
+    const file = event.target.files?.[0], accountId = mcpImportAccount;
+    if (!file) return;
+    withButton($('#mcp-import-file'), async () => {
+      try {
+        if (!/\.json$/i.test(file.name) || file.size > 128 * 1024) throw new Error('请选择不超过 128 KiB 的 JSON 配置文件。');
+        const text = await file.text(); JSON.parse(text);
+        if ($('#mcp-import-dialog').open && accountId === mcpImportAccount) $('#mcp-import-json').value = text;
+      } catch (error) { mcpError(error, '#mcp-import-error'); }
+      finally { $('#mcp-import-file-input').value = ''; }
+    });
+  });
+  $('#mcp-service-dialog').addEventListener('click', event => {
+    const add = event.target.closest('[data-mcp-add-secret]'), remove = event.target.closest('[data-mcp-remove-secret]');
+    if (add) addMCPSecretRow(add.dataset.mcpAddSecret); else if (remove) remove.closest('.mcp-secret-row').remove();
+  });
+  $('#mcp-service-cards').addEventListener('input', event => {
+    const input = event.target, card = input.closest('[data-mcp-server]');
+    const server = mcpServers().find(item => item.id === card?.dataset.mcpServer);
+    if (!server) return;
+    if (input.hasAttribute('data-mcp-server-enabled')) { server.enabled = input.checked; stageMCPChanges(); }
+    else if (input.dataset.mcpApprovalField) {
+      const name = input.closest('[data-mcp-tool]')?.dataset.mcpTool;
+      const pending = mcpApprovalDrafts.get(`${selectedAccountId}:${server.id}:${name}`);
+      if (pending) pending[input.dataset.mcpApprovalField] = input.type === 'checkbox' ? input.checked : input.value;
+    }
+  });
+  $('#mcp-service-cards').addEventListener('focusout', () => setTimeout(() => renderMCP(), 0));
+  $('#mcp-service-cards').addEventListener('click', event => {
+    const button = event.target.closest('button'); if (!button) return;
+    const card = button.closest('[data-mcp-server]'), serverId = card?.dataset.mcpServer;
+    if (!serverId) return;
+    if (button.hasAttribute('data-mcp-confirm-tool')) return withButton(button, () => confirmMCPTool(serverId, button.closest('[data-mcp-tool]').dataset.mcpTool));
+    if (button.dataset.mcpAction === 'edit') return withButton(button, () => editMCPService(serverId));
+    if (button.dataset.mcpAction === 'test') return withButton(button, () => testMCPService(serverId));
+    if (button.dataset.mcpAction === 'delete') return withButton(button, () => removeMCPService(serverId));
+    if (button.dataset.mcpAction === 'disconnect') return withButton(button, async () => {
+      const id = requireAccount(); await accountApi('/mcp/disconnect', { serverId }, 'POST', id);
+      await refreshAccount(id); if (id === selectedAccountId) renderMCP({ force: true });
+      toast('已断开当前连接；要停用后续调用，请关闭服务并应用参数。', 'info');
+    });
+  });
   $('#choose-plugin-directory').addEventListener('click', event => withButton(event.currentTarget, async () => {
     const select = window.qqBridgeDesktop?.choosePluginDirectory;
     if (typeof select !== 'function') throw new Error('当前环境不支持选择文件夹，请直接填写路径。');
@@ -2038,6 +2674,9 @@
     $('.page-footer span').textContent = 'QQ_Service · Windows 桌面应用';
     $('.page-footer span:last-child').textContent = '模型配置 ≠ 发送授权 · 关闭窗口留在托盘';
   }
+  window.QQAssetsUI?.mount({ request: accountApi, getAccountId: () => selectedAccountId, notify: message => toast(message) });
+  window.McpPresetsUI?.mount({ api, request: accountApi, getAccountId: () => selectedAccountId });
+  window.QQMemoryStorageUI?.mount({ api });
   window.QQMemoryUI?.create({
     getAccounts: () => accounts,
     getSelectedAccountId: () => selectedAccountId,

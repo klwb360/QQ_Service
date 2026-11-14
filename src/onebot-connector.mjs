@@ -1,18 +1,29 @@
+import { performance } from 'node:perf_hooks';
+
 /** QQ transport differences live here; model, memory and permission policy do not. */
 export const SNOWLUMA_REVIEW = Object.freeze({
-  state: 'static_review_only',
-  available: false,
+  state: 'external_protocol_adapter',
+  available: true,
+  verified: false,
+  experimental: true,
+  externalRuntime: true,
+  runtimeManaged: false,
+  windowsDynamic: 'pending',
+  liveQQ: 'pending',
+  publicSourceBuild: 'completed-isolated',
+  nativeBuild: 'precompiled-input-only',
   repository: 'TomyJan/SnowLuma',
   version: '2.4.2',
   commit: 'f2ea3354f8bbe8672cbb4ae6a2b4e1fbeff44faf',
   windowsLiteSha256: '14c6f137196d5f556e6c601a880ee8aa238ffaf4227696848a146209f96d0f31',
   windowsFullSha256: '0912926c5e73260f35b000278a8658493fc9452f36782c32fa86f0e825bad81a',
-  reason: '已完成部分静态审查，尚未完成 Windows 隔离运行和真实账号兼容验证，暂不开放连接。',
+  reason: '提供固定 SnowLuma 2.4.2 的外部实验协议适配，需用户自行审查并运行连接端；不下载、启动或分发其原生组件。Windows 动态安全检查和真实 QQ 兼容验证尚未完成。',
 });
 
 const BACKENDS = Object.freeze({
   napcat: Object.freeze({ id: 'napcat', name: 'NapCat Shell', available: true, experimental: false, transport: 'websocket' }),
-  snowluma: Object.freeze({ id: 'snowluma', name: 'SnowLuma', available: false, experimental: true, transport: 'websocket+http', reason: SNOWLUMA_REVIEW.reason }),
+  snowluma: Object.freeze({ id: 'snowluma', name: 'SnowLuma', available: true, experimental: true,
+    externalRuntime: true, runtimeManaged: false, transport: 'websocket+http', reason: SNOWLUMA_REVIEW.reason }),
 });
 
 function failure(code, message, status = 502, extra = {}) {
@@ -33,7 +44,7 @@ export function connectorCatalog() {
 export function assertBackendAvailable(value = 'napcat') {
   const id = backendId(value);
   if (!BACKENDS[id].available) throw failure('SNOWLUMA_REVIEW_REQUIRED', SNOWLUMA_REVIEW.reason, 409, {
-    field: 'qq.backend', action: '先使用 NapCat Shell；SnowLuma 完成隔离检查后会通过后续版本开放。',
+    field: 'qq.backend', action: '请使用已开放的连接端，并核对固定版本和该账号独立连接配置。',
   });
   return id;
 }
@@ -57,8 +68,12 @@ export function resolveConnector(config = {}) {
 export function getBackendCapabilities(value = 'napcat') {
   const backend = backendId(value);
   const common = { text: 'supported', mention: 'supported', groupList: 'supported', identity: 'supported' };
-  if (backend === 'snowluma') return { backend, available: false, verified: false, ...Object.fromEntries(Object.keys(common).map(key => [key, 'unverified'])),
-    poke: 'unverified', notices: 'unverified', favorites: 'unverified', reason: SNOWLUMA_REVIEW.reason };
+  if (backend === 'snowluma') return { backend, available: true, verified: false, experimental: true,
+    externalRuntime: true, runtimeManaged: false, sourceCommit: SNOWLUMA_REVIEW.commit,
+    protocolValidation: 'fixture-tested', windowsDynamic: 'pending', liveQQ: 'pending',
+    ...Object.fromEntries([...Object.keys(common), 'reply', 'groupInfo', 'groupMembers', 'poke', 'reaction', 'image', 'sticker',
+      'file', 'fileStream', 'forward', 'recall', 'notices', 'groupFiles', 'favorites', 'favoriteStickers'].map(key => [key, 'source-contract'])),
+    reason: SNOWLUMA_REVIEW.reason };
   return { backend, available: true, verified: true, ...common, poke: 'version-dependent', notices: 'version-dependent', favorites: 'version-dependent' };
 }
 
@@ -81,6 +96,14 @@ export function normalizeConnectorPacket(packet, { backend = 'napcat', expectedQ
     if (!sender || !target) return null;
     result.user_id = sender; result.target_id = target;
   }
+  // SnowLuma f2ea3354 emits add/remove, while the shared group normalizer
+  // consumes NapCat's boolean is_add. Never infer from arbitrary truthiness.
+  if (backend === 'snowluma' && packet.post_type === 'notice' && packet.notice_type === 'group_msg_emoji_like'
+    && ['add', 'remove'].includes(packet.sub_type)) {
+    const added = packet.sub_type === 'add';
+    if (packet.is_add !== undefined && packet.is_add !== added) return null;
+    result.is_add = added;
+  }
   return result;
 }
 
@@ -101,7 +124,43 @@ export function validateConnectorUrl(value, { kind = 'http', allowedHosts = [] }
 
 const READ_ACTIONS = new Set(['get_login_info', 'get_group_list', 'get_status', 'get_version_info', 'get_stranger_info',
   'get_group_info', 'get_group_member_info', 'get_group_member_list', 'get_msg', 'get_forward_msg', 'get_image',
-  'get_record', 'get_friend_list', 'get_group_file_system_info', 'get_group_root_files', 'get_group_files_by_folder', 'get_collection_list']);
+  'get_record', 'get_friend_list', 'get_group_file_system_info', 'get_group_root_files', 'get_group_files_by_folder', 'get_collection_list',
+  '_get_group_notice', 'fetch_custom_face']);
+
+export const SNOWLUMA_HTTP_LIMITS = Object.freeze({ requestBytes: 1024 * 1024, imageBytes: 8 * 1024 * 1024,
+  imageRequestBytes: 12 * 1024 * 1024 });
+const plain = value => value !== null && typeof value === 'object' && !Array.isArray(value)
+  && [Object.prototype, null].includes(Object.getPrototypeOf(value));
+const exactKeys = (value, allowed) => plain(value) && Object.keys(value).every(key => allowed.includes(key));
+
+// Only the host's fixed single-image message shape earns the larger budget.
+// Other actions, URLs, custom segments, extra fields and text remain at 1 MiB.
+function approvedImageMessage(action, value) {
+  const target = action === 'send_group_msg' ? 'group_id' : action === 'send_private_msg' ? 'user_id' : '';
+  if (!target || !exactKeys(value, [target, 'message']) || !safeId(value[target])
+    || !Array.isArray(value.message) || !value.message.length || value.message.length > 4) return false;
+  let images = 0;
+  for (const segment of value.message) {
+    if (!exactKeys(segment, ['type', 'data'])) return false;
+    if (segment.type === 'text') {
+      if (!exactKeys(segment.data, ['text']) || typeof segment.data.text !== 'string' || segment.data.text.length > 12_000) return false;
+      continue;
+    }
+    if (segment.type !== 'image' || ++images > 1 || !exactKeys(segment.data, ['file', 'sub_type'])
+      || segment.data.sub_type !== undefined && ![0, 1].includes(segment.data.sub_type)
+      || typeof segment.data.file !== 'string' || !segment.data.file.startsWith('base64://')) return false;
+    const encoded = segment.data.file.slice(9);
+    if (!encoded.length || encoded.length % 4 || /[^A-Za-z0-9+/=]/u.test(encoded)) return false;
+    const padding = encoded.endsWith('==') ? 2 : encoded.endsWith('=') ? 1 : 0;
+    if (encoded.indexOf('=') !== (padding ? encoded.length - padding : -1)
+      || encoded.length / 4 * 3 - padding > SNOWLUMA_HTTP_LIMITS.imageBytes) return false;
+  }
+  return images === 1;
+}
+
+function discardBody(body) {
+  try { void Promise.resolve(body?.cancel?.()).catch(() => {}); } catch {}
+}
 
 /** SnowLuma action transport. Admission and QQ identity are checked by the caller.
  * There are deliberately no retries: a lost response may already have sent a message.
@@ -114,33 +173,59 @@ export function createSnowLumaHttpClient({ baseUrl, token, allowedHosts = [], fe
   if (typeof fetchImpl !== 'function') throw new TypeError('fetchImpl must be a function');
   const controllers = new Set();
   let closed = false;
-  const redact = text => String(text || '').split(token).join('[已隐藏]').slice(0, 200);
+  const redact = text => String(text || '').split(token).join('[已隐藏]')
+    .replace(/(?:base64:\/\/|data:[^;,\s]+;base64,)[A-Za-z0-9+/=]+/giu, '[图片数据已隐藏]').slice(0, 200);
   const request = async (action, params = {}, { signal, isSend } = {}) => {
+    const started = performance.now();
     if (closed) throw failure('ONEBOT_CONNECTION_CLOSED', 'SnowLuma HTTP 连接已关闭。', 409);
-    if (!/^[a-z][a-z0-9_]{0,63}$/.test(action) || !params || typeof params !== 'object' || Array.isArray(params)) throw failure('ONEBOT_ACTION_INVALID', 'OneBot 操作或参数无效。', 400);
+    if (!(action === '_get_group_notice' || /^[a-z][a-z0-9_]{0,63}$/.test(action))
+      || !params || typeof params !== 'object' || Array.isArray(params)) throw failure('ONEBOT_ACTION_INVALID', 'OneBot 操作或参数无效。', 400);
     const body = JSON.stringify(params);
-    if (Buffer.byteLength(body) > 1024 * 1024) throw failure('ONEBOT_REQUEST_TOO_LARGE', 'OneBot 操作参数过大。', 400);
+    const bodyBytes = Buffer.byteLength(body);
+    if (bodyBytes > SNOWLUMA_HTTP_LIMITS.requestBytes && (bodyBytes > SNOWLUMA_HTTP_LIMITS.imageRequestBytes
+      || !approvedImageMessage(action, JSON.parse(body)))) throw failure('ONEBOT_REQUEST_TOO_LARGE', 'OneBot 操作参数过大，或不符合受管图片消息范围。', 400);
     const writes = isSend === true || !READ_ACTIONS.has(action);
     const controller = new AbortController();
     controllers.add(controller);
     let timedOut = false, attempted = false, definitiveFailure = false;
-    const timer = setTimeout(() => { timedOut = true; controller.abort(); }, timeoutMs);
-    timer.unref?.();
+    const deadline = started + timeoutMs;
+    const timer = setTimeout(() => { timedOut = true; controller.abort(); }, Math.max(1, deadline - performance.now()));
     const abort = () => controller.abort(signal?.reason);
     if (signal?.aborted) abort(); else signal?.addEventListener('abort', abort, { once: true });
+    const check = () => {
+      if (performance.now() >= deadline) { timedOut = true; controller.abort(); }
+      if (controller.signal.aborted) throw failure(timedOut ? 'ONEBOT_TIMEOUT' : 'ONEBOT_CANCELLED',
+        timedOut ? 'SnowLuma HTTP 操作超时。' : 'SnowLuma 操作已取消。', timedOut ? 502 : 409);
+    };
+    const wait = async (operation, late = () => {}) => {
+      check(); let listener;
+      const cancelled = new Promise((_, reject) => {
+        listener = () => { try { check(); } catch (error) { reject(error); } };
+        controller.signal.addEventListener('abort', listener, { once: true });
+      });
+      const pending = Promise.resolve().then(() => { check(); return operation(); });
+      void pending.then(value => { if (controller.signal.aborted || performance.now() >= deadline) late(value); }).catch(() => {});
+      try { const value = await Promise.race([pending, cancelled]); check(); return value; }
+      finally { controller.signal.removeEventListener('abort', listener); }
+    };
     try {
-      if (controller.signal.aborted) throw failure('ONEBOT_CANCELLED', 'SnowLuma 操作已取消。', 409);
-      attempted = true;
-      const response = await fetchImpl(new URL(action, base), { method: 'POST', redirect: 'error',
-        headers: { 'content-type': 'application/json', authorization: `Bearer ${token}` }, body, signal: controller.signal });
+      check();
+      const response = await wait(() => {
+        attempted = true;
+        return fetchImpl(new URL(action, base), { method: 'POST', redirect: 'error',
+          headers: { 'content-type': 'application/json', authorization: `Bearer ${token}` }, body, signal: controller.signal });
+      }, value => discardBody(value?.body));
+      if (!response || typeof response.status !== 'number') throw failure('ONEBOT_INVALID_RESPONSE', 'SnowLuma 没有返回有效的 OneBot 数据。');
+      if (response.redirected) { discardBody(response.body); throw failure('ONEBOT_HTTP_FAILED', 'SnowLuma HTTP 地址发生跳转，已停止读取。'); }
       if (!response.ok) {
-        definitiveFailure = response.status >= 400 && response.status < 500;
+        discardBody(response.body);
+        definitiveFailure = [400, 401, 403, 404, 405, 413, 415].includes(response.status);
         if ([401, 403].includes(response.status)) throw failure('ONEBOT_AUTH_FAILED', 'SnowLuma 拒绝了 HTTP Token，请核对该账号 HTTP 服务的 Token。', 401, { field: 'secrets.snowlumaHttpToken' });
         throw failure('ONEBOT_HTTP_FAILED', `SnowLuma HTTP 操作失败（HTTP ${response.status}）。`);
       }
       const length = Number(response.headers.get('content-length'));
       if (Number.isFinite(length) && length > maxResponseBytes) {
-        await response.body?.cancel();
+        discardBody(response.body);
         throw failure('ONEBOT_RESPONSE_TOO_LARGE', 'SnowLuma 返回的数据超过限制。');
       }
       const reader = response.body?.getReader();
@@ -149,24 +234,31 @@ export function createSnowLumaHttpClient({ baseUrl, token, allowedHosts = [], fe
       const chunks = [];
       try {
         while (true) {
-          const chunk = await reader.read();
+          const chunk = await wait(() => reader.read());
           if (chunk.done) break;
+          if (!(chunk.value instanceof Uint8Array)) throw failure('ONEBOT_INVALID_RESPONSE', 'SnowLuma 返回了无效的数据流。');
           size += chunk.value.byteLength;
           if (size > maxResponseBytes) {
-            await reader.cancel();
             throw failure('ONEBOT_RESPONSE_TOO_LARGE', 'SnowLuma 返回的数据超过限制。');
           }
           chunks.push(Buffer.from(chunk.value));
         }
-      } finally { reader.releaseLock(); }
+      } catch (error) {
+        try { void Promise.resolve(reader.cancel()).catch(() => {}); } catch {}
+        throw error;
+      } finally { try { reader.releaseLock(); } catch {} }
+      check();
       let result;
       try { result = JSON.parse(Buffer.concat(chunks).toString('utf8')); } catch { throw failure('ONEBOT_INVALID_RESPONSE', 'SnowLuma 返回的 OneBot 数据不是有效 JSON。'); }
       if (!result || typeof result !== 'object' || Array.isArray(result) || result.status !== 'ok' || result.retcode !== 0) {
-        definitiveFailure = Boolean(result && result.status === 'failed' && Number.isSafeInteger(result.retcode));
+        // Generic runtime failures (SnowLuma 100/1200) may follow a real QQ
+        // side effect. Only known validation/unknown-action codes attest that
+        // the action was refused before execution; no failed write is retried.
+        definitiveFailure = Boolean(result && result.status === 'failed' && [1400, 1404, 1413].includes(result.retcode));
         const code = action === 'get_login_info' ? 'QQ_NOT_LOGGED_IN' : action === 'get_group_list' ? 'GROUP_LIST_UNAVAILABLE' : 'ONEBOT_ACTION_FAILED';
         throw failure(code, `SnowLuma 操作未成功（${redact(result?.wording || result?.message || result?.retcode || '无有效结果')}）。`);
       }
-      return result.data;
+      check(); return result.data;
     } catch (error) {
       const issue = error?.code && error.status ? error : failure(timedOut ? 'ONEBOT_TIMEOUT' : controller.signal.aborted ? 'ONEBOT_CANCELLED' : 'ONEBOT_HTTP_FAILED',
         timedOut ? 'SnowLuma HTTP 操作超时。' : controller.signal.aborted ? 'SnowLuma 操作已取消。' : '未能完成 SnowLuma HTTP 操作，请检查服务与地址。', controller.signal.aborted && !timedOut ? 409 : 502);

@@ -18,14 +18,19 @@ async function serverFixture(handler) {
   } };
 }
 
-test('SnowLuma review gate cannot be enabled by mutating catalog copies', () => {
+test('external SnowLuma admission is fixed and never claims native or live QQ validation', () => {
   const catalog = connectorCatalog();
-  catalog[1].available = true; catalog[1].review.available = true;
+  catalog[1].available = false; catalog[1].review.available = false; catalog[1].review.verified = true;
   assert.equal(assertBackendAvailable('napcat'), 'napcat');
-  assert.throws(() => assertBackendAvailable('snowluma'), { code: 'SNOWLUMA_REVIEW_REQUIRED', status: 409 });
-  assert.equal(SNOWLUMA_REVIEW.state, 'static_review_only');
-  assert.equal(getBackendCapabilities('snowluma').available, false);
-  assert.equal(getBackendCapabilities('snowluma').favorites, 'unverified');
+  assert.equal(assertBackendAvailable('snowluma'), 'snowluma');
+  assert.equal(SNOWLUMA_REVIEW.state, 'external_protocol_adapter');
+  assert.equal(SNOWLUMA_REVIEW.verified, false);
+  assert.equal(SNOWLUMA_REVIEW.externalRuntime, true); assert.equal(SNOWLUMA_REVIEW.runtimeManaged, false);
+  const capabilities = getBackendCapabilities('snowluma');
+  assert.equal(capabilities.available, true); assert.equal(capabilities.verified, false);
+  assert.equal(capabilities.favorites, 'source-contract'); assert.equal(capabilities.favoriteStickers, 'source-contract');
+  assert.equal(capabilities.protocolValidation, 'fixture-tested');
+  assert.equal(capabilities.windowsDynamic, 'pending'); assert.equal(capabilities.liveQQ, 'pending');
   assert.throws(() => assertBackendAvailable('unknown'), { code: 'QQ_BACKEND_INVALID' });
 });
 

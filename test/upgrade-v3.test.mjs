@@ -6,6 +6,7 @@ import path from 'node:path';
 import { DEFAULT_CONFIG, migrateConfig, validateConfig } from '../src/config.mjs';
 import { createStore } from '../src/store.mjs';
 import { createRuntime } from '../src/runtime.mjs';
+import { SNOWLUMA_REVIEW } from '../src/onebot-connector.mjs';
 
 function oldConfig(version) {
   const config = structuredClone(DEFAULT_CONFIG);
@@ -26,11 +27,11 @@ function oldConfig(version) {
   return config;
 }
 
-test('v1/v2 migrate to v3 without changing persona, QQ identity, endpoints or intended permissions', () => {
+test('v1/v2 migrate to v4 without changing persona, QQ identity, endpoints or intended permissions', () => {
   for (const version of [1, 2]) {
     const input = oldConfig(version), snapshot = structuredClone(input), migrated = migrateConfig(input);
     assert.deepEqual(input, snapshot, 'migration must not mutate caller data');
-    assert.equal(migrated.schemaVersion, 3);
+    assert.equal(migrated.schemaVersion, 4);
     assert.equal(migrated.qq.backend, 'napcat');
     assert.equal(migrated.qq.connections.napcat.wsUrl, input.qq.wsUrl);
     assert.equal(migrated.qq.connections.napcat.webUiUrl, input.qq.webUiUrl);
@@ -63,7 +64,7 @@ test('store upgrade retains encrypted credentials, confirmed memory and rollback
       const vault = fs.readFileSync(path.join(dir, 'vault.json')), key = fs.readFileSync(path.join(dir, 'vault.key'));
       store = createStore(dir);
       const upgraded = store.getState();
-      for (const name of ['draft', 'applied', 'previous']) assert.equal(upgraded[name].schemaVersion, 3);
+      for (const name of ['draft', 'applied', 'previous']) assert.equal(upgraded[name].schemaVersion, 4);
       assert.equal(upgraded.revision, 8); assert.equal(upgraded.appliedRevision, 7);
       assert.equal(upgraded.applied.chat.persona, legacy.chat.persona);
       assert.equal(upgraded.applied.permissions.released, true);
@@ -78,23 +79,34 @@ test('store upgrade retains encrypted credentials, confirmed memory and rollback
       assert.deepEqual(fs.readFileSync(path.join(dir, 'config.json')), first);
       assert.equal(store.personas.get({ actualQQ: '111111' }).persona.body, legacy.chat.persona);
       store.rollback();
-      assert.equal(store.getConfig().schemaVersion, 3);
+      assert.equal(store.getConfig().schemaVersion, 4);
       assert.equal(store.getConfig().permissions.released, false);
     } finally { store?.close(); fs.rmSync(dir, { recursive: true, force: true }); }
   }
 });
 
-test('forged saved SnowLuma configuration cannot bypass apply or direct runtime admission', async () => {
+test('saved SnowLuma settings allow manual adaptation but cannot borrow NapCat credentials or forge runtime validation', async () => {
   const config = validateConfig(oldConfig(2));
   config.qq.backend = 'snowluma'; config.qq.httpUrl = 'http://127.0.0.1:17773';
   assert.equal(validateConfig(config).qq.backend, 'snowluma', 'inactive experimental settings can be inspected and saved');
-  assert.throws(() => validateConfig(config, { applying: true, hasSecret: () => true }), error => error.issues.some(issue => issue.path === 'qq.backend'));
+  const credentials = { napcatToken: 'legacy-napcat-secret', deepseekApiKey: 'legacy-model-secret' };
+  assert.throws(() => validateConfig(config, { applying: true, hasSecret: name => Boolean(credentials[name]) }), error =>
+    ['secrets.snowlumaWsToken', 'secrets.snowlumaHttpToken'].every(path => error.issues.some(issue => issue.path === path)));
+  assert.equal(validateConfig(config, { applying: true, hasSecret: () => true }).qq.backend, 'snowluma',
+    'the current external adapter no longer relies on a permanent unavailable gate');
+  const reviewBefore = structuredClone(SNOWLUMA_REVIEW);
   const directory = fs.mkdtempSync(path.join(os.tmpdir(), 'qq-service-snow-gate-'));
   const store = createStore(directory);
-  const runtime = createRuntime({ getConfig: () => config, getSecret: () => 'secret', store, installer: {} });
+  const runtime = createRuntime({ getConfig: () => config, getSecret: name => credentials[name] || '', store, installer: {} });
   try {
-    await assert.rejects(runtime.connect(), { code: 'SNOWLUMA_REVIEW_REQUIRED' });
+    await assert.rejects(runtime.connect(), { code: 'SNOWLUMA_WS_TOKEN_MISSING' });
+    credentials.snowlumaWsToken = 'snow-ws-secret';
+    await assert.rejects(runtime.connect(), error => error.code === 'ONEBOT_TOKEN_MISSING' && error.field === 'secrets.snowlumaHttpToken');
     assert.equal(runtime.status().connected, false);
     assert.equal(runtime.status().metrics.sent, 0);
+    assert.equal(SNOWLUMA_REVIEW.available, true);
+    assert.equal(SNOWLUMA_REVIEW.verified, false);
+    assert.equal(SNOWLUMA_REVIEW.windowsDynamic, 'pending');
+    assert.deepEqual(SNOWLUMA_REVIEW, reviewBefore);
   } finally { runtime.stop(); store.close(); fs.rmSync(directory, { recursive: true, force: true }); }
 });

@@ -156,7 +156,7 @@ export function createPersonaStore({ db }) {
     get,
     history({ actualQQ, limit = 30 } = {}) {
       identity(actualQQ);
-      if (!Number.isSafeInteger(limit) || limit < 1 || limit > 100) throw fail('人格历史数量须为1–100。');
+      if (!Number.isSafeInteger(limit) || limit < 1 || limit > 1100) throw fail('人格历史数量须为1–1100。');
       return db.prepare('SELECT * FROM persona_revisions WHERE actual_qq=? ORDER BY revision DESC LIMIT ?').all(actualQQ, limit).map(fromRow);
     },
     save({ actualQQ, persona, expectedRevision } = {}) {

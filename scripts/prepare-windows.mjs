@@ -5,6 +5,8 @@ import { spawn } from 'node:child_process';
 import { createRequire } from 'node:module';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
+import { copyProductionPackages } from './production-packages.mjs';
+import backendResources from './backend-resources.cjs';
 
 const projectRoot = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
 const buildRoot = path.join(projectRoot, 'build');
@@ -91,26 +93,17 @@ async function stageRuntime(archive) {
 async function stageBackend() {
   const metadata = JSON.parse(await readFile(path.join(projectRoot, 'package.json'), 'utf8'));
   const dependencies = metadata.dependencies ?? {};
-  // Stage the audited production dependency only. Fail closed when new
-  // dependencies are added so a build cannot silently omit their subdependencies.
-  if (Object.keys(dependencies).some(name => name !== 'ws')) {
-    throw new Error('The production dependency list changed. Update the Windows staging script before building.');
-  }
   const destination = path.join(buildRoot, 'backend');
   const stage = path.join(buildRoot, `.backend-stage-${process.pid}`);
+  let backendChecks;
   await rm(stage, { recursive: true, force: true });
   await mkdir(path.join(stage, 'node_modules'), { recursive: true });
   try {
-    for (const folder of ['src', 'public']) {
+    for (const folder of ['src', 'public', 'examples']) {
       await cp(path.join(projectRoot, folder), path.join(stage, folder), { recursive: true });
     }
-    for (const [name, requestedVersion] of Object.entries(dependencies)) {
-      const source = path.join(projectRoot, 'node_modules', name);
-      const installed = JSON.parse(await readFile(path.join(source, 'package.json'), 'utf8'));
-      if (installed.version !== requestedVersion) throw new Error(`Expected ${name}@${requestedVersion}, found ${installed.version}. Run npm ci.`);
-      if (Object.keys(installed.dependencies ?? {}).length) throw new Error(`${name} now has required dependencies; update Windows staging.`);
-      await cp(source, path.join(stage, 'node_modules', name), { recursive: true });
-    }
+    const production = await copyProductionPackages({ projectRoot, destination: stage });
+    await writeFile(path.join(stage, 'production-packages.json'), JSON.stringify(production, null, 2) + '\n');
     await writeFile(path.join(stage, 'package.json'), JSON.stringify({
       name: metadata.name, version: metadata.version, private: true,
       type: 'module', license: metadata.license, engines: metadata.engines,
@@ -119,6 +112,9 @@ async function stageBackend() {
     for (const file of ['LICENSE', 'README.md', 'THIRD_PARTY_NOTICES.md']) {
       if (await exists(path.join(projectRoot, file))) await cp(path.join(projectRoot, file), path.join(stage, file));
     }
+    await cp(path.join(projectRoot, 'docs'), path.join(stage, 'docs'), { recursive: true });
+    backendChecks = await backendResources.verifyBackendResources(stage);
+    console.log(`Verified backend stage before promotion: ${JSON.stringify(backendChecks)}`);
     await rm(destination, { recursive: true, force: true });
     await rename(stage, destination);
   } finally {
@@ -130,9 +126,10 @@ async function stageBackend() {
     appVersion: metadata.version, platform: 'win32', arch: 'x64',
     nodeVersion: NODE_VERSION, runtimeSource: NODE_URL,
     runtimeArchiveSha256: NODE_SHA256, nodeExecutableBytes: runtimeSize,
-    dependencies
+    dependencies, backendChecks,
+    productionPackages: JSON.parse(await readFile(path.join(destination, 'production-packages.json'), 'utf8'))
   }, null, 2) + '\n');
-  console.log('Staged the backend and ws production dependency without development packages or account data.');
+  console.log('Staged the backend, MCP examples and locked production dependency closure without development packages or account data.');
 }
 
 try {

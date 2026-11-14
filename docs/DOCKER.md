@@ -2,7 +2,7 @@
 
 Docker 运行 Node.js 服务端、网页仪表盘、账号任务、人格和记忆存储。浏览器访问仪表盘即可使用，Windows EXE 仍可单独使用。Electron 桌面窗口、托盘和 Windows 程序选择器不在容器中运行。
 
-QQ 连接端独立运行。第一版容器不会安装、启动或停止宿主机 NapCat，也不会挂载 Docker socket。SnowLuma 仍受实验功能安全检查限制，部署到 Docker 不会自动解锁。
+QQ 连接端独立运行。容器不会安装、启动或停止宿主机 NapCat，也不会挂载 Docker socket。开发分支可连接用户自行运行的固定SnowLuma 2.4.2-node／OneBot v11外部实例；不把它的本体或native放入QQ_Service镜像，也不自动部署。外部协议适配可用，Windows动态安全和真实QQ仍待验，详见[审查与手动接入](SNOWLUMA_SECURITY_REVIEW.md)。
 
 ## 启动
 
@@ -41,6 +41,16 @@ docker compose exec qq-service node -e "const s=require('node:net').connect(3001
 ```
 
 如果 NapCat 在另一个容器中，可将两者加入同一个受信任的 Docker 网络，在 `QQ_SERVICE_ONEBOT_HOSTS` 中显式加入它的服务名，再填写该服务名对应的 OneBot 地址。每个 QQ 仍需独立端口或连接配置，不能自动跟随其他账号。
+
+## 连接宿主机上的外部 SnowLuma（开发分支）
+
+用户先按适用许可在宿主机自行准备并运行固定实例，完成目标QQ登录／接入，关闭其自带的`#sl`状态回复、通知渠道、历史同步、Hook自动加载和开发模式。不要将模型Key或QQ_Service数据目录交给外部程序。
+
+在账号连接中选择SnowLuma，事件地址可用`ws://host.docker.internal:3001`，动作地址可用`http://host.docker.internal:3000`；端口以该QQ的外部配置为准，分别填写WS Token和HTTP Token。管理页是用户浏览器访问的宿主机地址，例如`http://127.0.0.1:5099`。同样要核对宿主监听、防火墙及`QQ_SERVICE_ONEBOT_HOSTS`，不能用容器自己的127.0.0.1代替宿主地址。
+
+握手需要HTTP版本、登录QQ、在线状态与WS事件身份、在线状态一致，且版本报告为`SnowLuma / 2.4.2-node / v11`；只测通一个端口不够。切换连接端后恢复只读，重新确认范围再启动；保存的人格和记忆仍属于原profile／QQ，旧连接代的消息引用不能转成新连接端的发送、回应或撤回动作。模块卡只提供外部说明和管理页，不提供SnowLuma安装或进程控制。
+
+SnowLuma私有构建／运行需满足其单独的Node和许可条件。QQ_Service镜像中Node的版本不能当作宿主外部实例已满足条件的证明，也不能用Linux编译通过代替Windows原生运行验收。
 
 ## 配置与持久化
 

@@ -1,5 +1,6 @@
 import { createHash, randomUUID } from 'node:crypto';
 import { memorySearchTerms } from './memory-store.mjs';
+import { MEMORY_STORAGE_LIMITS } from './memory-storage.mjs';
 
 const fail = (message, statusCode = 400) => Object.assign(new Error(message), { statusCode });
 const validId = value => typeof value === 'string' && /^[1-9]\d{3,19}$/.test(value);
@@ -13,7 +14,7 @@ const scope = input => {
   return { actualQQ: input.actualQQ, groupId: input.groupId };
 };
 const cleanText = text => {
-  if (typeof text !== 'string' || !text.trim() || text.length > 300 || text.includes('\0')) throw fail('经历内容须为 1–300 字符。');
+  if (typeof text !== 'string' || !text.trim() || text.length > MEMORY_STORAGE_LIMITS.experienceTextChars || text.includes('\0')) throw fail(`经历内容须为 1–${MEMORY_STORAGE_LIMITS.experienceTextChars} 字符。`);
   return text.trim();
 };
 const fromRow = row => row ? ({ id: row.id, actualQQ: row.actual_qq, groupId: row.group_id,
@@ -71,7 +72,7 @@ export function createExperienceStore({ db, getState }) {
     return next;
   };
   const capActive = (actualQQ, groupId) => {
-    const stale = db.prepare("SELECT * FROM experiences WHERE actual_qq=? AND group_id=? AND status='active' ORDER BY updated_at DESC,rowid DESC LIMIT -1 OFFSET 40").all(actualQQ, groupId);
+    const stale = db.prepare("SELECT * FROM experiences WHERE actual_qq=? AND group_id=? AND status='active' ORDER BY updated_at DESC,rowid DESC LIMIT -1 OFFSET ?").all(actualQQ, groupId, MEMORY_STORAGE_LIMITS.activeExperiencesPerGroup);
     for (const row of stale) update(fromRow(row), { status: 'archived' });
   };
   const insert = ({ actualQQ, groupId, kind, text, origin, sources }) => {
@@ -89,7 +90,7 @@ export function createExperienceStore({ db, getState }) {
     const args = [actualQQ, groupId], filters = ['actual_qq=?', 'group_id=?'];
     if (status !== 'all') { filters.push('status=?'); args.push(status); }
     if (query.trim()) { filters.push("text LIKE ? ESCAPE '\\'"); args.push(`%${query.trim().replace(/[\\%_]/g, '\\$&')}%`); }
-    args.push(Math.max(1, Math.min(1000, Math.floor(Number(limit) || 200))));
+    args.push(Math.max(1, Math.min(MEMORY_STORAGE_LIMITS.managementListRecords, Math.floor(Number(limit) || 200))));
     return db.prepare(`SELECT * FROM experiences WHERE ${filters.join(' AND ')} ORDER BY updated_at DESC,rowid DESC LIMIT ?`).all(...args).map(fromRow);
   };
   return {
@@ -145,7 +146,13 @@ export function createExperienceStore({ db, getState }) {
       scope({ actualQQ, groupId });
       if (!getGroup({ actualQQ, groupId }).enabled) return [];
       const terms = memorySearchTerms(query);
-      return list({ actualQQ, groupId, limit: 40 }).map((record, index) => ({ record, index,
+      // Rank inside SQLite before loading the same forty-row candidate budget.
+      // Enlarging the archive must not make older relevant notes unreachable,
+      // nor expand the model-facing result or context assembly limits.
+      const order = terms.length ? `${terms.map(() => 'CASE WHEN instr(lower(text),?)>0 THEN 1 ELSE 0 END').join('+')} DESC,` : '';
+      const candidates = db.prepare(`SELECT * FROM experiences WHERE actual_qq=? AND group_id=? AND status='active'
+        ORDER BY ${order}updated_at DESC,rowid DESC LIMIT 40`).all(actualQQ, groupId, ...terms).map(fromRow);
+      return candidates.map((record, index) => ({ record, index,
         score: terms.reduce((score, term) => score + Number(normalize(record.text).includes(term)), 0) + Number(record.kind === 'pending_topic') * 0.1 }))
         .sort((a, b) => b.score - a.score || a.index - b.index)
         .slice(0, Math.max(1, Math.min(8, Math.floor(Number(limit) || 8)))).map(item => item.record);

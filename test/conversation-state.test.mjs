@@ -118,30 +118,30 @@ test('清空后会话保留期删除全表、rowid重用不会挡住新消息，
   } finally { f.close(); }
 });
 
-test('清空覆盖仍保留的30天原文，标记随原文保留期清理且过期历史不会重新入模', () => {
+test('清空覆盖仍保留的330天原文，标记随原文保留期清理且过期历史不会重新入模', () => {
   const f = fixture();
   try {
     const source = f.add();
     const yesterday = f.add({ messageId: 'yesterday', time: source.time - 86400 });
-    f.add({ messageId: 'beyond-retention', time: source.time - 31 * 86400 });
+    f.add({ messageId: 'beyond-retention', time: source.time - 331 * 86400 });
     f.store.clear(key);
     assert.equal(f.db.prepare('SELECT count(*) AS n FROM dialogue_cleared_sources').get().n, 2);
     assert.deepEqual(f.store.filterHistory({ ...key, messages: [yesterday, source] }), []);
     f.advance(2 * 60 * 60 * 1000 + 1000);
     f.store.observe(key);
     assert.equal(f.db.prepare('SELECT count(*) AS n FROM dialogue_cleared_sources').get().n, 2);
-    f.advance(31 * 86400 * 1000);
+    f.advance(331 * 86400 * 1000);
     assert.deepEqual(f.store.filterHistory({ ...key, messages: [source, yesterday] }), []);
     assert.equal(f.db.prepare('SELECT count(*) AS n FROM dialogue_cleared_sources').get().n, 0);
   } finally { f.close(); }
 });
 
-test('精确满30天时清空标记到期也不会出现一秒的旧上下文复活窗口', () => {
+test('精确满330天时清空标记到期也不会出现一秒的旧上下文复活窗口', () => {
   const f = fixture();
   try {
     const source = f.add();
     f.store.clear(key);
-    f.advance(30 * 86400 * 1000);
+    f.advance(330 * 86400 * 1000);
     assert.deepEqual(f.store.filterHistory({ ...key, messages: [source] }), []);
     assert.equal(f.db.prepare('SELECT count(*) AS n FROM dialogue_cleared_sources').get().n, 0);
   } finally { f.close(); }
@@ -259,7 +259,7 @@ test('会话待续引用不能跨群或引用非待续经历，自动归档和�
     assert.throws(() => f.store.setPending({ ...key, experienceIds: [other.id] }), error => error.statusCode === 409);
     assert.throws(() => f.store.setPending({ ...key, experienceIds: [expression.id] }), error => error.statusCode === 409);
     f.store.setPending({ ...key, experienceIds: [note.id], items: ['主人手动保留的事项'] });
-    for (let index = 0; index < 40; index++) experiences.mutate({ ...key, action: 'create', kind: 'interaction', text: `后来的经历 ${index}` });
+    for (let index = 0; index < 440; index++) experiences.mutate({ ...key, action: 'create', kind: 'interaction', text: `后来的经历 ${index}` });
     assert.deepEqual(f.store.get(key).pendingTopics, ['主人手动保留的事项']);
     let archived = experiences.list({ ...key, status: 'archived' }).find(record => record.id === note.id);
     archived = experiences.mutate({ ...key, action: 'restore', id: archived.id, version: archived.version });

@@ -22,6 +22,8 @@ COPY package.json LICENSE ./
 COPY src ./src
 COPY public ./public
 COPY examples/plugins ./examples/plugins
+COPY examples/mcp ./examples/mcp
+COPY docs ./docs
 COPY scripts/docker-healthcheck.mjs ./scripts/docker-healthcheck.mjs
 RUN chmod -R a+rX /app && mkdir -p /data && chown node:node /data
 USER node
