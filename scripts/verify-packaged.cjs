@@ -73,7 +73,7 @@ async function verifyWindowsPackage(appOutDir, expectedVersion) {
     const leftover = await fs.stat(path.join(backend, file)).catch(error => { if (error.code === 'ENOENT') return null; throw error; });
     assert(!leftover, `Retired editor resource is still in the backend package: ${file}`);
   }
-  const privateFile = /(?:^|\/)(?:auth\.json|config(?:\.(?:v\d+|pre-api-only)\.backup)?\.json|secrets\.json|vault\.(?:json|key)|accounts\.json|module-state\.json|napcat-settings\.json|memory-storage-(?:settings|owner)\.json|qq-actions\.json|ui-design\.json|\.env(?:\.[^/]*)?|[^/]+\.sqlite(?:-wal|-shm)?|qq-assets|codex-home|accounts|data)(?:\/|$)/i;
+  const privateFile = /(?:^|\/)(?:auth\.json|config(?:\.(?:v\d+|pre-api-only)\.backup)?\.json|secrets\.json|vault\.(?:json|key)|accounts\.json|module-state\.json|napcat-settings\.json|memory-storage-(?:settings|owner)\.json|qq-actions\.json|ui-design\.json|\.env(?:\.[^/]*)?|[^/]+\.(?:pfx|p12|pem|key)|[^/]+\.sqlite(?:-wal|-shm)?|qq-assets|codex-home|accounts|data)(?:\/|$)/i;
   assert(!files.some(file => privateFile.test(file)), 'Desktop archive contains unexpected account data');
   async function scan(directory) {
     for (const entry of await fs.readdir(directory, { withFileTypes: true })) {

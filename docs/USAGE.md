@@ -6,7 +6,7 @@ v0.7.0 仅通过 API 接入模型，订阅／Codex 入口已移除。账号菜�
 
 ## 1. 打开应用，创建账号
 
-从 [Release](https://github.com/klwb360/QQ_Service/releases/latest) 下载 `QQ_Service-0.8.0-Windows-x64.exe`，放在普通文件夹，例如 `D:\Apps\QQ_Service`，双击打开。适用于 Windows 10/11 x64，自带 Node.js 和 npm。便携 EXE 首次展开可能较慢；当前未签名，Windows 可能显示发布者未知或 SmartScreen 提示。
+从 [Release](https://github.com/klwb360/QQ_Service/releases/latest) 下载 `QQ_Service-0.8.0-Windows-x64.exe`，放在普通文件夹，例如 `D:\Apps\QQ_Service`，双击打开。适用于 Windows 10/11 x64，自带 Node.js 和 npm。便携 EXE 首次展开可能较慢；旧 v0.8.0 Release 未签名，Windows 可能显示发布者未知或 SmartScreen 提示。新的 main 构建另提供自签名包；首次导入公开证书、核对发布者与移除信任的步骤见 [Windows 签名与信任安装](WINDOWS_SIGNING.md)，普通 PR 预览仍默认未签名。
 
 窗口使用应用内标题栏，可最小化、最大化或关闭；原生菜单栏已移除。可在「设置」选择关闭按钮的行为：**默认最小化到托盘**继续运行，也可改为完全退出；这是所有账号共用的应用设置。托盘始终提供完全退出入口；无法创建托盘时，关闭会退出。重复双击会唤起已有窗口。后台只在本机运行；休眠、关机或完全退出时不采集新消息，也不补跑错过的定时汇总。
 

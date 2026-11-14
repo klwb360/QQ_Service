@@ -22,7 +22,7 @@ const requiredBackendResources = Object.freeze([
   ...['bilibili', 'demo-server', 'http-notes', 'local-notes', 'web-search-safe'].map(name => `examples/mcp/${name}.mjs`),
   'examples/plugins/bilibili-assistant/index.mjs', 'examples/plugins/bilibili-assistant/http.mjs',
   'examples/plugins/bilibili-assistant/plugin.json',
-  ...['MCP', 'MCP_PRESETS', 'QQ_ASSETS', 'TOOL_ROADMAP', 'USAGE', 'NATIVE_NAPCAT_WINDOWS', 'PERSONA_MEMORY', 'SOCIAL_CHAT', 'PLUGIN_DEVELOPMENT', 'SNOWLUMA_SECURITY_REVIEW', 'SNOWLUMA_BUILD'].map(name => `docs/${name}.md`),
+  ...['MCP', 'MCP_PRESETS', 'QQ_ASSETS', 'TOOL_ROADMAP', 'USAGE', 'NATIVE_NAPCAT_WINDOWS', 'PERSONA_MEMORY', 'SOCIAL_CHAT', 'PLUGIN_DEVELOPMENT', 'SNOWLUMA_SECURITY_REVIEW', 'SNOWLUMA_BUILD', 'WINDOWS_SIGNING'].map(name => `docs/${name}.md`),
   'docs/assets/mcp-services.png',
 ]);
 
@@ -37,7 +37,7 @@ async function verifyBackendResources(directory) {
     });
     assert(info?.isFile() && !info.isSymbolicLink(), `Required backend resource is missing or linked: ${relative}`);
   }
-  const privateFile = /(?:^|\/)(?:auth\.json|config(?:\.(?:v\d+|pre-api-only)\.backup)?\.json|secrets\.json|vault\.(?:json|key)|accounts\.json|module-state\.json|napcat-settings\.json|memory-storage-(?:settings|owner)\.json|qq-actions\.json|ui-design\.json|\.env(?:\.[^/]*)?|[^/]+\.sqlite(?:-wal|-shm)?|qq-assets|codex-home|accounts|data)(?:\/|$)/iu;
+  const privateFile = /(?:^|\/)(?:auth\.json|config(?:\.(?:v\d+|pre-api-only)\.backup)?\.json|secrets\.json|vault\.(?:json|key)|accounts\.json|module-state\.json|napcat-settings\.json|memory-storage-(?:settings|owner)\.json|qq-actions\.json|ui-design\.json|\.env(?:\.[^/]*)?|[^/]+\.(?:pfx|p12|pem|key)|[^/]+\.sqlite(?:-wal|-shm)?|qq-assets|codex-home|accounts|data)(?:\/|$)/iu;
   async function scan(current) {
     for (const entry of await fs.readdir(current, { withFileTypes: true })) {
       // Locked third-party packages may contain fixtures named data/config.json.

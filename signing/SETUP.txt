@@ -1,0 +1,48 @@
+QQ_Service：仅需执行一次的 GitHub 签名初始化
+
+用途
+当云端 GitHub 连接缺少 Environment / Secrets 管理权限时，在你自己的
+Windows 10/11 x64 电脑上执行此初始化器。无需全局安装 GitHub CLI，无需管理员。
+它下载固定版本的官方便携 CLI，并核对写在脚本中的 SHA256。
+
+运行
+1. 从当前 PR 的源码下载 Initialize-GitHubSigning.ps1。
+2. 在该文件所在文件夹打开 PowerShell，运行：
+
+   powershell -NoProfile -ExecutionPolicy Bypass -File .\Initialize-GitHubSigning.ps1
+
+   Bypass 只作用于这一次进程，不修改系统执行策略。
+3. 如出现 GitHub 网页授权，用仓库所有者 klwb360 在官方网页确认 GitHub CLI。
+   不要把 Token、PFX 或密码发送到聊天。
+4. 看到 SUCCESS 后，回到项目对话回复“初始化完成”。
+
+脚本会自动完成
+- 确认登录账号是 klwb360 且拥有 QQ_Service 管理权限。
+- 创建或核验 windows-signing 环境，只允许 main；不会放开到 PR 或标签。
+- 在生成私钥前检查环境和 Secrets 的真实管理权限。
+- 新建 RSA-4096 / SHA256、1095天、仅代码签名用途的固定自签名证书。
+- 用独立随机密码加密 PFX，将 PFX 和密码通过标准输入分别写入 GitHub Secrets。
+- 只将公开 CER 和 certificate.json 以一次提交写入现有 fix/model-presets 分支。
+- 清理本机这次创建的私钥和临时加密 PFX，不安装证书信任、不合并或发布项目。
+
+本机保留的只是公开文件
+默认目录：%LOCALAPPDATA%\QQ_Service\signing-public
+其中 QQ_Service.cer 和 certificate.json 可以核对、备份或发给项目维护者；
+它们没有私钥。私钥不会进入源码、聊天、日志、命令行参数或应用下载包。
+
+中途失败
+- 已存在的签名身份不会被自动替换，不要反复生成新证书。
+- 如果提示两个加密 Secrets 已保存但公开提交没有完成，请保留上述公开文件，
+  待网络恢复或其他推送结束后运行：
+
+  powershell -NoProfile -ExecutionPolicy Bypass -File .\Initialize-GitHubSigning.ps1 -ResumePublicCommit
+
+  此模式只补公开提交，不生成私钥，也不重写现有 Secrets。
+- 如仍失败，只提供错误文字及上述两个公开文件；不要提供任何私密材料。
+
+仅查看计划（不联网、不生成证书、不写 GitHub）
+  powershell -NoProfile -ExecutionPolicy Bypass -File .\Initialize-GitHubSigning.ps1 -WhatIf
+
+初始化不是安装信任。收到最终已签名包后，仍需首次显式运行
+Install-QQServiceTrust.ps1，核对固定公开指纹并导入当前用户信任库。
+自签名不提供公共 CA 信任，也不保证消除 SmartScreen 或杀毒提示。

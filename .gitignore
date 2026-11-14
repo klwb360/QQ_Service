@@ -23,6 +23,10 @@ secrets.json
 *.log
 *.zip
 *.exe
+*.pfx
+*.p12
+*.pem
+*.key
 *.sqlite
 *.sqlite-wal
 *.sqlite-shm

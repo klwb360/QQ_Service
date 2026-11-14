@@ -17,6 +17,7 @@
     "desktop": "electron .",
     "prepare:windows": "node scripts/prepare-windows.mjs",
     "build:exe": "npm run prepare:windows && electron-builder --win portable --x64 --publish never",
+    "build:exe:signed": "npm run prepare:windows && electron-builder --config electron-builder.signed.cjs --win portable --x64 --publish never",
     "build:installer": "npm run prepare:windows && electron-builder --win nsis --x64 --publish never",
     "verify:stage": "node scripts/verify-staged.cjs",
     "smoke:stage": "node scripts/staged-backend-smoke.cjs"
