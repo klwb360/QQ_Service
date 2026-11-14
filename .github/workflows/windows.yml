@@ -66,6 +66,14 @@ jobs:
         shell: pwsh
         run: ./scripts/test-signing-bootstrap-input.ps1
 
+      - name: Verify exact certificate dialog guards on both PowerShell hosts
+        shell: pwsh
+        run: |
+          & "$env:SystemRoot/System32/WindowsPowerShell/v1.0/powershell.exe" -NoProfile -NonInteractive -ExecutionPolicy Bypass `
+            -File ./scripts/test-signing-dialog-guard.ps1
+          if ($LASTEXITCODE -ne 0) { throw 'Windows PowerShell 5.1 certificate dialog guard validation failed.' }
+          ./scripts/test-signing-dialog-guard.ps1
+
       - name: Check one-time signing initializer without side effects
         shell: pwsh
         run: ./signing/Initialize-GitHubSigning.ps1 -WhatIf

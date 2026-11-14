@@ -317,7 +317,7 @@ function Import-CiTrustCertificate([string]$StoreName, $Public) {
     if (-not (Test-Path -LiteralPath $common -PathType Leaf)) { throw 'The pinned publisher trust helper is unavailable.' }
     . $common
     Write-Host ('Importing the pinned public certificate into temporary CurrentUser/' + $StoreName + ' trust using the bounded no-UI Windows helper.')
-    [void](Add-QQServiceUserTrustCertificate -Name $StoreName -Publisher $Public)
+    [void](Add-QQServiceUserTrustCertificate -Name $StoreName -Publisher $Public -ApproveOwnedImportDialog:($env:GITHUB_ACTIONS -eq 'true'))
     $store = [Security.Cryptography.X509Certificates.X509Store]::new($StoreName, [Security.Cryptography.X509Certificates.StoreLocation]::CurrentUser)
     try {
         $store.Open([Security.Cryptography.X509Certificates.OpenFlags]::ReadOnly)

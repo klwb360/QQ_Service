@@ -25,8 +25,9 @@ certificate.json、signing-manifest.json、两个信任脚本和共享校验脚�
 上述 ExecutionPolicy Bypass 仅用于本次 PowerShell 进程，不会永久修改策略。
 脚本仅操作当前用户的 Root 和 TrustedPublisher；不需要管理员权限，
 不操作 LocalMachine 或个人私钥库。应用启动时不会自动安装证书。
-确认后通过 Windows 的 CryptUIWizImport 非交互接口导入已校验的公开证书。
-静态校验脚本在独立 PowerShell 子进程执行，单次导入设有超时，
+确认后通过 Windows 的 CryptUIWizImport 接口导入已校验的公开证书。
+Windows 可能另外显示“安全警告”，请再次核对发布者和完整证书指纹后确认。
+普通用户脚本不会自动点击该警告；导入子进程最多等待约一分钟，
 不会在后台无限等待系统对话框，也不会调用任意下载的证书工具。
 若组织策略要求交互或管理员管理信任，脚本会停止并给出错误，不会修改系统策略。
 单位电脑的组织策略若阻止导入，请交由管理员处理；不要改成整机导入。

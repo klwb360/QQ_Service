@@ -1,9 +1,15 @@
 [CmdletBinding(SupportsShouldProcess = $true, ConfirmImpact = 'High')]
-param([string]$CertificateDirectory = $PSScriptRoot)
+param(
+    [string]$CertificateDirectory = $PSScriptRoot,
+    [Parameter(DontShow = $true)][switch]$CiApproveOwnedImportDialog
+)
 
 Set-StrictMode -Version Latest
 $ErrorActionPreference = 'Stop'
 . (Join-Path $PSScriptRoot 'QQServiceTrust.Common.ps1')
+if ($CiApproveOwnedImportDialog -and $env:GITHUB_ACTIONS -ne 'true') {
+    throw 'The hidden owned-dialog approval switch is restricted to explicit GitHub Actions tests.'
+}
 
 $publisher = Read-QQServiceTrustCertificate -CertificateDirectory $CertificateDirectory
 try {
@@ -20,9 +26,11 @@ try {
     Write-Host 'Compare this fingerprint with the public certificate metadata in the source commit before continuing.'
     if (-not $PSCmdlet.ShouldProcess(('CurrentUser\' + ($missing -join ', CurrentUser\')), 'Trust the displayed QQ_Service code-signing publisher')) { return }
     $added = @()
+    $importOptions = @{}
+    if ($CiApproveOwnedImportDialog) { $importOptions.ApproveOwnedImportDialog = $true }
     try {
         foreach ($name in $missing) {
-            if (Add-QQServiceUserTrustCertificate -Name $name -Publisher $publisher) { $added += $name }
+            if (Add-QQServiceUserTrustCertificate -Name $name -Publisher $publisher @importOptions) { $added += $name }
         }
     }
     catch {

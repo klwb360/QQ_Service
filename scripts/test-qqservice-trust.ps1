@@ -10,6 +10,9 @@ $trustDirectory = Join-Path $root 'signing'
 . (Join-Path $trustDirectory 'QQServiceTrust.Common.ps1')
 $install = Join-Path $trustDirectory 'Install-QQServiceTrust.ps1'
 $remove = Join-Path $trustDirectory 'Remove-QQServiceTrust.ps1'
+$isGitHubActions = $env:GITHUB_ACTIONS -eq 'true'
+$ciInstallArguments = @{}
+if ($isGitHubActions) { $ciInstallArguments.CiApproveOwnedImportDialog = $true }
 
 function Assert-TrustTest {
     param([bool]$Condition, [string]$Message)
@@ -59,13 +62,13 @@ try {
     $sentinelPublic = [Security.Cryptography.X509Certificates.X509Certificate2]::new($sentinel.RawData)
     $sentinelPublisher = [pscustomobject]@{ Certificate = $sentinelPublic; Sha256 = $sentinelHash; Metadata = @{ sha1 = $sentinel.Thumbprint.ToUpperInvariant() } }
     foreach ($name in @('Root', 'TrustedPublisher')) {
-        [void](Add-QQServiceUserTrustCertificate -Name $name -Publisher $sentinelPublisher)
+        [void](Add-QQServiceUserTrustCertificate -Name $name -Publisher $sentinelPublisher -ApproveOwnedImportDialog:$isGitHubActions)
     }
     $myBefore = @(Get-TrustTestStoreHashes -Name 'My') -join ','
     $rootBefore = @(Get-TrustTestStoreHashes -Name 'Root') -join ','
     $publishersBefore = @(Get-TrustTestStoreHashes -Name 'TrustedPublisher') -join ','
 
-    & $install -CertificateDirectory $CertificateDirectory -WhatIf
+    & $install -CertificateDirectory $CertificateDirectory -WhatIf @ciInstallArguments
     foreach ($name in @('Root', 'TrustedPublisher')) {
         Assert-TrustTest (-not (Test-TrustTestPublisherPresent -Name $name -Publisher $publisher)) 'WhatIf install must not add trust'
     }
@@ -77,15 +80,15 @@ try {
     $badMetadata.sha256 = ('0' * 64)
     [System.IO.File]::WriteAllText((Join-Path $temporary 'certificate.json'), ($badMetadata | ConvertTo-Json), (New-Object System.Text.UTF8Encoding -ArgumentList $false))
     $rejected = $false
-    try { & $install -CertificateDirectory $temporary -Confirm:$false }
+    try { & $install -CertificateDirectory $temporary -Confirm:$false @ciInstallArguments }
     catch { $rejected = $true }
     Assert-TrustTest $rejected 'a mismatched fingerprint must be rejected'
     foreach ($name in @('Root', 'TrustedPublisher')) {
         Assert-TrustTest (-not (Test-TrustTestPublisherPresent -Name $name -Publisher $publisher)) 'rejected metadata must not change trust'
     }
 
-    & $install -CertificateDirectory $CertificateDirectory -Confirm:$false
-    & $install -CertificateDirectory $CertificateDirectory -Confirm:$false
+    & $install -CertificateDirectory $CertificateDirectory -Confirm:$false @ciInstallArguments
+    & $install -CertificateDirectory $CertificateDirectory -Confirm:$false @ciInstallArguments
     foreach ($name in @('Root', 'TrustedPublisher')) {
         Assert-TrustTest (Test-TrustTestPublisherPresent -Name $name -Publisher $publisher) 'install must add exactly one matching trust entry'
     }

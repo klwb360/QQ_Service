@@ -150,8 +150,12 @@ function Add-QQServiceUserTrustCertificate {
     [CmdletBinding()]
     param(
         [Parameter(Mandatory = $true)][ValidateSet('Root', 'TrustedPublisher')][string]$Name,
-        [Parameter(Mandatory = $true)]$Publisher
+        [Parameter(Mandatory = $true)]$Publisher,
+        [switch]$ApproveOwnedImportDialog
     )
+    if ($ApproveOwnedImportDialog -and $env:GITHUB_ACTIONS -ne 'true') {
+        throw 'Owned certificate-dialog approval is restricted to an explicit GitHub Actions fixture or signing invocation.'
+    }
     # Callers validate the publisher before the explicit ShouldProcess prompt.
     # Snapshot immutable public DER so the native worker never reopens a source file
     # which could have changed while that prompt was displayed.
@@ -166,6 +170,7 @@ function Add-QQServiceUserTrustCertificate {
     finally { $store.Dispose() }
     $temporary = Join-Path ([System.IO.Path]::GetTempPath()) ('qq-service-public-trust-' + [Guid]::NewGuid().ToString('N'))
     $process = $null
+    $workerStarted = $false
     try {
         [void][System.IO.Directory]::CreateDirectory($temporary)
         $acl = Get-Acl -LiteralPath $temporary
@@ -287,6 +292,7 @@ finally { if ($null -ne $certificate) { $certificate.Dispose() } }
         $ciWindowDiagnostics = $env:GITHUB_ACTIONS -eq 'true'
         if ($ciWindowDiagnostics) { Initialize-QQServiceOwnedWindowDiagnostics }
         if (-not $process.Start()) { throw 'Could not start the Windows certificate import tool.' }
+        $workerStarted = $true
         Write-Host ('QQ_Service trust worker PID ' + $process.Id + ', CurrentUser\' + $Name + ', publisher ' + $Publisher.Certificate.Subject)
         # EOF prevents console interaction. The worker itself uses the
         # documented CryptUI no-UI mode, inside this bounded child process.
@@ -294,9 +300,21 @@ finally { if ($null -ne $certificate) { $certificate.Dispose() } }
         $process.StandardInput.Close()
         $output = $process.StandardOutput.ReadToEndAsync()
         $errors = $process.StandardError.ReadToEndAsync()
-        $importDeadline = 25000
+        $importDeadline = 60000
         if ($ciWindowDiagnostics) { $importDeadline = 20000 }
-        if (-not $process.WaitForExit($importDeadline)) {
+        $approvalSent = $false
+        $clock = [Diagnostics.Stopwatch]::StartNew()
+        $timedOut = $false
+        while (-not $process.WaitForExit(200)) {
+            if ($ApproveOwnedImportDialog -and $Name -eq 'Root' -and -not $approvalSent) {
+                $simpleName = $Publisher.Certificate.GetNameInfo([Security.Cryptography.X509Certificates.X509NameType]::SimpleName, $false)
+                $approval = [QQServiceOwnedTrustWindows]::TryApproveRootImport($process.Id, $Publisher.Metadata.sha1, $simpleName)
+                if ($approval -lt 0) { throw 'The worker root-import dialog did not match the pinned public certificate. No confirmation was sent.' }
+                if ($approval -eq 1) { $approvalSent = $true; Write-Host 'Confirmed one exact owned CI root-import dialog matching the public subject and complete SHA1 fingerprint.' }
+            }
+            if ($clock.ElapsedMilliseconds -ge $importDeadline) { $timedOut = $true; break }
+        }
+        if ($timedOut) {
             if ($ciWindowDiagnostics) {
                 Write-Host ('QQ_Service owned trust windows: ' + [QQServiceOwnedTrustWindows]::Describe($process.Id))
             }
@@ -337,20 +355,26 @@ finally { if ($null -ne $certificate) { $certificate.Dispose() } }
         throw
     }
     finally {
-        if ($null -ne $process) { $process.Dispose() }
+        if ($null -ne $process) {
+            if ($workerStarted -and -not $process.HasExited) { try { $process.Kill(); [void]$process.WaitForExit(2000) } catch { } }
+            $process.Dispose()
+        }
         if (Test-Path -LiteralPath $temporary) { Remove-Item -LiteralPath $temporary -Recurse -Force }
     }
 }
 
 function Initialize-QQServiceOwnedWindowDiagnostics {
     if ($null -ne ('QQServiceOwnedTrustWindows' -as [type])) { return }
-    # CI-only observations of this worker's own windows. No keyboard, clicks,
-    # unrelated window text, policy changes or certificate operations occur.
+    # CI-only helpers for this worker's own windows. Diagnostics are read-only;
+    # confirmation is separately gated by the explicit CI-only import switch.
+    # No focus, keyboard input, unrelated windows or policy changes are used.
     Add-Type -TypeDefinition @'
 using System;
+using System.Collections.Generic;
 using System.Diagnostics;
 using System.Runtime.InteropServices;
 using System.Text;
+using System.Text.RegularExpressions;
 
 public static class QQServiceOwnedTrustWindows {
     private delegate bool Enumerate(IntPtr window, IntPtr state);
@@ -366,6 +390,17 @@ public static class QQServiceOwnedTrustWindows {
     private static extern int GetClassName(IntPtr window, StringBuilder text, int maximum);
     [DllImport("user32.dll")]
     private static extern int GetDlgCtrlID(IntPtr window);
+    [DllImport("user32.dll")]
+    private static extern IntPtr GetParent(IntPtr window);
+    [DllImport("user32.dll")]
+    [return: MarshalAs(UnmanagedType.Bool)]
+    private static extern bool IsWindowEnabled(IntPtr window);
+    [DllImport("user32.dll")]
+    [return: MarshalAs(UnmanagedType.Bool)]
+    private static extern bool IsWindowVisible(IntPtr window);
+    [DllImport("user32.dll", CharSet = CharSet.Unicode, EntryPoint = "PostMessageW", ExactSpelling = true, SetLastError = true)]
+    [return: MarshalAs(UnmanagedType.Bool)]
+    private static extern bool PostMessage(IntPtr window, uint message, UIntPtr command, IntPtr control);
     [DllImport("user32.dll", CharSet = CharSet.Unicode, EntryPoint = "SendMessageTimeoutW", ExactSpelling = true)]
     private static extern IntPtr SendMessageTimeout(IntPtr window, uint message, UIntPtr length,
         StringBuilder text, uint flags, uint timeout, out UIntPtr result);
@@ -378,6 +413,90 @@ public static class QQServiceOwnedTrustWindows {
         SendMessageTimeout(window, 13, (UIntPtr)(uint)text.Capacity, text, 0x22, 100, out length);
         string value = text.ToString().Replace("\r", " ").Replace("\n", " ").Replace("\0", "");
         return "handle=" + window.ToInt64().ToString("X") + ";class=" + kind + ";id=" + GetDlgCtrlID(window) + ";text=" + value;
+    }
+
+    private static bool IsOwned(IntPtr window, int owner) {
+        uint process;
+        GetWindowThreadProcessId(window, out process);
+        return process == (uint)owner;
+    }
+
+    private static string ClassName(IntPtr window) {
+        var result = new StringBuilder(80);
+        GetClassName(window, result, result.Capacity);
+        return result.ToString();
+    }
+
+    private static bool ReadText(IntPtr window, out string value) {
+        var text = new StringBuilder(4097);
+        UIntPtr length;
+        IntPtr result = SendMessageTimeout(window, 13, (UIntPtr)(uint)text.Capacity, text, 0x22, 100, out length);
+        value = text.ToString();
+        return result != IntPtr.Zero && value.Length < text.Capacity - 1;
+    }
+
+    public static bool MatchesExpectedImportText(string title, string text, string expectedSha1, string expectedName) {
+        if (title != "Security Warning" || text == null || text.Length > 8192 || expectedSha1 == null ||
+            !Regex.IsMatch(expectedSha1, "^[0-9A-F]{40}$", RegexOptions.CultureInvariant) ||
+            String.IsNullOrEmpty(expectedName) || expectedName.Length > 256 || expectedName.IndexOfAny(new char[] {'\r', '\n', '\0'}) >= 0) return false;
+        string body = text.Trim();
+        const string opening = "You are about to install a certificate from a certification authority (CA) claiming to represent:";
+        if (!body.StartsWith(opening, StringComparison.Ordinal) || !body.EndsWith("Do you want to install this certificate?", StringComparison.Ordinal)) return false;
+        if (Regex.Matches(body, "claiming to represent:", RegexOptions.CultureInvariant).Count != 1 ||
+            Regex.Matches(body, @"Thumbprint \(sha1\):", RegexOptions.CultureInvariant).Count != 1) return false;
+        string quote = ((char)34).ToString();
+        string claim = @"claiming to represent:\s*" + Regex.Escape(expectedName) + @"\s+Windows cannot validate that the certificate is actually from " + quote + Regex.Escape(expectedName) + quote + @"\.";
+        if (!Regex.IsMatch(body, claim, RegexOptions.CultureInvariant)) return false;
+        MatchCollection hashes = Regex.Matches(body, @"Thumbprint \(sha1\):\s*([0-9A-Fa-f]{8}(?:\s+[0-9A-Fa-f]{8}){4})\s+Warning:", RegexOptions.CultureInvariant);
+        return hashes.Count == 1 && Regex.Replace(hashes[0].Groups[1].Value, @"\s", "").ToUpperInvariant() == expectedSha1;
+    }
+
+    // Returns 0 while waiting, 1 after exactly one matched confirmation, and
+    // -1 on an unexpected/ambiguous dialog. Only the caller's owned child PID
+    // is eligible; no focus, keyboard input or other process is used.
+    public static int TryApproveRootImport(int owner, string expectedSha1, string expectedName) {
+        var dialogs = new List<IntPtr>();
+        Enumerate find = delegate(IntPtr window, IntPtr state) {
+            if (IsOwned(window, owner) && IsWindowVisible(window) && ClassName(window) == "#32770") dialogs.Add(window);
+            return dialogs.Count < 2;
+        };
+        EnumWindows(find, IntPtr.Zero);
+        GC.KeepAlive(find);
+        if (dialogs.Count == 0) return 0;
+        if (dialogs.Count != 1) return -1;
+        IntPtr dialog = dialogs[0];
+        string title;
+        if (!ReadText(dialog, out title) || String.IsNullOrWhiteSpace(title)) return 0;
+        if (title != "Security Warning") return -1;
+        var body = new StringBuilder();
+        var yesButtons = new List<IntPtr>();
+        bool valid = true;
+        int count = 0;
+        Enumerate children = delegate(IntPtr item, IntPtr state) {
+            if (++count > 24 || body.Length > 8192) { valid = false; return false; }
+            if (!IsOwned(item, owner)) { valid = false; return false; }
+            string kind = ClassName(item), text;
+            if (kind == "Static") {
+                if (!ReadText(item, out text)) { valid = false; return false; }
+                if (text.Length > 0) body.AppendLine(text);
+            }
+            if (kind == "Button" && GetDlgCtrlID(item) == 6 && GetParent(item) == dialog && IsWindowVisible(item) && IsWindowEnabled(item)) {
+                if (!ReadText(item, out text) || (text != "&Yes" && text != "Yes")) { valid = false; return false; }
+                yesButtons.Add(item);
+            }
+            return true;
+        };
+        EnumChildWindows(dialog, children, IntPtr.Zero);
+        GC.KeepAlive(children);
+        if (!valid || yesButtons.Count > 1) return -1;
+        if (yesButtons.Count == 0 || !body.ToString().TrimEnd().EndsWith("Do you want to install this certificate?", StringComparison.Ordinal)) return 0;
+        if (!MatchesExpectedImportText(title, body.ToString(), expectedSha1, expectedName)) return -1;
+        IntPtr yes = yesButtons[0];
+        if (!IsOwned(dialog, owner) || !IsOwned(yes, owner) || !IsWindowVisible(dialog) || ClassName(dialog) != "#32770" ||
+            ClassName(yes) != "Button" || GetDlgCtrlID(yes) != 6 || GetParent(yes) != dialog || !IsWindowVisible(yes) || !IsWindowEnabled(yes)) return -1;
+        // WM_COMMAND, IDYES, BN_CLICKED. Asynchronous, bounded and issued once.
+        if (!PostMessage(dialog, 0x0111, (UIntPtr)6u, yes)) throw new InvalidOperationException("Could not post the owned root-import confirmation.");
+        return 1;
     }
 
     public static string Describe(int owner) {
