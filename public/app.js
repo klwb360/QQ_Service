@@ -751,7 +751,7 @@
   function effectiveTriggers(group) {
     return Array.isArray(group.triggers) ? group.triggers : [group.trigger || 'mention'];
   }
-  const groupSocialDefaults = { enabled: false, proactive: false, interests: '', style: '', activeStart: '10:00', activeEnd: '22:00', decisionCallsPerHour: 12, repliesPerHour: 6, proactiveIntervalMinutes: 10, readTools: [], replyTools: [], replyActionCooldownSeconds: 30, replyActionsPerHour: 6 };
+  const groupSocialDefaults = { enabled: false, proactive: false, interests: '', style: '', activeStart: '10:00', activeEnd: '22:00', decisionCallsPerHour: 12, repliesPerHour: 6, proactiveIntervalMinutes: 10, readTools: [], replyTools: [], replyActionCooldownSeconds: 30, replyActionsPerHour: 6, delivery: { enabled: true, maxMessages: 3, pauseMs: 800 } };
   const qqToolLabels = {
     current_group_recent: '最近群消息', current_group_search: '搜索群消息', current_group_members: '查找本群成员',
     current_group_member: '查看群友资料', poke_member: '戳一戳群友', send_message: '发送 @ 或引用回复', react_message: '消息表情回应',
@@ -772,12 +772,19 @@
       .concat(mcpToolSources().flatMap(source => source.tools.filter(tool => tool.effect === 'read').map(tool => ({ id: tool.id, label: `MCP · ${source.name} · ${tool.name}`, enabled: source.enabled }))))
       .concat(qqContextToolSource().tools.filter(tool => tool.effect === 'read').map(tool => ({ id: tool.id, label: `QQ MCP · ${tool.name}`, enabled: true })));
   }
+  function groupSocialSettings(group) {
+    return { ...groupSocialDefaults, ...group.social, delivery: { ...groupSocialDefaults.delivery, ...group.social?.delivery } };
+  }
+  function renderGroupDelivery(social) {
+    const delivery = social.delivery;
+    return `<section class="group-delivery-options"><p class="field-note">回复节奏</p><label class="check-field"><input type="checkbox" data-group-delivery="enabled" ${delivery.enabled ? 'checked' : ''}><span>闲聊自然分条</span></label><div class="form-grid"><label class="field">每次回复最多条数<input type="number" data-group-delivery="maxMessages" min="1" max="3" value="${escapeHTML(delivery.maxMessages)}"></label><label class="field">分条间隔（毫秒）<input type="number" data-group-delivery="pauseMs" min="0" max="1500" step="100" value="${escapeHTML(delivery.pauseMs)}"></label></div><p class="field-note">首条立即发送；模型等待较久时减少停顿，不额外调用模型。完整回答、代码及步骤说明保留整段；关闭后每次整段发送。有人补充或要求暂停时，会停止尚未发出的部分。</p></section>`;
+  }
   function renderGroupSocial(group, index) {
-    const social = { ...groupSocialDefaults, ...group.social };
+    const social = groupSocialSettings(group);
     const tools = socialReadTools();
     const readTools = Array.isArray(social.readTools) ? social.readTools : [];
     const missing = readTools.filter(id => !tools.some(tool => tool.id === id));
-    return `<tr class="group-social-row" data-group-index="${index}"><td colspan="6"><details class="group-social-settings" data-record-id="social:${escapeHTML(group.id || index)}"><summary><span>自由聊天与主动话题</span><span class="group-social-state ${social.enabled ? 'enabled' : ''}" data-group-social-status>${social.enabled ? social.proactive ? '自由聊天 · 可主动分享' : '自由聊天已开启' : '未开启'}</span></summary><div class="group-social-content"><div class="group-social-options"><label class="check-field"><input type="checkbox" data-group-social="enabled" ${social.enabled ? 'checked' : ''}><span>自由聊天</span></label><label class="check-field"><input type="checkbox" data-group-social="proactive" ${social.proactive ? 'checked' : ''}><span>允许主动开话题与分享</span></label></div><div class="form-grid"><label class="field">这个群感兴趣的内容<textarea data-group-social="interests" rows="2" maxlength="2000" placeholder="留空沿用账号兴趣；例如：独立游戏、科普、搞笑视频。">${escapeHTML(social.interests)}</textarea></label><label class="field">在这个群的说话风格<textarea data-group-social="style" rows="2" maxlength="2000" placeholder="留空沿用账号人设">${escapeHTML(social.style)}</textarea></label></div><p class="field-note">AI 根据话题和新鲜内容决定接话或保持安静。有值得分享的内容时再开启话题；仍需允许读取、发送并启动账号。</p><details class="group-social-advanced" data-record-id="social-advanced:${escapeHTML(group.id || index)}"><summary>活动时段、调用预算与素材工具</summary><div class="form-grid"><label class="field">主动参与开始时间<input type="time" data-group-social="activeStart" value="${escapeHTML(social.activeStart)}"></label><label class="field">主动参与结束时间<input type="time" data-group-social="activeEnd" value="${escapeHTML(social.activeEnd)}"><small>按本机当地时间；开始和结束相同表示全天。直接提问不受此时段限制。</small></label><label class="field">每小时主动模型调用<input type="number" data-group-social="decisionCallsPerHour" min="0" max="1000" value="${escapeHTML(social.decisionCallsPerHour)}"><small>每轮调用都计入预算；0 暂停自主判断，正常回答和连续追问单独处理。</small></label><label class="field">每小时主动发言上限<input type="number" data-group-social="repliesPerHour" min="0" max="100" value="${escapeHTML(social.repliesPerHour)}"></label><label class="field">素材检查间隔（分钟）<input type="number" data-group-social="proactiveIntervalMinutes" min="1" max="1440" value="${escapeHTML(social.proactiveIntervalMinutes)}"><small>只是检查机会，不会按时间固定发言。</small></label></div><p class="field-note">主动话题可用的只读工具</p><div class="group-social-tool-options">${tools.map(tool => `<label class="${tool.enabled ? '' : 'group-social-unavailable'}"><input type="checkbox" data-group-social-tool="${escapeHTML(tool.id)}" ${readTools.includes(tool.id) ? 'checked' : ''}><span>${escapeHTML(tool.label)}${tool.enabled ? '' : '（需先启用插件）'}</span></label>`).join('') || '<p class="field-note">还没有只读工具。可先在模块中导入并启用插件；不选工具也可以围绕群内话题聊天。</p>'}${missing.map(id => `<label class="group-social-unavailable"><input type="checkbox" data-group-social-tool="${escapeHTML(id)}" checked><span>${escapeHTML(id)}（暂不可用，可取消）</span></label>`).join('')}</div><p class="field-note">这里单独授权背景读取，不继承群友工具权限；不会主动调用评论等写入工具。群友记忆在「设置 → 群友记忆」逐群启用和确认。</p>${renderQQReplyTools(group, social)}</details></div></details></td></tr>`;
+    return `<tr class="group-social-row" data-group-index="${index}"><td colspan="6"><details class="group-social-settings" data-record-id="social:${escapeHTML(group.id || index)}"><summary><span>自由聊天与主动话题</span><span class="group-social-state ${social.enabled ? 'enabled' : ''}" data-group-social-status>${social.enabled ? social.proactive ? '自由聊天 · 可主动分享' : '自由聊天已开启' : '未开启'}</span></summary><div class="group-social-content"><div class="group-social-options"><label class="check-field"><input type="checkbox" data-group-social="enabled" ${social.enabled ? 'checked' : ''}><span>自由聊天</span></label><label class="check-field"><input type="checkbox" data-group-social="proactive" ${social.proactive ? 'checked' : ''}><span>允许主动开话题与分享</span></label></div><div class="form-grid"><label class="field">这个群感兴趣的内容<textarea data-group-social="interests" rows="2" maxlength="2000" placeholder="留空沿用账号兴趣；例如：独立游戏、科普、搞笑视频。">${escapeHTML(social.interests)}</textarea></label><label class="field">在这个群的说话风格<textarea data-group-social="style" rows="2" maxlength="2000" placeholder="留空沿用账号人设">${escapeHTML(social.style)}</textarea></label></div><p class="field-note">AI 根据话题和新鲜内容决定接话或保持安静。有值得分享的内容时再开启话题；仍需允许读取、发送并启动账号。</p><details class="group-social-advanced" data-record-id="social-advanced:${escapeHTML(group.id || index)}"><summary>回复节奏、活动时段与素材工具</summary>${renderGroupDelivery(social)}<div class="form-grid"><label class="field">主动参与开始时间<input type="time" data-group-social="activeStart" value="${escapeHTML(social.activeStart)}"></label><label class="field">主动参与结束时间<input type="time" data-group-social="activeEnd" value="${escapeHTML(social.activeEnd)}"><small>按本机当地时间；开始和结束相同表示全天。直接提问不受此时段限制。</small></label><label class="field">每小时主动模型调用<input type="number" data-group-social="decisionCallsPerHour" min="0" max="1000" value="${escapeHTML(social.decisionCallsPerHour)}"><small>每轮调用都计入预算；0 暂停自主判断，正常回答和连续追问单独处理。</small></label><label class="field">每小时主动发言上限<input type="number" data-group-social="repliesPerHour" min="0" max="100" value="${escapeHTML(social.repliesPerHour)}"></label><label class="field">素材检查间隔（分钟）<input type="number" data-group-social="proactiveIntervalMinutes" min="1" max="1440" value="${escapeHTML(social.proactiveIntervalMinutes)}"><small>只是检查机会，不会按时间固定发言。</small></label></div><p class="field-note">主动话题可用的只读工具</p><div class="group-social-tool-options">${tools.map(tool => `<label class="${tool.enabled ? '' : 'group-social-unavailable'}"><input type="checkbox" data-group-social-tool="${escapeHTML(tool.id)}" ${readTools.includes(tool.id) ? 'checked' : ''}><span>${escapeHTML(tool.label)}${tool.enabled ? '' : '（需先启用插件）'}</span></label>`).join('') || '<p class="field-note">还没有只读工具。可先在模块中导入并启用插件；不选工具也可以围绕群内话题聊天。</p>'}${missing.map(id => `<label class="group-social-unavailable"><input type="checkbox" data-group-social-tool="${escapeHTML(id)}" checked><span>${escapeHTML(id)}（暂不可用，可取消）</span></label>`).join('')}</div><p class="field-note">这里单独授权背景读取，不继承群友工具权限；不会主动调用评论等写入工具。群友记忆在「设置 → 群友记忆」逐群启用和确认。</p>${renderQQReplyTools(group, social)}</details></div></details></td></tr>`;
   }
   function renderGroups() {
     const groups = draft?.groups ?? [];
@@ -2244,7 +2251,7 @@
     if (!input.hasAttribute('data-group-qq-reply') || !draft) return;
     const group = draft.groups[Number(input.closest('[data-group-index]')?.dataset.groupIndex)];
     if (!group) return;
-    group.social ||= { ...groupSocialDefaults };
+    group.social = groupSocialSettings(group);
     const choices = new Set(group.social.replyTools || []);
     if (input.checked) choices.add(input.dataset.groupQqReply); else choices.delete(input.dataset.groupQqReply);
     group.social.replyTools = [...choices]; markDirty();
@@ -2265,11 +2272,13 @@
       setPath(draft, 'chat.social.aliases', [...new Set(input.value.split(/[,，]+/).map(value => value.trim()).filter(Boolean))]);
       markDirty(input); return;
     }
-    if ((input.dataset.groupSocial || input.hasAttribute('data-group-social-tool')) && draft) {
+    if ((input.dataset.groupSocial || input.hasAttribute('data-group-social-tool') || input.hasAttribute('data-group-delivery')) && draft) {
       const index = Number(input.closest('[data-group-index]').dataset.groupIndex);
       const group = draft.groups[index];
-      group.social = { ...groupSocialDefaults, ...group.social };
-      if (input.hasAttribute('data-group-social-tool')) {
+      group.social = groupSocialSettings(group);
+      if (input.hasAttribute('data-group-delivery')) {
+        group.social.delivery[input.dataset.groupDelivery] = input.type === 'checkbox' ? input.checked : input.value === '' ? null : Number(input.value);
+      } else if (input.hasAttribute('data-group-social-tool')) {
         const tools = new Set(group.social.readTools || []);
         if (input.checked) tools.add(input.dataset.groupSocialTool); else tools.delete(input.dataset.groupSocialTool);
         group.social.readTools = [...tools];

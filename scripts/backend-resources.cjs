@@ -12,7 +12,7 @@ const modules = Object.freeze([
   'mcp-presets', 'mcp-schema', 'mcp-schema-worker', 'memory-storage', 'memory-store', 'napcat-native',
   'napcat-settings', 'network-policy', 'onebot-connector', 'persona', 'plugin-worker', 'plugins',
   'providers', 'qq-action-log', 'qq-assets', 'qq-mcp-server', 'qq-media-delivery', 'qq-message-origin', 'qq-sticker-sync',
-  'qq-tools', 'runtime', 'server', 'social-chat', 'social-runtime', 'store', 'tool-router', 'tool-schema', 'web-content',
+  'qq-tools', 'reply-delivery', 'runtime', 'server', 'social-chat', 'social-runtime', 'store', 'tool-router', 'tool-schema', 'web-content',
 ]);
 const uiScripts = Object.freeze(['app.js', 'memory-ui.js', 'memory-storage-ui.js', 'qq-assets-ui.js', 'mcp-presets-ui.js']);
 const requiredBackendResources = Object.freeze([
@@ -68,6 +68,7 @@ async function verifyBackendResources(directory) {
     "const {listBuiltinQQTools}=await import('./src/qq-tools.mjs')",
     "const qq=listBuiltinQQTools();const qqIds=qq.map(tool=>tool.id)",
     "const {createQqMessageOrigin,qqMessageReference,parseQqMessageReference}=await import('./src/qq-message-origin.mjs');const messageOrigin=createQqMessageOrigin('snowluma');const reference=qqMessageReference({origin:messageOrigin,nativeMessageId:'123'});assert.equal(parseQqMessageReference(reference).nativeMessageId,'123')",
+    "const {createReplyDeliveryPlan}=await import('./src/reply-delivery.mjs');const replyPlan=createReplyDeliveryPlan({text:'第一条\\n\\n第二条',messages:['第一条','第二条'],inferenceMs:6000});assert.deepEqual(replyPlan.segments,[{text:'第一条',delayMs:0},{text:'第二条',delayMs:0}])",
     "const {connectorCatalog}=await import('./src/onebot-connector.mjs');const snow=connectorCatalog().find(item=>item.id==='snowluma');assert(snow.available&&snow.externalRuntime&&!snow.runtimeManaged);assert.equal(snow.review.verified,false)",
     "for(const id of ['qq:list_assets','qq:send_image','qq:send_file','qq:forward_messages','qq:recall_own_message','qq:group_notices','qq:group_files','qq:send_sticker','qq:describe_asset'])assert(qqIds.includes(id),'Missing packaged QQ tool '+id)",
     "const {bilibiliMcpTools}=await import('./examples/mcp/bilibili.mjs')",

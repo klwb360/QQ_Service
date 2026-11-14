@@ -3,11 +3,26 @@ import { getModelConfig } from './config.mjs';
 import { isActiveTime, matchSocialAddress, normalizeVerifiedQQTargets, parseSocialDecision, socialSystemPrompt } from './social-chat.mjs';
 import { runToolConversation } from './tool-router.mjs';
 import { getQqMcpResultMeta } from './qq-mcp-server.mjs';
+import { createReplyDeliveryPlan } from './reply-delivery.mjs';
 
 const error = message => Object.assign(new Error(message), { status: 409 });
 const fingerprint = value => createHash('sha256').update(value).digest('hex');
 const SHORT_CONTEXT_MS = 2 * 60 * 60_000;
 const REPLY_ACTION_IDS = new Set(['qq:send_sticker', 'qq:send_image', 'qq:poke_member', 'qq:send_message', 'qq:react_message']);
+const STOP_PHRASE = '(?:(?:请|你)?(?:先)?(?:等一下|等一等|等等|停一下|停一停|停下|停止(?:回复|发送)?|暂停(?:回复|发送)?|别(?:再)?(?:发|说|回复)(?:了)?|不要(?:再)?(?:发|说|回复)(?:了)?)|stop)(?:吧|呀|啊|啦)?';
+const STOP_REPLY = new RegExp(`^(?:${STOP_PHRASE})(?:[\\s，,。.!！?？;；]*${STOP_PHRASE})*[\\s，,。.!！?？;；]*$`, 'iu');
+const interrupted = reason => Object.assign(error(reason || '本轮未发送的回复已取消。'), { code: 'REPLY_DELIVERY_INTERRUPTED' });
+
+function waitForDelivery(milliseconds, signal) {
+  if (signal.aborted) return Promise.reject(interrupted());
+  if (!milliseconds) return Promise.resolve();
+  return new Promise((resolve, reject) => {
+    const finish = () => { signal.removeEventListener('abort', cancel); resolve(); };
+    const timer = setTimeout(finish, milliseconds);
+    const cancel = () => { clearTimeout(timer); signal.removeEventListener('abort', cancel); reject(interrupted()); };
+    signal.addEventListener('abort', cancel, { once: true });
+  });
+}
 
 /** One account-wide model slot. Tool workers do not hold this slot. */
 export function createModelLimiter(limit = 48) {
@@ -57,7 +72,7 @@ export function createSocialRuntime({ getConfig, getIdentity, getEpoch, store, i
     const key = `${actualQQ}:${groupId}`;
     if (!states.has(key)) states.set(key, { key, actualQQ, groupId, pending: [], timer: null, running: false,
       controller: null, generation: 0, memoryRevision: 0, lastReplyAt: 0, participants: new Map(),
-      reason: '等待群消息', state: 'idle', topic: '', writeAttempted: false });
+      reason: '等待群消息', state: 'idle', topic: '', writeAttempted: false, activeTurn: null, delivery: null });
     return states.get(key);
   }
 
@@ -146,6 +161,9 @@ export function createSocialRuntime({ getConfig, getIdentity, getEpoch, store, i
     }
     const controller = new AbortController();
     state.controller = controller; state.writeAttempted = false;
+    const turn = { authors: new Set(entries.filter(entry => !entry.input.isNotice && (!direct || entry.direct || entry.followUp)).map(entry => entry.input.userId)),
+      phase: 'thinking', interruption: '', waitController: new AbortController(), sentParts: 0 };
+    state.activeTurn = turn;
     const context = await historyFor(state, config);
     // Reserve lookup slots for this turn before filling from the most recent
     // history. De-duplicating oldest-first would pin returning members there.
@@ -256,6 +274,10 @@ export function createSocialRuntime({ getConfig, getIdentity, getEpoch, store, i
           : requests,
         authorizingRequest: requester && !requester.isNotice && !requester.wake
           ? { userId: requester.userId, messageId: requester.messageId, text: requester.text.slice(0, 3000) } : null,
+        ...(state.delivery && ['interrupted', 'failed', 'unknown'].includes(state.delivery.state)
+          ? { previousDelivery: { state: state.delivery.state, sentMessages: state.delivery.sentMessages,
+            sentParts: state.delivery.sentParts, reason: state.delivery.reason,
+            instruction: '上一轮只有上下文中带真实回执的内容确认送达；未发送内容已取消。仅处理本轮新请求，不自动补发旧回复或重做旧工具操作。' } } : {}),
         direct, autonomous }) },
     ];
     let toolNames = [], completedWrites = 0, receiptAttempted = false;
@@ -295,6 +317,7 @@ export function createSocialRuntime({ getConfig, getIdentity, getEpoch, store, i
     };
     explain(state, autonomous ? '检查素材并判断是否值得分享' : direct ? '处理直接互动或连续追问' : '判断是否适合参与话题', 'thinking');
     let result;
+    const inferenceStartedAt = Date.now();
     try {
       result = tools.length ? await runToolConversation({ messages, tools, signal: controller.signal, catalogMode: config.tools?.catalogMode || 'auto', recoverPolicyDenials: true,
       infer: model, execute: async (tool, args) => {
@@ -341,7 +364,6 @@ export function createSocialRuntime({ getConfig, getIdentity, getEpoch, store, i
       explain(state, '对话或记忆已更新，取消尚未发送的旧回答。'); return;
     }
     const decision = parseSocialDecision(result.text);
-    state.topic = decision.topic || state.topic;
     if (decision.action === 'silent') {
       await rememberTurn({ topic: decision.topic, replyAt: replyActivityAt });
       explain(state, completedReplyActions ? '已完成 QQ 回复动作，保留自然追问窗口。' : `选择沉默${decision.reason ? `：${decision.reason}` : ''}`); return;
@@ -357,20 +379,81 @@ export function createSocialRuntime({ getConfig, getIdentity, getEpoch, store, i
       if (!await finishInvalidatedWrite()) explain(state, '对话或记忆已更新，取消尚未发送的旧回答。');
       return;
     }
-    await send({ type: 'group', id: state.groupId }, decision.text, taskEpoch,
-      { scenario: 'social', provider: config.chat.provider, autonomous, toolIds: toolNames, ...deliveryScope() });
+    const plan = createReplyDeliveryPlan({ text: decision.text, messages: decision.messages, mode: decision.replyMode,
+      settings: group.social?.enabled ? group.social.delivery : { enabled: false },
+      inferenceMs: Date.now() - inferenceStartedAt,
+      requestText: (requester?.text || latest?.text || '').slice(0, 12000) });
+    turn.phase = 'delivery';
+    state.delivery = { state: 'planning', sentMessages: 0, totalMessages: plan.segments.length, sentParts: 0, reason: '' };
+    const countReply = async complete => {
+      if (direct || (!turn.sentParts && !completedReplyActions)) return;
+      try {
+        await withLedger(async () => {
+          const updated = await readLedger(state);
+          if (!replyCounted) { updated.replies.push(Date.now()); replyCounted = true; }
+          if (complete) updated.shares.push({ hash: signature, topic: decision.topic, at: Date.now() });
+          await store.setTask?.(`social-state:${state.key}`, updated);
+        });
+      } catch (cause) { report('warn', `群 ${state.groupId} 回复已送达，但发言计数未能保存：${cause.message}`); }
+    };
+    const assertDelivery = () => {
+      if (turn.interruption) throw interrupted(turn.interruption);
+      assertSnapshot();
+      if (!direct && !isActiveTime(getConfig().groups.find(item => item.id === state.groupId)?.social, new Date())) {
+        throw error('已进入静默时段，取消尚未发送的主动回复。');
+      }
+    };
+    const deliverySignal = AbortSignal.any([controller.signal, turn.waitController.signal]);
+    try {
+      for (const [index, segment] of plan.segments.entries()) {
+        assertDelivery();
+        if (segment.delayMs) {
+          state.delivery.state = 'waiting';
+          explain(state, `已发送 ${state.delivery.sentMessages}/${plan.segments.length} 条，等待下一条`, 'waiting');
+          await waitForDelivery(segment.delayMs, deliverySignal);
+        }
+        assertDelivery();
+        state.delivery.state = 'sending';
+        explain(state, `正在发送第 ${index + 1}/${plan.segments.length} 条回复`, 'sending');
+        const before = turn.sentParts;
+        const acknowledged = ({ at = Date.now() } = {}) => {
+          turn.sentParts++; state.delivery.sentParts = turn.sentParts; markReplyActivity(at);
+        };
+        // New group input cancels only actions that have not been dispatched.
+        // Do not abort an in-flight QQ write: its real ACK must still be stored.
+        await send({ type: 'group', id: state.groupId }, segment.text, taskEpoch,
+          { scenario: 'social', provider: config.chat.provider, autonomous, toolIds: toolNames, ...deliveryScope() },
+          { onBeforeAction: assertDelivery, onAcknowledged: acknowledged });
+        // Compatibility for injected send adapters which resolve on ACK but do
+        // not implement the optional progress observer. Never stores a row.
+        if (turn.sentParts === before) acknowledged();
+        state.delivery.sentMessages++;
+      }
+      if (turn.interruption || !stillCurrent()) throw interrupted(turn.interruption);
+      turn.phase = 'completed'; state.delivery.state = 'completed';
+      await countReply(true);
+    } catch (cause) {
+      turn.phase = 'completed';
+      await countReply(false);
+      const canceled = Boolean(turn.interruption || controller.signal.aborted || cause.code === 'REPLY_DELIVERY_INTERRUPTED'
+        || state.memoryRevision !== memoryRevision || taskEpoch !== getEpoch() || state.actualQQ !== getIdentity());
+      state.delivery.state = canceled ? 'interrupted' : cause.deliveryUncertain ? 'unknown' : 'failed';
+      state.delivery.reason = turn.interruption || cause.message;
+      if (canceled) {
+        explain(state, `已取消未发送的回复；已确认送达 ${turn.sentParts} 个消息片段${turn.interruption ? `：${turn.interruption}` : ''}`, 'interrupted');
+        return;
+      }
+      cause.deliveryObserved = turn.sentParts > 0;
+      throw cause;
+    }
     if (!stillCurrent()) { explain(state, '已发送回复；对话设置已更新，未写入旧上下文的记忆。'); return; }
     markReplyActivity(Date.now()); state.topic = decision.topic || state.topic;
-    if (!direct) {
-      const updated = await readLedger(state);
-      if (!replyCounted) updated.replies.push(Date.now());
-      updated.shares.push({ hash: signature, topic: decision.topic, at: Date.now() });
-      await store.setTask?.(`social-state:${state.key}`, updated);
-    }
     // Never learn from idle browsing, notices, tool output, or failed delivery.
     if (!autonomous && decision.memoryCandidates.length && sources.length) {
-      await store.memory?.suggest({ actualQQ: state.actualQQ, groupId: state.groupId,
-        candidates: decision.memoryCandidates, sources });
+      try {
+        await store.memory?.suggest({ actualQQ: state.actualQQ, groupId: state.groupId,
+          candidates: decision.memoryCandidates, sources });
+      } catch (cause) { report('warn', `群 ${state.groupId} 回复已送达，但记忆候选未保存：${cause.message}`); }
     }
     await rememberTurn({ topic: decision.topic, candidates: decision.experienceCandidates, delivered: true, replyAt: state.lastReplyAt });
     explain(state, autonomous ? '已分享新内容，等待群友回应' : '已回复');
@@ -400,7 +483,8 @@ export function createSocialRuntime({ getConfig, getIdentity, getEpoch, store, i
       if (!stopped) {
         onFailure();
         explain(state, cause.message, 'error');
-        if (turnEpoch === getEpoch() && state.actualQQ === getIdentity() && entries.some(entry => entry.direct || entry.followUp)) {
+        if (!cause.deliveryObserved && !cause.deliveryUncertain && cause.deliveryState !== 'partially_sent'
+          && turnEpoch === getEpoch() && state.actualQQ === getIdentity() && entries.some(entry => entry.direct || entry.followUp)) {
           try {
             const config = getConfig();
             eligible(state.groupId, turnEpoch);
@@ -413,7 +497,7 @@ export function createSocialRuntime({ getConfig, getIdentity, getEpoch, store, i
       }
     }
     finally {
-      state.running = false; state.controller = null;
+      state.running = false; state.controller = null; state.activeTurn = null;
       if (!stopped) schedule(state, getConfig().chat.social?.batchMs ?? 1500);
     }
   }
@@ -447,6 +531,32 @@ export function createSocialRuntime({ getConfig, getIdentity, getEpoch, store, i
     const followUp = freeChat && !input.isNotice && state.participants.has(input.userId)
       && Date.now() - state.participants.get(input.userId) < (config.chat.social?.followUpSeconds ?? 120) * 1000;
     const entry = { input: { ...input, text: address?.request ?? input.text, wake: address?.wake === true, explicitAddress }, direct, followUp };
+    const active = state.activeTurn;
+    const stopping = !input.isNotice && STOP_REPLY.test(String(entry.input.text || '').trim());
+    // A supplement may already have stopped the old delivery and be waiting
+    // for its next batch. The same person's stop still cancels that queued
+    // request instead of becoming a new model prompt alongside it.
+    if (stopping && active?.phase !== 'delivery' && state.pending.some(pending => pending.input.userId === input.userId)) {
+      state.pending = state.pending.filter(pending => pending.input.userId !== input.userId);
+      if (!state.pending.length) { clearTimeout(state.timer); state.timer = null; }
+      explain(state, '已取消该成员尚未处理的消息', 'interrupted');
+      return true;
+    }
+    if (active?.phase === 'delivery' && !input.isNotice) {
+      const sameAuthor = active.authors.has(input.userId);
+      const addressed = explicitAddress;
+      if (sameAuthor || addressed) {
+        active.interruption ||= stopping ? '对方要求停止回复' : sameAuthor ? '发起人补充了新消息' : '收到新的直接提问';
+        active.waitController.abort();
+        explain(state, '收到新消息，正在停止未发送的回复', 'interrupted');
+        // A stop request is consumed here. It must not itself cause another
+        // model answer or borrow a different member's tool authorization.
+        if (stopping) {
+          state.pending = state.pending.filter(pending => pending.input.userId !== input.userId);
+          return true;
+        }
+      }
+    }
     state.generation++;
     if (state.pending.length >= 12) {
       if (direct || followUp) {
@@ -486,7 +596,7 @@ export function createSocialRuntime({ getConfig, getIdentity, getEpoch, store, i
       ledger.lastCheck = now; await store.setTask?.(`social-state:${state.key}`, ledger);
       state.running = true;
       tasks.push(runTurn(state, [], true).catch(cause => { onFailure(); explain(state, cause.message, 'error'); }).finally(() => {
-        state.running = false; state.controller = null;
+        state.running = false; state.controller = null; state.activeTurn = null;
         schedule(state, getConfig().chat.social?.batchMs ?? 1500);
       }));
     }
@@ -511,6 +621,10 @@ export function createSocialRuntime({ getConfig, getIdentity, getEpoch, store, i
       if (!state.running) state.state = 'idle';
     }
     if (!state.writeAttempted) state.controller?.abort();
+    if (state.activeTurn?.phase === 'delivery') {
+      state.activeTurn.interruption ||= '记忆或会话状态已更新';
+      state.activeTurn.waitController.abort();
+    }
     const sessionStore = store.conversationState || store.sessionState;
     if (!sessionStore?.get) return;
     let snapshot;
@@ -535,7 +649,8 @@ export function createSocialRuntime({ getConfig, getIdentity, getEpoch, store, i
     status() {
       return { running: [...states.values()].filter(item => item.running).length,
         pending: [...states.values()].reduce((count, item) => count + item.pending.length, 0),
-        groups: [...states.values()].map(({ groupId, state, reason, topic, lastReplyAt }) => ({ groupId, state, reason, topic, lastReplyAt })) };
+        groups: [...states.values()].map(({ groupId, state, reason, topic, lastReplyAt, delivery }) => ({ groupId, state, reason, topic, lastReplyAt,
+          ...(delivery ? { delivery: { ...delivery } } : {}) })) };
     },
   };
 }

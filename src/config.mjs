@@ -12,6 +12,7 @@ export const DEFAULT_GROUP_SOCIAL = Object.freeze({
   enabled: false, proactive: false, interests: '', style: '', activeStart: '10:00', activeEnd: '22:00',
   decisionCallsPerHour: 12, repliesPerHour: 6, proactiveIntervalMinutes: 10, readTools: [],
   replyTools: [], replyActionCooldownSeconds: 30, replyActionsPerHour: 6,
+  delivery: Object.freeze({ enabled: true, maxMessages: 3, pauseMs: 800 }),
 });
 
 export const DEFAULT_CONFIG = {
@@ -328,6 +329,9 @@ export function validateConfig(input, { applying = false, hasSecret = () => fals
     if (value !== undefined && !object(value)) issue(prefix, '群自由聊天参数必须是对象');
     const social = object(value) ? value : {};
     for (const key of Object.keys(social)) if (!Object.hasOwn(DEFAULT_GROUP_SOCIAL, key)) issue(`${prefix}.${key}`, '不支持的群自由聊天参数');
+    if (social.delivery !== undefined && !object(social.delivery)) issue(`${prefix}.delivery`, '自然分条参数必须是对象');
+    const delivery = object(social.delivery) ? social.delivery : {};
+    for (const key of Object.keys(delivery)) if (!Object.hasOwn(DEFAULT_GROUP_SOCIAL.delivery, key)) issue(`${prefix}.delivery.${key}`, '不支持的自然分条参数');
     const normalized = {
       enabled: bool(social.enabled, false, '自由聊天', `${prefix}.enabled`),
       proactive: bool(social.proactive, false, '自主开话题', `${prefix}.proactive`),
@@ -342,6 +346,11 @@ export function validateConfig(input, { applying = false, hasSecret = () => fals
       replyTools: [],
       replyActionCooldownSeconds: number(social.replyActionCooldownSeconds, 30, '自然互动冷却秒数', 5, 3600, true, `${prefix}.replyActionCooldownSeconds`),
       replyActionsPerHour: number(social.replyActionsPerHour, 6, '每小时自然互动上限', 0, 60, true, `${prefix}.replyActionsPerHour`),
+      delivery: {
+        enabled: bool(delivery.enabled, true, '自然分条', `${prefix}.delivery.enabled`),
+        maxMessages: number(delivery.maxMessages, 3, '每次回复最多条数', 1, 3, true, `${prefix}.delivery.maxMessages`),
+        pauseMs: number(delivery.pauseMs, 800, '分条间隔毫秒', 0, 1500, true, `${prefix}.delivery.pauseMs`),
+      },
     };
     for (const key of ['activeStart', 'activeEnd']) if (!/^([01]\d|2[0-3]):[0-5]\d$/.test(normalized[key])) issue(`${prefix}.${key}`, '主动活动时间须为 HH:MM');
     if (social.readTools !== undefined) {

@@ -482,7 +482,7 @@ export function createRuntime({ getConfig, getSecret, store, installer, pluginMa
     if (triggeredBy && !groupTriggers(group).includes(triggeredBy)) throw fail('该群事件的触发权限已撤销，旧回复已取消。', 409);
   }
 
-  async function send(destination, text, expectedEpoch, purpose, { mentionUserIds = [], replyToMessageId = '', replyToSourceId = '', onDispatch, onBeforeAction } = {}) {
+  async function send(destination, text, expectedEpoch, purpose, { mentionUserIds = [], replyToMessageId = '', replyToSourceId = '', onDispatch, onBeforeAction, onAcknowledged } = {}) {
     const safeText = String(text || '').trim();
     if (!safeText) throw fail('不能发送空消息。');
     const clipped = safeText.slice(0, MAX_REPLY_CHARS) + (safeText.length > MAX_REPLY_CHARS ? '\n[发送内容已截断；完整内容请在仪表盘查看。]' : '');
@@ -516,6 +516,11 @@ export function createRuntime({ getConfig, getSecret, store, installer, pluginMa
               replyToSourceId: replyToSourceId || sameOriginReference(purpose?.messageId, sendingOrigin), delivery: 'sent' }, sendingOrigin);
           } catch (cause) { report('warn', `消息已发送，但对话记录保存失败：${cause.message}`); }
         }
+        // The delivery scheduler can cancel the next piece, but an action that
+        // has already left this process keeps its ACK and its actual history.
+        // This observer is synchronous and never authorizes a later send.
+        try { onAcknowledged?.({ text: clipped.slice(offset, offset + 1800), messageId: id(delivered?.message_id), at: Date.now() }); }
+        catch (cause) { report('warn', `消息已发送，但发送进度更新失败：${cause.message}`); }
       } catch (error) {
         error.deliveryState = sentParts > 0 ? 'partially_sent' : error.deliveryUncertain ? 'unknown' : 'failed';
         error.sentParts = sentParts;
