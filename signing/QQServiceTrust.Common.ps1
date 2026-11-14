@@ -193,6 +193,8 @@ param(
 Set-StrictMode -Version Latest
 $ErrorActionPreference = 'Stop'
 $certificate = $null
+[Console]::Out.WriteLine('trust-native: worker-start')
+[Console]::Out.Flush()
 try {
     $encoded = [IO.File]::ReadAllBytes($CertificatePath)
     $certificate = [Security.Cryptography.X509Certificates.X509Certificate2]::new($encoded)
@@ -202,6 +204,8 @@ try {
     if ($certificate.HasPrivateKey -or $actual -cne $ExpectedSha256 -or [Convert]::ToBase64String($encoded) -cne [Convert]::ToBase64String($certificate.RawData)) {
         throw 'The native trust worker did not receive the pinned public DER certificate.'
     }
+    [Console]::Out.WriteLine('trust-native: certificate-validated; before-add-type')
+    [Console]::Out.Flush()
     Add-Type -TypeDefinition @"
 using System;
 using System.Runtime.InteropServices;
@@ -225,7 +229,11 @@ public static class QQServiceCryptUIImport {
     public static int Import(X509Certificate2 certificate, string name) {
         if (name != "Root" && name != "TrustedPublisher") throw new ArgumentException("Unsupported user store.");
         using (var store = new X509Store(name, StoreLocation.CurrentUser)) {
+            Console.Out.WriteLine("trust-native: before-store-open CurrentUser\\" + name);
+            Console.Out.Flush();
             store.Open(OpenFlags.ReadWrite);
+            Console.Out.WriteLine("trust-native: after-store-open");
+            Console.Out.Flush();
             var source = new CRYPTUI_WIZ_IMPORT_SRC_INFO {
                 dwSize = (uint)Marshal.SizeOf(typeof(CRYPTUI_WIZ_IMPORT_SRC_INFO)),
                 dwSubjectChoice = 2, // CRYPTUI_WIZ_IMPORT_SUBJECT_CERT_CONTEXT
@@ -235,8 +243,12 @@ public static class QQServiceCryptUIImport {
             };
             // Only documented CRYPTUI_WIZ_NO_UI=1. No root-unprotection,
             // LocalMachine, private-key or policy-changing flags are used.
+            Console.Out.WriteLine("trust-native: before-CryptUIWizImport; publisher=" + certificate.Subject);
+            Console.Out.Flush();
             bool imported = CryptUIWizImport(1, IntPtr.Zero, null, ref source, store.StoreHandle);
             int error = imported ? 0 : Marshal.GetLastWin32Error();
+            Console.Out.WriteLine("trust-native: after-CryptUIWizImport; error=0x" + error.ToString("X8"));
+            Console.Out.Flush();
             GC.KeepAlive(certificate);
             GC.KeepAlive(store);
             return imported ? 0 : (error == 0 ? unchecked((int)0x80004005) : error);
@@ -244,11 +256,15 @@ public static class QQServiceCryptUIImport {
     }
 }
 "@
+    [Console]::Out.WriteLine('trust-native: after-add-type; before-native-call')
+    [Console]::Out.Flush()
     $code = [QQServiceCryptUIImport]::Import($certificate, $StoreName)
     if ($code -ne 0) {
         $message = (New-Object ComponentModel.Win32Exception -ArgumentList $code).Message
         throw ('CryptUIWizImport failed (0x' + $code.ToString('X8') + '): ' + $message)
     }
+    [Console]::Out.WriteLine('trust-native: native-call-finished')
+    [Console]::Out.Flush()
     Write-Output 'The pinned public certificate was imported to the selected CurrentUser store.'
 }
 catch { [Console]::Error.WriteLine($_.Exception.Message); exit 1 }
@@ -268,18 +284,26 @@ finally { if ($null -ne $certificate) { $certificate.Dispose() } }
         $start.RedirectStandardInput = $true
         $process = New-Object Diagnostics.Process
         $process.StartInfo = $start
+        $ciWindowDiagnostics = $env:GITHUB_ACTIONS -eq 'true'
+        if ($ciWindowDiagnostics) { Initialize-QQServiceOwnedWindowDiagnostics }
         if (-not $process.Start()) { throw 'Could not start the Windows certificate import tool.' }
+        Write-Host ('QQ_Service trust worker PID ' + $process.Id + ', CurrentUser\' + $Name + ', publisher ' + $Publisher.Certificate.Subject)
         # EOF prevents console interaction. The worker itself uses the
         # documented CryptUI no-UI mode, inside this bounded child process.
         # The entry script has already obtained explicit ShouldProcess consent.
         $process.StandardInput.Close()
         $output = $process.StandardOutput.ReadToEndAsync()
         $errors = $process.StandardError.ReadToEndAsync()
-        if (-not $process.WaitForExit(25000)) {
+        $importDeadline = 25000
+        if ($ciWindowDiagnostics) { $importDeadline = 20000 }
+        if (-not $process.WaitForExit($importDeadline)) {
+            if ($ciWindowDiagnostics) {
+                Write-Host ('QQ_Service owned trust windows: ' + [QQServiceOwnedTrustWindows]::Describe($process.Id))
+            }
             try { $process.Kill(); [void]$process.WaitForExit(2000) } catch { }
             try { [void][Threading.Tasks.Task]::WaitAll([Threading.Tasks.Task[]]@($output, $errors), 2000) } catch { }
             $diagnostic = Get-QQServiceNativeTrustDiagnostic -OutputTask $output -ErrorTask $errors
-            throw ('Windows certificate import exceeded its 25-second deadline. ' + $diagnostic + ' A Windows policy may require administrator-managed trust; no machine-wide fallback was attempted.')
+            throw ('Windows certificate import exceeded its bounded deadline. ' + $diagnostic + ' A Windows policy may require administrator-managed trust; no machine-wide fallback was attempted.')
         }
         if (-not [Threading.Tasks.Task]::WaitAll([Threading.Tasks.Task[]]@($output, $errors), 3000)) {
             $diagnostic = Get-QQServiceNativeTrustDiagnostic -OutputTask $output -ErrorTask $errors
@@ -316,6 +340,76 @@ finally { if ($null -ne $certificate) { $certificate.Dispose() } }
         if ($null -ne $process) { $process.Dispose() }
         if (Test-Path -LiteralPath $temporary) { Remove-Item -LiteralPath $temporary -Recurse -Force }
     }
+}
+
+function Initialize-QQServiceOwnedWindowDiagnostics {
+    if ($null -ne ('QQServiceOwnedTrustWindows' -as [type])) { return }
+    # CI-only observations of this worker's own windows. No keyboard, clicks,
+    # unrelated window text, policy changes or certificate operations occur.
+    Add-Type -TypeDefinition @'
+using System;
+using System.Diagnostics;
+using System.Runtime.InteropServices;
+using System.Text;
+
+public static class QQServiceOwnedTrustWindows {
+    private delegate bool Enumerate(IntPtr window, IntPtr state);
+    [DllImport("user32.dll")]
+    [return: MarshalAs(UnmanagedType.Bool)]
+    private static extern bool EnumWindows(Enumerate callback, IntPtr state);
+    [DllImport("user32.dll")]
+    [return: MarshalAs(UnmanagedType.Bool)]
+    private static extern bool EnumChildWindows(IntPtr parent, Enumerate callback, IntPtr state);
+    [DllImport("user32.dll")]
+    private static extern uint GetWindowThreadProcessId(IntPtr window, out uint process);
+    [DllImport("user32.dll", CharSet = CharSet.Unicode, EntryPoint = "GetClassNameW", ExactSpelling = true)]
+    private static extern int GetClassName(IntPtr window, StringBuilder text, int maximum);
+    [DllImport("user32.dll")]
+    private static extern int GetDlgCtrlID(IntPtr window);
+    [DllImport("user32.dll", CharSet = CharSet.Unicode, EntryPoint = "SendMessageTimeoutW", ExactSpelling = true)]
+    private static extern IntPtr SendMessageTimeout(IntPtr window, uint message, UIntPtr length,
+        StringBuilder text, uint flags, uint timeout, out UIntPtr result);
+
+    private static string DescribeWindow(IntPtr window) {
+        var kind = new StringBuilder(80);
+        GetClassName(window, kind, kind.Capacity);
+        var text = new StringBuilder(1201);
+        UIntPtr length;
+        SendMessageTimeout(window, 13, (UIntPtr)(uint)text.Capacity, text, 0x22, 100, out length);
+        string value = text.ToString().Replace("\r", " ").Replace("\n", " ").Replace("\0", "");
+        return "handle=" + window.ToInt64().ToString("X") + ";class=" + kind + ";id=" + GetDlgCtrlID(window) + ";text=" + value;
+    }
+
+    public static string Describe(int owner) {
+        var clock = Stopwatch.StartNew();
+        var result = new StringBuilder();
+        int windows = 0, controls = 0;
+        Enumerate top = delegate(IntPtr window, IntPtr state) {
+            if (clock.ElapsedMilliseconds >= 2000 || windows >= 4 || result.Length >= 7000) return false;
+            uint process;
+            GetWindowThreadProcessId(window, out process);
+            if (process != (uint)owner) return true;
+            windows++;
+            result.Append("[window ").Append(DescribeWindow(window)).Append("] ");
+            Enumerate child = delegate(IntPtr item, IntPtr ignored) {
+                if (clock.ElapsedMilliseconds >= 2000 || controls >= 20 || result.Length >= 7000) return false;
+                uint childOwner;
+                GetWindowThreadProcessId(item, out childOwner);
+                if (childOwner != (uint)owner) return true;
+                controls++;
+                result.Append("[control ").Append(DescribeWindow(item)).Append("] ");
+                return true;
+            };
+            EnumChildWindows(window, child, IntPtr.Zero);
+            GC.KeepAlive(child);
+            return true;
+        };
+        EnumWindows(top, IntPtr.Zero);
+        GC.KeepAlive(top);
+        return result.Length == 0 ? "No windows belong to the trust worker PID." : result.ToString(0, Math.Min(result.Length, 8192));
+    }
+}
+'@
 }
 
 function Get-QQServiceNativeTrustDiagnostic {
