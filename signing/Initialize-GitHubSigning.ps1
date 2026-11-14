@@ -196,6 +196,16 @@ function Existing-PublicCertificate([string]$Ref = $branch) {
     }
 }
 
+function Existing-SigningSecrets {
+    # Read each exact metadata endpoint; never infer absence from page one of
+    # an environment's secret listing. Secret values cannot be read here.
+    foreach ($name in $secretNames) {
+        $result = Invoke-Gh -Arguments @('api', '--hostname', 'github.com', "repos/$repository/environments/$environmentName/secrets/$name") -AllowFailure
+        if ($result.Success) { Write-Output $name }
+        elseif ($result.Error -notmatch 'HTTP 404') { throw 'Could not determine whether a signing secret already exists. No key was generated.' }
+    }
+}
+
 function Read-LocalPublicIdentity {
     $cer = Join-Path $PublicDirectory 'QQ_Service.cer'
     $json = Join-Path $PublicDirectory 'certificate.json'
@@ -286,7 +296,7 @@ try {
     if ($repo.permissions.admin -ne $true) { throw 'The authenticated account is not an administrator of QQ_Service.' }
     Existing-PublicCertificate
     Assert-MainOnlyEnvironment
-    $existingSecrets = @((GitHub-Json "repos/$repository/environments/$environmentName/secrets").secrets | ForEach-Object { $_.name })
+    $existingSecrets = @(Existing-SigningSecrets)
     if ($ResumePublicCommit) {
         foreach ($secret in $secretNames) { if ($existingSecrets -cnotcontains $secret) { throw 'The expected encrypted secrets do not exist; public-only resume was refused.' } }
         $public = Read-LocalPublicIdentity
@@ -347,19 +357,31 @@ try {
     }
     throw
 } finally {
-    if ($null -ne $privateCertificate) {
-        $certificatePath = 'Cert:\CurrentUser\My\' + $privateCertificate.Thumbprint
-        if (Test-Path -LiteralPath $certificatePath) {
-            $existing = Get-Item -LiteralPath $certificatePath
-            if ((Hex-Sha256 $existing.RawData) -ceq (Hex-Sha256 $privateCertificate.RawData)) { Remove-Item -LiteralPath $certificatePath -DeleteKey -Force }
+    $cleanupErrors = [Collections.Generic.List[string]]::new()
+    try {
+        if ($null -ne $privateCertificate) {
+            $certificatePath = 'Cert:\CurrentUser\My\' + $privateCertificate.Thumbprint
+            if (Test-Path -LiteralPath $certificatePath) {
+                $existing = Get-Item -LiteralPath $certificatePath
+                if ((Hex-Sha256 $existing.RawData) -cne (Hex-Sha256 $privateCertificate.RawData)) { throw 'The temporary signer fingerprint changed.' }
+                Remove-Item -LiteralPath $certificatePath -DeleteKey -Force
+            }
         }
-        $privateCertificate.Dispose()
+    } catch { $cleanupErrors.Add('Could not remove the temporary private certificate from CurrentUser/My.') }
+    finally { if ($null -ne $privateCertificate) { $privateCertificate.Dispose() } }
+    try { [Net.ServicePointManager]::SecurityProtocol = $oldTls }
+    catch { $cleanupErrors.Add('Could not restore this process TLS settings.') }
+    try {
+        if (Test-Path -LiteralPath $temporary) {
+            if ((Get-Item -LiteralPath $temporary -Force).Attributes -band [IO.FileAttributes]::ReparsePoint) { throw 'The setup temporary directory became a link; refusing recursive cleanup.' }
+            Remove-Item -LiteralPath $temporary -Recurse -Force
+        }
+    } catch { $cleanupErrors.Add('Could not confirm cleanup of the private temporary directory.') }
+    try { if ($ownsMutex) { $setupMutex.ReleaseMutex() } }
+    catch { $cleanupErrors.Add('Could not release the local initializer lock.') }
+    finally { if ($null -ne $setupMutex) { $setupMutex.Dispose() } }
+    if ($cleanupErrors.Count) {
+        foreach ($message in $cleanupErrors) { Write-Warning $message }
+        throw 'Setup cleanup was incomplete. Check the reported CurrentUser certificate or temporary files before continuing.'
     }
-    [Net.ServicePointManager]::SecurityProtocol = $oldTls
-    if (Test-Path -LiteralPath $temporary) {
-        if ((Get-Item -LiteralPath $temporary -Force).Attributes -band [IO.FileAttributes]::ReparsePoint) { throw 'The setup temporary directory became a link; refusing recursive cleanup.' }
-        Remove-Item -LiteralPath $temporary -Recurse -Force
-    }
-    if ($ownsMutex) { $setupMutex.ReleaseMutex() }
-    if ($null -ne $setupMutex) { $setupMutex.Dispose() }
 }
